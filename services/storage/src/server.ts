@@ -417,11 +417,15 @@ app.post("/internal/object/download", async (request, reply) => {
 
   try {
     const object = await getObject(resolved.storageKey);
-    reply.header("content-type", object.contentType);
-    if (typeof object.contentLength === "number") {
-      reply.header("content-length", String(object.contentLength));
+    // Collect stream into buffer for reliable cross-network response
+    const chunks: Buffer[] = [];
+    for await (const chunk of object.body as AsyncIterable<Uint8Array>) {
+      chunks.push(Buffer.from(chunk));
     }
-    reply.send(toNodeReadable(object.body));
+    const data = Buffer.concat(chunks);
+    reply.header("content-type", object.contentType);
+    reply.header("content-length", String(data.byteLength));
+    reply.send(data);
   } catch (error: any) {
     request.log.error(
       { err: error, itemId: body.itemId },
