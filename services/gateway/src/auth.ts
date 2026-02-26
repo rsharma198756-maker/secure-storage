@@ -47,6 +47,8 @@ const transporter = nodemailer.createTransport({
   port: config.smtp.port,
   secure: config.smtp.secure,
   requireTLS: config.smtp.requireTls,
+  connectionTimeout: 8000,  // 8s — fail fast instead of hanging forever
+  socketTimeout: 8000,
   auth: config.smtp.user
     ? {
       user: config.smtp.user,
