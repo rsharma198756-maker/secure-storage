@@ -1203,7 +1203,7 @@ const uploadStorageObject = async (
         "x-file-content-type": contentType || "application/octet-stream",
         "content-type": contentType || "application/octet-stream"
       },
-      body
+      body: body as unknown as BodyInit
     },
     {
       scope: "items.upload",

@@ -9,6 +9,13 @@ import { getObject, presignDownload, presignInternalDownload, presignUpload, put
 const app = Fastify({ logger: true });
 const pool = new Pool({ connectionString: config.databaseUrl });
 
+// Accept raw binary bodies for file uploads.
+// Fastify's built-in application/json parser still takes priority over "*".
+app.addContentTypeParser("*", { parseAs: "buffer" }, (_req, body, done) =>
+  done(null, body)
+);
+
+
 const INTERNAL_AUTH_HEADER = "x-internal-token";
 const SERVICE_AUTH_HEADER = "x-service-authorization";
 const FORWARDED_USER_AUTH_HEADER = "x-user-authorization";
