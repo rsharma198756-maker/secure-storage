@@ -1,8 +1,10 @@
 import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
-import nodemailer from "nodemailer";
+import { Resend } from "resend";
 import bcrypt from "bcryptjs";
 import { config } from "./config.js";
+
+const resend = new Resend(config.resendApiKey);
 
 export const hashPassword = (password: string) => bcrypt.hash(password, 12);
 export const verifyPassword = (password: string, hash: string) => bcrypt.compare(password, hash);
@@ -42,31 +44,15 @@ export const signServiceToken = (claims: ServiceTokenClaims) =>
     expiresIn: `${config.serviceJwt.ttlSeconds}s`
   });
 
-const transporter = nodemailer.createTransport({
-  host: config.smtp.host,
-  port: config.smtp.port,
-  secure: config.smtp.secure,
-  requireTLS: config.smtp.requireTls,
-  connectionTimeout: 8000,  // 8s — fail fast instead of hanging forever
-  socketTimeout: 8000,
-  auth: config.smtp.user
-    ? {
-      user: config.smtp.user,
-      pass: config.smtp.pass
-    }
-    : undefined
-});
-
 export const sendOtpEmail = async (email: string, otp: string) => {
-  try {
-    await transporter.sendMail({
-      from: config.smtp.from,
-      to: email,
-      subject: "Your Secure Storage OTP",
-      text: `Your OTP code is: ${otp}. It expires in ${config.otpTtlMinutes} minutes.`
-    });
-  } catch (error: any) {
-    const reason = error?.message ?? "smtp_send_failed";
-    throw new Error(`otp_email_send_failed:${reason}`);
+  const { error } = await resend.emails.send({
+    from: config.emailFrom,
+    to: email,
+    subject: "Your Secure Storage OTP",
+    text: `Your OTP code is: ${otp}. It expires in ${config.otpTtlMinutes} minutes.`
+  });
+
+  if (error) {
+    throw new Error(`otp_email_send_failed:${error.message}`);
   }
 };
