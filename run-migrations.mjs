@@ -1,0 +1,66 @@
+#!/usr/bin/env node
+/**
+ * One-time migration runner for Railway PostgreSQL.
+ * Usage: node run-migrations.mjs <DATABASE_URL>
+ *
+ * Example:
+ *   node run-migrations.mjs "postgresql://postgres:password@host:5432/railway"
+ */
+
+import { readFileSync } from 'fs';
+import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
+
+const databaseUrl = process.argv[2];
+
+if (!databaseUrl) {
+    console.error('❌ Usage: node run-migrations.mjs <DATABASE_URL>');
+    console.error('   Example: node run-migrations.mjs "postgresql://postgres:pass@host:5432/railway"');
+    process.exit(1);
+}
+
+// Dynamically import pg (already installed in node_modules)
+const { default: pg } = await import('pg');
+const { Client } = pg;
+
+const client = new Client({ connectionString: databaseUrl, ssl: { rejectUnauthorized: false } });
+
+const migrations = [
+    join(__dirname, 'db/init/001_init.sql'),
+    join(__dirname, 'db/init/002_passwords_and_roles.sql'),
+];
+
+async function run() {
+    console.log('🔌 Connecting to Railway PostgreSQL...');
+    await client.connect();
+    console.log('✅ Connected!\n');
+
+    for (const migrationFile of migrations) {
+        const fileName = migrationFile.split('/').pop();
+        console.log(`📄 Running: ${fileName}`);
+        try {
+            const sql = readFileSync(migrationFile, 'utf8');
+            await client.query(sql);
+            console.log(`✅ Done: ${fileName}\n`);
+        } catch (err) {
+            console.error(`❌ Failed: ${fileName}`);
+            console.error(err.message);
+            await client.end();
+            process.exit(1);
+        }
+    }
+
+    console.log('🎉 All migrations ran successfully!');
+    console.log('👤 Admin user: admin@securevault.local / Admin@123');
+    await client.end();
+}
+
+run().catch(async (err) => {
+    console.error('❌ Error:', err.message);
+    await client.end().catch(() => { });
+    process.exit(1);
+});

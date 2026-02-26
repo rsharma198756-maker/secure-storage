@@ -73,15 +73,15 @@ export const fetchLatestOtp = async (email: string) => {
   );
 };
 
-export const requestOtp = async (email: string) => {
-  const res = await fetch(`${API_BASE}/auth/request-otp`, {
+export const requestLoginOtp = async (email: string, password: string) => {
+  const res = await fetch(`${API_BASE}/auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email })
+    body: JSON.stringify({ email, password })
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(`request-otp failed: ${res.status} ${JSON.stringify(body)}`);
+    throw new Error(`auth-login failed: ${res.status} ${JSON.stringify(body)}`);
   }
   const body = await res.json().catch(() => ({}));
   if (body?.otp) {
@@ -110,8 +110,8 @@ export const verifyOtp = async (email: string, otp: string): Promise<Session> =>
   return res.json();
 };
 
-export const loginWithOtp = async (email: string) => {
-  const maybeOtp = await requestOtp(email);
+export const loginWithPasswordOtp = async (email: string, password: string) => {
+  const maybeOtp = await requestLoginOtp(email, password);
   const otp = maybeOtp ?? (await fetchLatestOtp(email));
   return verifyOtp(email, otp);
 };

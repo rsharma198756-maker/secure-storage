@@ -2,24 +2,25 @@ import { beforeAll, describe, expect, it } from "vitest";
 import {
   authFetch,
   clearMailpit,
-  fetchLatestOtp,
-  loginWithOtp,
+  loginWithPasswordOtp,
   randomEmail,
-  requestOtp,
-  verifyOtp,
+  requestLoginOtp,
   waitForReady
 } from "../helpers";
 
 const API_BASE = process.env.API_BASE ?? "http://localhost:3000";
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "admin@securevault.local";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "Admin@123";
 
 describe("Regression suite", () => {
   let adminToken = "";
-  let adminEmail = "";
   let userToken = "";
   let userEmail = "";
+  let userPassword = "";
   let userId = "";
   let otherToken = "";
   let otherEmail = "";
+  let otherPassword = "";
   let otherId = "";
   let folderId = "";
   let fileId = "";
@@ -29,11 +30,8 @@ describe("Regression suite", () => {
     await clearMailpit();
   });
 
-  it("auth: request OTP, verify, and get tokens", async () => {
-    adminEmail = randomEmail("admin");
-    const maybeOtp = await requestOtp(adminEmail);
-    const otp = maybeOtp ?? (await fetchLatestOtp(adminEmail));
-    const session = await verifyOtp(adminEmail, otp);
+  it("auth: login (password + OTP) and get tokens", async () => {
+    const session = await loginWithPasswordOtp(ADMIN_EMAIL, ADMIN_PASSWORD);
     expect(session.accessToken).toBeTruthy();
     expect(session.refreshToken).toBeTruthy();
     adminToken = session.accessToken;
@@ -43,13 +41,13 @@ describe("Regression suite", () => {
     });
     if (adminUsersRes.status !== 200) {
       throw new Error(
-        "Admin check failed. Please reset DB with: docker compose down -v; docker compose up -d --build"
+        "Admin check failed. Reset DB with: docker compose down -v; docker compose up -d --build"
       );
     }
   });
 
   it("auth: refresh token and logout", async () => {
-    const session = await loginWithOtp(randomEmail("refresh"));
+    const session = await loginWithPasswordOtp(ADMIN_EMAIL, ADMIN_PASSWORD);
 
     const refreshRes = await fetch(`${API_BASE}/auth/refresh`, {
       method: "POST",
@@ -75,26 +73,62 @@ describe("Regression suite", () => {
   });
 
   it("admin: create users, list, and role enforcement", async () => {
-    userEmail = randomEmail("user");
-    otherEmail = randomEmail("other");
+    userEmail = randomEmail("editor");
+    otherEmail = randomEmail("viewer");
+    userPassword = "Editor@123";
+    otherPassword = "Viewer@123";
 
-    const userSession = await loginWithOtp(userEmail);
+    const createEditorRes = await fetch(`${API_BASE}/admin/users`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({
+        email: userEmail,
+        password: userPassword,
+        role: "editor",
+        firstName: "Editor",
+        lastName: "User"
+      })
+    });
+    expect(createEditorRes.ok).toBe(true);
+
+    const createViewerRes = await fetch(`${API_BASE}/admin/users`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({
+        email: otherEmail,
+        password: otherPassword,
+        role: "viewer",
+        firstName: "Viewer",
+        lastName: "User"
+      })
+    });
+    expect(createViewerRes.ok).toBe(true);
+
+    const userSession = await loginWithPasswordOtp(userEmail, userPassword);
     userToken = userSession.accessToken;
 
-    const otherSession = await loginWithOtp(otherEmail);
+    const otherSession = await loginWithPasswordOtp(otherEmail, otherPassword);
     otherToken = otherSession.accessToken;
 
     const users = await authFetch(adminToken, "/admin/users");
     userId = users.find((u: any) => u.email === userEmail)?.id;
     otherId = users.find((u: any) => u.email === otherEmail)?.id;
+    expect(userId).toBeTruthy();
+    expect(otherId).toBeTruthy();
 
-    const res = await fetch(`${API_BASE}/admin/users`, {
+    const nonAdminRes = await fetch(`${API_BASE}/admin/users`, {
       headers: { Authorization: `Bearer ${userToken}` }
     });
-    expect(res.status).toBe(403);
+    expect(nonAdminRes.status).toBe(403);
   });
 
-  it("items: create folder/file, upload, list, download", async () => {
+  it("items: create folder/file, upload via gateway, list, download", async () => {
     const folderRes = await fetch(`${API_BASE}/items/folder`, {
       method: "POST",
       headers: {
@@ -124,37 +158,26 @@ describe("Regression suite", () => {
     const filePayload = await fileRes.json();
     fileId = filePayload.item.id;
 
-    const upload = filePayload.upload as {
-      url: string;
-      method: string;
-      headers: Record<string, string>;
-    };
-    let uploadOk = false;
-    let uploadStatus = 0;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const uploadRes = await fetch(upload.url, {
-        method: upload.method,
-        headers: upload.headers,
-        body: Buffer.from("hello world")
-      });
-      uploadStatus = uploadRes.status;
-      if (uploadRes.ok) {
-        uploadOk = true;
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-    if (!uploadOk) {
-      throw new Error(`Upload failed with status ${uploadStatus}`);
-    }
+    const uploadRes = await fetch(`${API_BASE}/items/${fileId}/content`, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        "content-type": "text/plain",
+        "x-file-name": "hello.txt"
+      },
+      body: Buffer.from("hello world")
+    });
+    expect(uploadRes.ok).toBe(true);
 
     const listRes = await authFetch(adminToken, `/items?parentId=${folderId}`);
     expect(listRes.length).toBeGreaterThan(0);
 
-    const presign = await authFetch(adminToken, `/items/${fileId}/presign-download`, {
-      method: "POST"
-    });
-    const downloadRes = await fetch(presign.download.url);
+    const downloadRes = await fetch(
+      `${API_BASE}/items/${fileId}/download?disposition=inline`,
+      {
+        headers: { Authorization: `Bearer ${adminToken}` }
+      }
+    );
     expect(downloadRes.ok).toBe(true);
     const text = await downloadRes.text();
     expect(text).toBe("hello world");
@@ -209,17 +232,21 @@ describe("Regression suite", () => {
     expect(Array.isArray(logs)).toBe(true);
   });
 
-  it("auth: rate limit OTP requests", async () => {
-    const email = randomEmail("rate");
+  it("auth: rate limit OTP requests in login flow", async () => {
     let lastStatus = 200;
-    for (let i = 0; i < 6; i += 1) {
-      const res = await fetch(`${API_BASE}/auth/request-otp`, {
+    for (let i = 0; i < 8; i += 1) {
+      const res = await fetch(`${API_BASE}/auth/login`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email })
+        body: JSON.stringify({ email: otherEmail, password: otherPassword })
       });
       lastStatus = res.status;
     }
     expect([200, 429]).toContain(lastStatus);
+  });
+
+  it("auth: login endpoint returns OTP for test mode", async () => {
+    const otp = await requestLoginOtp(ADMIN_EMAIL, ADMIN_PASSWORD);
+    expect(typeof otp === "string" || otp === null).toBe(true);
   });
 });

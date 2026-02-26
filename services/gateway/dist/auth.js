@@ -17,6 +17,11 @@ export const signAccessToken = (userId, email) => {
     return { token, expiresInMinutes: config.jwtAccessTtlMinutes };
 };
 export const verifyAccessToken = (token) => jwt.verify(token, config.jwtSecret);
+export const signServiceToken = (claims) => jwt.sign(claims, config.serviceJwt.secret, {
+    issuer: config.serviceJwt.issuer,
+    audience: config.serviceJwt.audience,
+    expiresIn: `${config.serviceJwt.ttlSeconds}s`
+});
 const transporter = nodemailer.createTransport({
     host: config.smtp.host,
     port: config.smtp.port,

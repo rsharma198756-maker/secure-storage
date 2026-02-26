@@ -29,6 +29,19 @@ export const signAccessToken = (userId: string, email: string) => {
 export const verifyAccessToken = (token: string) =>
   jwt.verify(token, config.jwtSecret) as { sub: string; email: string };
 
+type ServiceTokenClaims = {
+  kind: "system" | "user";
+  scope: string;
+  userId?: string;
+};
+
+export const signServiceToken = (claims: ServiceTokenClaims) =>
+  jwt.sign(claims, config.serviceJwt.secret, {
+    issuer: config.serviceJwt.issuer,
+    audience: config.serviceJwt.audience,
+    expiresIn: `${config.serviceJwt.ttlSeconds}s`
+  });
+
 const transporter = nodemailer.createTransport({
   host: config.smtp.host,
   port: config.smtp.port,

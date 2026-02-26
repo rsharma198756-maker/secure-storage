@@ -253,19 +253,28 @@ export const createFile = async (
   }
 
   const payload = await res.json();
-  const upload = payload.upload as { url: string; method: string; headers: Record<string, string> };
+  const item = payload.item as Item;
 
-  const uploadRes = await fetch(upload.url, {
-    method: upload.method,
-    headers: upload.headers,
+  const uploadRes = await fetch(`${API_BASE}/items/${item.id}/content`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "content-type": resolveUploadContentType(file),
+      "x-file-name": file.name
+    },
     body: file
   });
 
   if (!uploadRes.ok) {
+    const body = await uploadRes.json().catch(() => ({}));
+    if (body.error === "duplicate_name") {
+      throw new Error("A file with this name already exists.");
+    }
     throw new Error("File upload failed");
   }
 
-  return payload.item as Item;
+  const uploaded = await uploadRes.json();
+  return uploaded.item as Item;
 };
 
 export const updateItemName = async (
@@ -299,17 +308,14 @@ export const replaceFile = async (
   file: File,
   nextName?: string
 ) => {
-  const res = await fetch(`${API_BASE}/items/${itemId}/presign-upload`, {
-    method: "POST",
+  const res = await fetch(`${API_BASE}/items/${itemId}/content`, {
+    method: "PUT",
     headers: {
-      "content-type": "application/json",
-      Authorization: `Bearer ${token}`
+      Authorization: `Bearer ${token}`,
+      "content-type": resolveUploadContentType(file),
+      ...(nextName ? { "x-file-name": nextName } : {})
     },
-    body: JSON.stringify({
-      name: nextName,
-      contentType: resolveUploadContentType(file),
-      sizeBytes: file.size
-    })
+    body: file
   });
 
   if (!res.ok) {
@@ -317,26 +323,10 @@ export const replaceFile = async (
     if (body.error === "duplicate_name") {
       throw new Error("A file with this name already exists.");
     }
-    throw new Error("Failed to prepare replacement upload");
-  }
-
-  const payload = await res.json();
-  const upload = payload.upload as {
-    url: string;
-    method: string;
-    headers: Record<string, string>;
-  };
-
-  const uploadRes = await fetch(upload.url, {
-    method: upload.method,
-    headers: upload.headers,
-    body: file
-  });
-
-  if (!uploadRes.ok) {
     throw new Error("File replacement upload failed");
   }
 
+  const payload = await res.json();
   return payload.item as Item;
 };
 
@@ -350,21 +340,6 @@ export const deleteItem = async (token: string, itemId: string) => {
   if (!res.ok) {
     throw new Error("Failed to delete item");
   }
-};
-
-export const presignDownload = async (token: string, itemId: string) => {
-  const res = await fetch(`${API_BASE}/items/${itemId}/presign-download`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`
-    }
-  });
-
-  if (!res.ok) {
-    throw new Error("Failed to get download link");
-  }
-
-  return res.json() as Promise<{ download: { url: string } }>;
 };
 
 const getFilenameFromDisposition = (disposition: string | null, fallback: string) => {

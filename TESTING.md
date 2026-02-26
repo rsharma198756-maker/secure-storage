@@ -27,7 +27,7 @@ docker compose up -d --build
 ```
 
 ## Clean DB (recommended for full regression)
-This ensures the first user created becomes admin.
+This ensures migrations run cleanly and the seeded admin user is present.
 ```bash
 docker compose down -v
 docker compose up -d --build
@@ -46,6 +46,7 @@ MAILPIT_URL=http://localhost:8025
 ```
 
 ## Notes
-- Tests will read OTP from the `/auth/request-otp` response when `RETURN_OTP_IN_RESPONSE=true` (set in docker-compose).
-- If you disable that flag, tests fall back to Mailpit (`http://localhost:8025`).
-- If admin check fails, reset the DB and re-run.
+- Login flow is password + OTP (`/auth/login` then `/auth/verify-otp`).
+- Seeded admin credentials come from migration defaults:
+  `admin@securevault.local / Admin@123` (change in real environments).
+- Tests can still read OTP from Mailpit (`http://localhost:8025`) when needed.

@@ -2,6 +2,12 @@ export const config = {
   port: Number(process.env.PORT ?? 3000),
   storageUrl: process.env.STORAGE_URL ?? "http://localhost:4000",
   internalToken: process.env.INTERNAL_TOKEN ?? "dev-internal-token",
+  serviceJwt: {
+    secret: process.env.SERVICE_JWT_SECRET ?? "dev-service-jwt-secret",
+    issuer: process.env.SERVICE_JWT_ISSUER ?? "secure-gateway",
+    audience: process.env.SERVICE_JWT_AUDIENCE ?? "secure-storage",
+    ttlSeconds: Number(process.env.SERVICE_JWT_TTL_SECONDS ?? 30)
+  },
   databaseUrl:
     process.env.DATABASE_URL ??
     "postgres://postgres:postgres@localhost:5432/secure_storage",
@@ -36,3 +42,12 @@ export const config = {
       "no-reply@secure-storage.local"
   }
 };
+
+if (process.env.NODE_ENV === "production") {
+  if (config.serviceJwt.secret === "dev-service-jwt-secret") {
+    throw new Error("SERVICE_JWT_SECRET must be set to a strong secret in production");
+  }
+  if (config.internalToken === "dev-internal-token") {
+    throw new Error("INTERNAL_TOKEN must be set to a strong secret in production");
+  }
+}

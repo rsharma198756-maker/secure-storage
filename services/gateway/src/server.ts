@@ -4,7 +4,6 @@ import cors from "@fastify/cors";
 import { Pool } from "pg";
 import crypto from "node:crypto";
 import archiver from "archiver";
-import { Readable } from "node:stream";
 import { config } from "./config.js";
 import {
   generateOtp,
@@ -14,6 +13,7 @@ import {
   normalizeEmail,
   sendOtpEmail,
   signAccessToken,
+  signServiceToken,
   verifyAccessToken,
   verifyPassword
 } from "./auth.js";
@@ -31,6 +31,8 @@ const app = Fastify({ logger: true });
 const pool = new Pool({ connectionString: config.databaseUrl });
 
 const INTERNAL_AUTH_HEADER = "x-internal-token";
+const SERVICE_AUTH_HEADER = "x-service-authorization";
+const FORWARDED_USER_AUTH_HEADER = "x-user-authorization";
 
 type ItemPermission = "read" | "write" | "delete" | "manage";
 const PERMISSION_MAP: Record<ItemPermission, ItemPermission[]> = {
@@ -62,10 +64,60 @@ const getUserIdFromAuth = (request: { headers: Record<string, unknown> }) => {
   }
 };
 
+const getAuthorizationHeader = (request: {
+  headers: Record<string, unknown>;
+}) => {
+  const auth = request.headers["authorization"];
+  if (!auth || Array.isArray(auth)) return undefined;
+  return auth as string;
+};
+
+const makeStorageHeaders = (params: {
+  scope: string;
+  userId?: string;
+  authorization?: string;
+}) => {
+  const headers: Record<string, string> = {
+    [INTERNAL_AUTH_HEADER]: config.internalToken,
+    [SERVICE_AUTH_HEADER]: `Bearer ${signServiceToken({
+      kind: params.userId ? "user" : "system",
+      scope: params.scope,
+      userId: params.userId
+    })}`
+  };
+
+  if (params.authorization) {
+    headers[FORWARDED_USER_AUTH_HEADER] = params.authorization;
+  }
+
+  return headers;
+};
+
+const storageFetch = (
+  path: string,
+  init: RequestInit,
+  context: {
+    scope: string;
+    userId?: string;
+    authorization?: string;
+  }
+) =>
+  fetch(`${config.storageUrl}${path}`, {
+    ...init,
+    headers: {
+      ...(init.headers ?? {}),
+      ...makeStorageHeaders(context)
+    }
+  });
+
 app.register(cors, {
   origin: true,
-  allowedHeaders: ["Authorization", "Content-Type"],
-  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"]
+  allowedHeaders: ["Authorization", "Content-Type", "X-File-Name"],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+});
+
+app.addContentTypeParser("*", { parseAs: "buffer" }, (_request, body, done) => {
+  done(null, body);
 });
 
 app.addHook("preHandler", async (request, reply) => {
@@ -218,9 +270,11 @@ app.get("/ready", async (_request, reply) => {
   }
 
   try {
-    const res = await fetch(`${config.storageUrl}/health`, {
-      headers: { [INTERNAL_AUTH_HEADER]: config.internalToken }
-    });
+    const res = await storageFetch(
+      "/health",
+      { method: "GET" },
+      { scope: "health.check" }
+    );
     checks.storage = res.ok;
   } catch {
     checks.storage = false;
@@ -232,9 +286,11 @@ app.get("/ready", async (_request, reply) => {
 
 app.get("/internal/storage-health", async (_request, reply) => {
   try {
-    const res = await fetch(`${config.storageUrl}/health`, {
-      headers: { [INTERNAL_AUTH_HEADER]: config.internalToken }
-    });
+    const res = await storageFetch(
+      "/health",
+      { method: "GET" },
+      { scope: "health.proxy" }
+    );
     const body = await res.json().catch(() => ({}));
     reply.code(res.status).send(body);
   } catch (_error) {
@@ -846,7 +902,7 @@ app.post("/admin/users/:id/reset-roles", async (request, reply) => {
 
   await pool.query("DELETE FROM user_roles WHERE user_id = $1", [id]);
   const roleRes = await pool.query(
-    "SELECT id FROM roles WHERE name = 'user' LIMIT 1"
+    "SELECT id FROM roles WHERE name = 'viewer' LIMIT 1"
   );
   if (roleRes.rowCount !== null && roleRes.rowCount > 0) {
     await pool.query(
@@ -1080,63 +1136,75 @@ const createItem = async (params: {
   }
 };
 
-const presignUpload = async (key: string, contentType?: string) => {
-  const res = await fetch(`${config.storageUrl}/internal/presign/upload`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      [INTERNAL_AUTH_HEADER]: config.internalToken
+type StorageUserContext = {
+  userId: string;
+  authorization: string;
+};
+
+const getStorageUserContext = (
+  request: { userId?: string; headers: Record<string, unknown> },
+  reply: any
+) => {
+  if (!request.userId) {
+    reply.code(401).send({ error: "unauthorized" });
+    return null;
+  }
+  const authorization = getAuthorizationHeader(request);
+  if (!authorization) {
+    reply.code(401).send({ error: "authorization_required" });
+    return null;
+  }
+  return { userId: request.userId, authorization };
+};
+
+const presignUpload = async (
+  context: StorageUserContext,
+  itemId: string,
+  contentType?: string
+) => {
+  const res = await storageFetch(
+    "/internal/presign/upload",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ itemId, contentType })
     },
-    body: JSON.stringify({ key, contentType })
-  });
+    {
+      scope: "items.upload",
+      userId: context.userId,
+      authorization: context.authorization
+    }
+  );
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? "storage_presign_failed");
   }
 
-  return res.json();
+  return res.json() as Promise<{
+    url: string;
+    method: string;
+    headers: Record<string, string>;
+  }>;
 };
 
-const presignDownload = async (key: string) => {
-  const res = await fetch(`${config.storageUrl}/internal/presign/download`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      [INTERNAL_AUTH_HEADER]: config.internalToken
+const fetchStorageObject = async (
+  context: StorageUserContext,
+  itemId: string
+) => {
+  const res = await storageFetch(
+    "/internal/object/download",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ itemId })
     },
-    body: JSON.stringify({ key })
-  });
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error ?? "storage_presign_failed");
-  }
-
-  return res.json();
-};
-
-const presignInternalDownload = async (key: string) => {
-  const res = await fetch(`${config.storageUrl}/internal/presign/download-internal`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      [INTERNAL_AUTH_HEADER]: config.internalToken
-    },
-    body: JSON.stringify({ key })
-  });
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error ?? "storage_presign_failed");
-  }
-
-  return res.json() as Promise<{ url: string; method: string }>;
-};
-
-const fetchStorageObject = async (key: string) => {
-  const presign = await presignInternalDownload(key);
-  const res = await fetch(presign.url);
+    {
+      scope: "items.download",
+      userId: context.userId,
+      authorization: context.authorization
+    }
+  );
   if (!res.ok) {
     throw new Error("storage_object_fetch_failed");
   }
@@ -1148,25 +1216,43 @@ const fetchStorageObject = async (key: string) => {
 
 app.get("/items", async (request, reply) => {
   if (!(await requirePermission(request, reply, "items:read"))) return;
+  const userId = request.userId!;
   const parentId = (request.query as { parentId?: string }).parentId ?? null;
-
-  // Simple query: return all active items at this level.
-  // In a real app we might still want privacy, but user requested global visibility.
   const res = await pool.query(
     `
-    SELECT * FROM items
-    WHERE parent_id IS NOT DISTINCT FROM $1
+    SELECT DISTINCT i.*
+    FROM items i
+    LEFT JOIN item_closure ic ON ic.descendant_id = i.id
+    LEFT JOIN item_grants ig ON ig.item_id = ic.ancestor_id
+      AND ig.permission = ANY($3)
+    LEFT JOIN user_roles ur
+      ON ur.user_id = $2
+      AND ig.subject_type = 'role'
+      AND ur.role_id = ig.subject_id
+    WHERE i.parent_id IS NOT DISTINCT FROM $1
+      AND (
+        i.owner_user_id = $2 OR
+        (ig.subject_type = 'user' AND ig.subject_id = $2) OR
+        (ig.subject_type = 'role' AND ur.user_id IS NOT NULL)
+      )
       AND status = 'active'
-    ORDER BY type DESC, name ASC
+    ORDER BY i.type DESC, i.name ASC
     `,
-    [parentId]
+    [parentId, userId, allowedPermissions("read")]
   );
   reply.send(res.rows);
 });
 
 app.get("/items/:id", async (request, reply) => {
   if (!(await requirePermission(request, reply, "items:read"))) return;
+  const userId = request.userId!;
   const { id } = request.params as { id: string };
+
+  const canRead = await hasItemPermission(userId, id, "read");
+  if (!canRead) {
+    reply.code(403).send({ error: "forbidden" });
+    return;
+  }
 
   const res = await pool.query(
     "SELECT * FROM items WHERE id = $1 AND status = 'active'",
@@ -1259,6 +1345,12 @@ app.post("/items/folder", async (request, reply) => {
       reply.code(400).send({ error: "parent_not_found" });
       return;
     }
+
+    const canWriteParent = await hasItemPermission(userId, body.parentId, "write");
+    if (!canWriteParent) {
+      reply.code(403).send({ error: "forbidden" });
+      return;
+    }
   }
 
   try {
@@ -1320,6 +1412,12 @@ app.post("/items/file", async (request, reply) => {
       reply.code(400).send({ error: "parent_not_found" });
       return;
     }
+
+    const canWriteParent = await hasItemPermission(userId, body.parentId, "write");
+    if (!canWriteParent) {
+      reply.code(403).send({ error: "forbidden" });
+      return;
+    }
   }
 
   try {
@@ -1337,7 +1435,6 @@ app.post("/items/file", async (request, reply) => {
       sizeBytes: body.sizeBytes ?? null
     });
 
-    const presign = await presignUpload(storageKey, body.contentType ?? undefined);
     await writeAuditLog({
       actorUserId: userId,
       action: "item.create",
@@ -1351,21 +1448,19 @@ app.post("/items/file", async (request, reply) => {
         contentType: item.content_type
       }
     });
-    reply.code(201).send({ item, upload: presign });
+    reply.code(201).send({ item, uploadPath: `/items/${item.id}/content` });
   } catch (error) {
     reply.code(400).send({ error: (error as Error).message });
   }
 });
 
-app.post("/items/:id/presign-upload", async (request, reply) => {
+app.put("/items/:id/content", async (request, reply) => {
   if (!(await requirePermission(request, reply, "items:write"))) return;
   const userId = request.userId!;
+  const storageContext = getStorageUserContext(request, reply);
+  if (!storageContext) return;
   const { id } = request.params as { id: string };
-  const body = request.body as {
-    contentType?: string | null;
-    sizeBytes?: number | null;
-    name?: string;
-  };
+  const body = request.body;
 
   const canWrite = await hasItemPermission(userId, id, "write");
   if (!canWrite) {
@@ -1373,28 +1468,39 @@ app.post("/items/:id/presign-upload", async (request, reply) => {
     return;
   }
 
-  if (typeof body.sizeBytes === "number") {
-    if (body.sizeBytes < 0) {
-      reply.code(400).send({ error: "invalid_size" });
-      return;
-    }
-    if (body.sizeBytes > config.maxUploadBytes) {
-      reply.code(400).send({ error: "file_too_large" });
-      return;
-    }
+  const payload =
+    Buffer.isBuffer(body)
+      ? body
+      : typeof body === "string"
+      ? Buffer.from(body)
+      : body instanceof Uint8Array
+      ? Buffer.from(body)
+      : null;
+
+  if (!payload) {
+    reply.code(400).send({ error: "binary_body_required" });
+    return;
   }
 
-  if (body.name) {
-    const nameError = validateName(body.name);
-    if (nameError) {
-      reply.code(400).send({ error: nameError });
-      return;
-    }
+  if (payload.byteLength > config.maxUploadBytes) {
+    reply.code(400).send({ error: "file_too_large" });
+    return;
   }
+
+  const fileNameHeader = request.headers["x-file-name"];
+  const nextNameHeader =
+    fileNameHeader && !Array.isArray(fileNameHeader)
+      ? fileNameHeader
+      : undefined;
+  const contentTypeHeader = request.headers["content-type"];
+  const nextContentType =
+    contentTypeHeader && !Array.isArray(contentTypeHeader)
+      ? contentTypeHeader.split(";")[0]?.trim() || null
+      : null;
 
   const itemRes = await pool.query(
     `
-    SELECT id, name, type, storage_key
+    SELECT id, name, type
     FROM items
     WHERE id = $1 AND status = 'active'
     `,
@@ -1412,14 +1518,25 @@ app.post("/items/:id/presign-upload", async (request, reply) => {
     return;
   }
 
-  if (!item.storage_key) {
-    reply.code(400).send({ error: "missing_storage_key" });
+  const nextName = nextNameHeader ? normalizeName(nextNameHeader) : item.name;
+  const nameError = validateName(nextName);
+  if (nameError) {
+    reply.code(400).send({ error: nameError });
     return;
   }
 
-  const nextName = body.name ? normalizeName(body.name) : item.name;
-
   try {
+    const presign = await presignUpload(storageContext, id, nextContentType ?? undefined);
+    const uploadRes = await fetch(presign.url, {
+      method: presign.method,
+      headers: presign.headers,
+      body: new Uint8Array(payload)
+    });
+    if (!uploadRes.ok) {
+      reply.code(502).send({ error: "storage_upload_failed" });
+      return;
+    }
+
     const updated = await pool.query(
       `
       UPDATE items
@@ -1431,10 +1548,8 @@ app.post("/items/:id/presign-upload", async (request, reply) => {
       WHERE id = $4
       RETURNING *
       `,
-      [nextName, body.contentType ?? null, body.sizeBytes ?? null, id]
+      [nextName, nextContentType, payload.byteLength, id]
     );
-
-    const presign = await presignUpload(item.storage_key, body.contentType ?? undefined);
 
     await writeAuditLog({
       actorUserId: userId,
@@ -1443,12 +1558,12 @@ app.post("/items/:id/presign-upload", async (request, reply) => {
       targetId: id,
       metadata: {
         name: nextName,
-        contentType: body.contentType ?? null,
-        sizeBytes: body.sizeBytes ?? null
+        contentType: nextContentType ?? null,
+        sizeBytes: payload.byteLength
       }
     });
 
-    reply.send({ item: updated.rows[0], upload: presign });
+    reply.send({ item: updated.rows[0] });
   } catch (error: any) {
     if (error?.code === "23505") {
       reply.code(409).send({ error: "duplicate_name" });
@@ -1459,42 +1574,14 @@ app.post("/items/:id/presign-upload", async (request, reply) => {
 });
 
 app.post("/items/:id/presign-download", async (request, reply) => {
-  if (!(await requirePermission(request, reply, "items:read"))) return;
-  const userId = request.userId!;
-  const { id } = request.params as { id: string };
-
-  const canRead = await hasItemPermission(userId, id, "read");
-  if (!canRead) {
-    reply.code(403).send({ error: "forbidden" });
-    return;
-  }
-
-  const res = await pool.query(
-    "SELECT storage_key, type FROM items WHERE id = $1 AND status = 'active'",
-    [id]
-  );
-  if (res.rowCount === 0) {
-    reply.code(404).send({ error: "not_found" });
-    return;
-  }
-  if (res.rows[0].type !== "file") {
-    reply.code(400).send({ error: "not_a_file" });
-    return;
-  }
-
-  const presign = await presignDownload(res.rows[0].storage_key);
-  await writeAuditLog({
-    actorUserId: userId,
-    action: "item.download",
-    targetType: "item",
-    targetId: id
-  });
-  reply.send({ download: presign });
+  reply.code(410).send({ error: "direct_download_links_disabled" });
 });
 
 app.get("/items/:id/download", async (request, reply) => {
   if (!(await requirePermission(request, reply, "items:read"))) return;
   const userId = request.userId!;
+  const storageContext = getStorageUserContext(request, reply);
+  if (!storageContext) return;
   const { id } = request.params as { id: string };
   const query = request.query as { disposition?: "attachment" | "inline" };
   const disposition =
@@ -1522,14 +1609,9 @@ app.get("/items/:id/download", async (request, reply) => {
   const item = itemRes.rows[0];
 
   if (item.type === "file") {
-    if (!item.storage_key) {
-      reply.code(400).send({ error: "missing_storage_key" });
-      return;
-    }
-
     let upstream: Response;
     try {
-      upstream = await fetchStorageObject(item.storage_key);
+      upstream = await fetchStorageObject(storageContext, item.id);
     } catch (_error) {
       reply.code(502).send({ error: "download_unavailable" });
       return;
@@ -1576,7 +1658,7 @@ app.get("/items/:id/download", async (request, reply) => {
       JOIN item_tree ON child.parent_id = item_tree.id
       WHERE child.status = 'active'
     )
-    SELECT rel_path, storage_key
+    SELECT id, rel_path
     FROM item_tree
     WHERE type = 'file'
     ORDER BY rel_path
@@ -1600,11 +1682,10 @@ app.get("/items/:id/download", async (request, reply) => {
     )}`
   );
 
-    void (async () => {
-    for (const row of treeRes.rows as Array<{ rel_path: string; storage_key: string | null }>) {
-      if (!row.storage_key) continue;
+  void (async () => {
+    for (const row of treeRes.rows as Array<{ id: string; rel_path: string }>) {
       try {
-        const upstream = await fetchStorageObject(row.storage_key);
+        const upstream = await fetchStorageObject(storageContext, row.id);
         const payload = Buffer.from(await upstream.arrayBuffer());
         archive.append(payload, {
           name: sanitizeArchivePath(row.rel_path)
@@ -1740,6 +1821,12 @@ app.delete("/items/:id", async (request, reply) => {
   if (!(await requirePermission(request, reply, "items:delete"))) return;
   const userId = request.userId!;
   const { id } = request.params as { id: string };
+
+  const canDelete = await hasItemPermission(userId, id, "delete");
+  if (!canDelete) {
+    reply.code(403).send({ error: "forbidden" });
+    return;
+  }
 
   const res = await pool.query(
     "SELECT 1 FROM items WHERE id = $1 AND status = 'active'",
