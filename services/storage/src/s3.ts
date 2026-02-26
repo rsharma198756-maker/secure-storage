@@ -11,9 +11,9 @@ import { config } from "./config.js";
 const credentials =
   config.s3AccessKey && config.s3SecretKey
     ? {
-        accessKeyId: config.s3AccessKey,
-        secretAccessKey: config.s3SecretKey
-      }
+      accessKeyId: config.s3AccessKey,
+      secretAccessKey: config.s3SecretKey
+    }
     : undefined;
 
 const s3Internal = new S3Client({
@@ -91,4 +91,20 @@ export const getObject = async (key: string) => {
     contentType: result.ContentType ?? "application/octet-stream",
     contentLength: result.ContentLength
   };
+};
+
+export const putObject = async (
+  key: string,
+  body: Buffer | Uint8Array,
+  contentType?: string
+) => {
+  await ensureBucket();
+  await s3Internal.send(
+    new PutObjectCommand({
+      Bucket: config.s3Bucket,
+      Key: key,
+      Body: body,
+      ContentType: contentType || "application/octet-stream"
+    })
+  );
 };

@@ -1188,6 +1188,36 @@ const presignUpload = async (
   }>;
 };
 
+const uploadStorageObject = async (
+  context: StorageUserContext,
+  itemId: string,
+  body: Buffer | Uint8Array,
+  contentType?: string
+) => {
+  const res = await storageFetch(
+    "/internal/object/upload",
+    {
+      method: "POST",
+      headers: {
+        "x-item-id": itemId,
+        "x-file-content-type": contentType || "application/octet-stream",
+        "content-type": contentType || "application/octet-stream"
+      },
+      body
+    },
+    {
+      scope: "items.upload",
+      userId: context.userId,
+      authorization: context.authorization
+    }
+  );
+
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error ?? "storage_upload_failed");
+  }
+};
+
 const fetchStorageObject = async (
   context: StorageUserContext,
   itemId: string
@@ -1472,10 +1502,10 @@ app.put("/items/:id/content", async (request, reply) => {
     Buffer.isBuffer(body)
       ? body
       : typeof body === "string"
-      ? Buffer.from(body)
-      : body instanceof Uint8Array
-      ? Buffer.from(body)
-      : null;
+        ? Buffer.from(body)
+        : body instanceof Uint8Array
+          ? Buffer.from(body)
+          : null;
 
   if (!payload) {
     reply.code(400).send({ error: "binary_body_required" });
@@ -1526,16 +1556,9 @@ app.put("/items/:id/content", async (request, reply) => {
   }
 
   try {
-    const presign = await presignUpload(storageContext, id, nextContentType ?? undefined);
-    const uploadRes = await fetch(presign.url, {
-      method: presign.method,
-      headers: presign.headers,
-      body: new Uint8Array(payload)
-    });
-    if (!uploadRes.ok) {
-      reply.code(502).send({ error: "storage_upload_failed" });
-      return;
-    }
+    // Stream directly to storage (which writes to MinIO internally)
+    // This avoids cross-network MinIO presigned URL access
+    await uploadStorageObject(storageContext, id, payload, nextContentType ?? undefined);
 
     const updated = await pool.query(
       `

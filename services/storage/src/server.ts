@@ -4,7 +4,7 @@ import { Readable } from "node:stream";
 import jwt from "jsonwebtoken";
 import { Pool } from "pg";
 import { config } from "./config.js";
-import { getObject, presignDownload, presignInternalDownload, presignUpload } from "./s3.js";
+import { getObject, presignDownload, presignInternalDownload, presignUpload, putObject } from "./s3.js";
 
 const app = Fastify({ logger: true });
 const pool = new Pool({ connectionString: config.databaseUrl });
@@ -308,6 +308,57 @@ app.post("/internal/presign/download-internal", async (request, reply) => {
 
   const result = await presignInternalDownload(resolved.storageKey);
   reply.send(result);
+});
+
+app.post("/internal/object/upload", async (request, reply) => {
+  const userId = await requireForwardedUser(request, reply);
+  if (!userId) return;
+
+  const itemId = request.headers["x-item-id"] as string | undefined;
+  if (!itemId) {
+    reply.code(400).send({ error: "x-item-id_header_required" });
+    return;
+  }
+
+  const canWrite = await hasPermission(userId, "items:write");
+  if (!canWrite) {
+    reply.code(403).send({ error: "forbidden" });
+    return;
+  }
+
+  const canWriteItem = await hasItemPermission(userId, itemId, "write");
+  if (!canWriteItem) {
+    reply.code(403).send({ error: "forbidden" });
+    return;
+  }
+
+  const resolved = await getFileStorageKey(itemId);
+  if ("error" in resolved) {
+    reply.code(400).send({ error: resolved.error });
+    return;
+  }
+
+  const contentType =
+    (request.headers["x-file-content-type"] as string | undefined) ||
+    "application/octet-stream";
+
+  const body = request.body;
+  const buffer =
+    Buffer.isBuffer(body)
+      ? body
+      : body instanceof Uint8Array
+        ? Buffer.from(body)
+        : typeof body === "string"
+          ? Buffer.from(body)
+          : null;
+
+  if (!buffer) {
+    reply.code(400).send({ error: "binary_body_required" });
+    return;
+  }
+
+  await putObject(resolved.storageKey, buffer, contentType);
+  reply.send({ status: "ok" });
 });
 
 const toNodeReadable = (body: any): Readable => {
