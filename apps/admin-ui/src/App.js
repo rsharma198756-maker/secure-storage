@@ -1,0 +1,948 @@
+import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import * as pdfjsLib from "pdfjs-dist";
+import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { addUserRole, createFile, createFolder, createUser, deleteItem, downloadItem, listAuditLogs, listItems, listPermissions, listRolePermissions, listRoles, listUserRoles, listUsers, login, logout, replaceFile, removeUserRole, resetUserPassword, resetUserRoles, updateItemName, updateUserStatus, verifyOtp } from "./api";
+import "./styles.css";
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+/* =============================================
+   SVG Icons (Lucide-style, outline)
+   ============================================= */
+const svgBase = {
+    width: 20,
+    height: 20,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.8,
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+};
+const UsersIcon = ({ size = 20, ...props }) => (_jsxs("svg", { ...svgBase, width: size, height: size, ...props, children: [_jsx("path", { d: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" }), _jsx("circle", { cx: "9", cy: "7", r: "4" }), _jsx("path", { d: "M23 21v-2a4 4 0 0 0-3-3.87" }), _jsx("path", { d: "M16 3.13a4 4 0 0 1 0 7.75" })] }));
+const ShieldIcon = ({ size = 20, ...props }) => (_jsx("svg", { ...svgBase, width: size, height: size, ...props, children: _jsx("path", { d: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" }) }));
+const KeyIcon = ({ size = 20, ...props }) => (_jsx("svg", { ...svgBase, width: size, height: size, ...props, children: _jsx("path", { d: "M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" }) }));
+const FolderIcon = ({ size = 20, ...props }) => (_jsx("svg", { ...svgBase, width: size, height: size, ...props, children: _jsx("path", { d: "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" }) }));
+const FileIcon = ({ size = 20, ...props }) => (_jsxs("svg", { ...svgBase, width: size, height: size, ...props, children: [_jsx("path", { d: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" }), _jsx("polyline", { points: "14 2 14 8 20 8" })] }));
+const UploadIcon = ({ size = 20, ...props }) => (_jsxs("svg", { ...svgBase, width: size, height: size, ...props, children: [_jsx("path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" }), _jsx("polyline", { points: "17 8 12 3 7 8" }), _jsx("line", { x1: "12", y1: "3", x2: "12", y2: "15" })] }));
+const DownloadIcon = ({ size = 16, ...props }) => (_jsxs("svg", { ...svgBase, width: size, height: size, ...props, children: [_jsx("path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" }), _jsx("polyline", { points: "7 10 12 15 17 10" }), _jsx("line", { x1: "12", y1: "15", x2: "12", y2: "3" })] }));
+const TrashIcon = ({ size = 16, ...props }) => (_jsxs("svg", { ...svgBase, width: size, height: size, ...props, children: [_jsx("polyline", { points: "3 6 5 6 21 6" }), _jsx("path", { d: "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" })] }));
+const EditIcon = ({ size = 16, ...props }) => (_jsxs("svg", { ...svgBase, width: size, height: size, ...props, children: [_jsx("path", { d: "M12 20h9" }), _jsx("path", { d: "M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" })] }));
+const PlusIcon = ({ size = 16, ...props }) => (_jsxs("svg", { ...svgBase, width: size, height: size, ...props, children: [_jsx("line", { x1: "12", y1: "5", x2: "12", y2: "19" }), _jsx("line", { x1: "5", y1: "12", x2: "19", y2: "12" })] }));
+const LogoutIcon = ({ size = 20, ...props }) => (_jsxs("svg", { ...svgBase, width: size, height: size, ...props, children: [_jsx("path", { d: "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" }), _jsx("polyline", { points: "16 17 21 12 16 7" }), _jsx("line", { x1: "21", y1: "12", x2: "9", y2: "12" })] }));
+const MailIcon = ({ size = 20, ...props }) => (_jsxs("svg", { ...svgBase, width: size, height: size, ...props, children: [_jsx("path", { d: "M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" }), _jsx("polyline", { points: "22 6 12 13 2 6" })] }));
+const LockIcon = ({ size = 20, ...props }) => (_jsxs("svg", { ...svgBase, width: size, height: size, ...props, children: [_jsx("rect", { x: "3", y: "11", width: "18", height: "11", rx: "2", ry: "2" }), _jsx("path", { d: "M7 11V7a5 5 0 0 1 10 0v4" })] }));
+const HomeIcon = ({ size = 14, ...props }) => (_jsx("svg", { ...svgBase, width: size, height: size, ...props, children: _jsx("path", { d: "M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" }) }));
+const ArrowLeftIcon = ({ size = 16, ...props }) => (_jsxs("svg", { ...svgBase, width: size, height: size, ...props, children: [_jsx("line", { x1: "19", y1: "12", x2: "5", y2: "12" }), _jsx("polyline", { points: "12 19 5 12 12 5" })] }));
+const ChevronIcon = ({ size = 12, ...props }) => (_jsx("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", ...props, children: _jsx("polyline", { points: "9 18 15 12 9 6" }) }));
+const VaultIcon = ({ size = 22, ...props }) => (_jsxs("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", ...props, children: [_jsx("rect", { x: "3", y: "3", width: "18", height: "18", rx: "2" }), _jsx("circle", { cx: "12", cy: "12", r: "4" }), _jsx("line", { x1: "12", y1: "8", x2: "12", y2: "4" }), _jsx("line", { x1: "12", y1: "20", x2: "12", y2: "16" })] }));
+const ActivityIcon = ({ size = 20, ...props }) => (_jsx("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", ...props, children: _jsx("path", { d: "M22 12h-4l-3 9L9 3l-3 9H2" }) }));
+const EyeIcon = ({ size = 20, ...props }) => (_jsxs("svg", { ...svgBase, width: size, height: size, ...props, children: [_jsx("path", { d: "M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" }), _jsx("circle", { cx: "12", cy: "12", r: "3" })] }));
+const EyeOffIcon = ({ size = 20, ...props }) => (_jsxs("svg", { ...svgBase, width: size, height: size, ...props, children: [_jsx("path", { d: "M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" }), _jsx("line", { x1: "1", y1: "1", x2: "23", y2: "23" })] }));
+/* =============================================
+   Types
+   ============================================= */
+const ALL_TABS = ["Users", "Roles", "Permissions", "Files", "Audit Logs"];
+const formatDate = (value) => {
+    const d = new Date(value);
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' · ' +
+        d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+};
+const formatBytes = (bytes) => {
+    if (typeof bytes !== "number" || Number.isNaN(bytes))
+        return "Unknown";
+    if (bytes === 0)
+        return "0 B";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    const idx = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+    const value = bytes / 1024 ** idx;
+    return `${value.toFixed(value >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`;
+};
+const isPdfFile = (item, contentType) => {
+    const mime = (contentType ?? item.content_type ?? "").toLowerCase();
+    return mime.includes("pdf") || item.name.toLowerCase().endsWith(".pdf");
+};
+const getFileExtension = (name) => {
+    const idx = name.lastIndexOf(".");
+    if (idx === -1)
+        return "";
+    return name.slice(idx + 1).toLowerCase();
+};
+const inferContentTypeFromName = (name) => {
+    const ext = getFileExtension(name);
+    const contentTypes = {
+        pdf: "application/pdf",
+        png: "image/png",
+        jpg: "image/jpeg",
+        jpeg: "image/jpeg",
+        gif: "image/gif",
+        webp: "image/webp",
+        svg: "image/svg+xml",
+        txt: "text/plain",
+        md: "text/markdown",
+        csv: "text/csv",
+        json: "application/json",
+        xml: "application/xml",
+        html: "text/html",
+        doc: "application/msword",
+        docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    };
+    return contentTypes[ext];
+};
+const resolveViewerContentType = (item, type) => {
+    const value = (type ?? "").toLowerCase();
+    if (value && value !== "application/octet-stream") {
+        return value;
+    }
+    return inferContentTypeFromName(item.name) ?? value;
+};
+const isTextPreviewable = (item, contentType) => {
+    const mime = (contentType ?? item.content_type ?? "").toLowerCase();
+    const ext = getFileExtension(item.name);
+    if (mime.startsWith("text/"))
+        return true;
+    if (mime.includes("json") || mime.includes("xml"))
+        return true;
+    return ["txt", "md", "csv", "json", "xml", "log", "ini", "yaml", "yml"].includes(ext);
+};
+const isDocxFile = (item, contentType) => {
+    const mime = (contentType ?? item.content_type ?? "").toLowerCase();
+    const ext = getFileExtension(item.name);
+    return (mime.includes("application/vnd.openxmlformats-officedocument.wordprocessingml.document") ||
+        ext === "docx");
+};
+const getInitials = (user) => {
+    if (user.firstName && user.lastName) {
+        return (user.firstName[0] + user.lastName[0]).toUpperCase();
+    }
+    const name = user.email.split("@")[0] ?? "";
+    return name.slice(0, 2).toUpperCase();
+};
+const tabIcons = {
+    Users: UsersIcon,
+    Roles: ShieldIcon,
+    Permissions: KeyIcon,
+    Files: FolderIcon,
+    "Audit Logs": ActivityIcon,
+};
+const tabDescriptions = {
+    Users: "Manage user accounts, assign roles, and control access permissions.",
+    Roles: "View and manage the available roles in the system.",
+    Permissions: "See which permissions are assigned to each role.",
+    Files: "Browse, upload, and manage stored documents and folders.",
+    "Audit Logs": "View a chronological log of all system activity.",
+};
+const getTabsForRole = (roles) => {
+    if (roles.includes("admin"))
+        return [...ALL_TABS];
+    return ["Files"];
+};
+const XSmall = ({ size = 14, ...props }) => (_jsxs("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", ...props, children: [_jsx("line", { x1: "18", y1: "6", x2: "6", y2: "18" }), _jsx("line", { x1: "6", y1: "6", x2: "18", y2: "18" })] }));
+const CheckSmall = ({ size = 14, ...props }) => (_jsx("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2.5, strokeLinecap: "round", strokeLinejoin: "round", ...props, children: _jsx("polyline", { points: "20 6 9 17 4 12" }) }));
+const AlertSmall = ({ size = 14, ...props }) => (_jsxs("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2.5, strokeLinecap: "round", strokeLinejoin: "round", ...props, children: [_jsx("circle", { cx: "12", cy: "12", r: "10" }), _jsx("line", { x1: "12", y1: "8", x2: "12", y2: "12" }), _jsx("line", { x1: "12", y1: "16", x2: "12.01", y2: "16" })] }));
+function ToastContainer({ toasts, onDismiss }) {
+    if (toasts.length === 0)
+        return null;
+    return (_jsx("div", { className: "toast-container", children: toasts.map((t) => (_jsxs("div", { className: `toast toast-${t.type} ${t.leaving ? "leaving" : ""}`, children: [_jsx("div", { className: "toast-icon", children: t.type === "error" ? _jsx(AlertSmall, {}) : _jsx(CheckSmall, {}) }), _jsxs("div", { className: "toast-body", children: [_jsx("div", { className: "toast-title", children: t.title }), _jsx("div", { className: "toast-message", children: t.message })] }), _jsx("button", { className: "toast-close", onClick: () => onDismiss(t.id), children: _jsx(XSmall, {}) }), _jsx("div", { className: "toast-progress" })] }, t.id))) }));
+}
+/* =============================================
+   App Component
+   ============================================= */
+export default function App() {
+    const [email, setEmail] = useState(() => localStorage.getItem("securevault_last_email") ?? "");
+    const [password, setPassword] = useState("");
+    const [otp, setOtp] = useState("");
+    const [loginStep, setLoginStep] = useState(1);
+    const [session, setSession] = useState(null);
+    const [tab, setTab] = useState("Files");
+    const [users, setUsers] = useState([]);
+    const [roles, setRoles] = useState([]);
+    const [permissions, setPermissions] = useState([]);
+    const [rolePermMap, setRolePermMap] = useState([]);
+    const [selectedUser, setSelectedUser] = useState(null);
+    const [userRoles, setUserRoles] = useState([]);
+    const [status, setStatus] = useState(null);
+    const [items, setItems] = useState([]);
+    const [path, setPath] = useState([]);
+    const [isBusy, setIsBusy] = useState(false);
+    const [toasts, setToasts] = useState([]);
+    const toastId = useRef(0);
+    const [showFolderModal, setShowFolderModal] = useState(false);
+    const [folderName, setFolderName] = useState("");
+    const [deleteTarget, setDeleteTarget] = useState(null);
+    const [editTarget, setEditTarget] = useState(null);
+    const [editName, setEditName] = useState("");
+    const [viewerItem, setViewerItem] = useState(null);
+    const [viewerUrl, setViewerUrl] = useState(null);
+    const [viewerContentType, setViewerContentType] = useState("");
+    const [viewerLoading, setViewerLoading] = useState(false);
+    const [viewerError, setViewerError] = useState(null);
+    const [viewerTextPreview, setViewerTextPreview] = useState(null);
+    const [viewerPreviewNote, setViewerPreviewNote] = useState(null);
+    const [viewerPdfPages, setViewerPdfPages] = useState(1);
+    const [viewerPdfPage, setViewerPdfPage] = useState(1);
+    const [pdfDocument, setPdfDocument] = useState(null);
+    const [pdfRenderError, setPdfRenderError] = useState(null);
+    const [pdfRendering, setPdfRendering] = useState(false);
+    const [pdfScalePercent, setPdfScalePercent] = useState(100);
+    const [pdfViewportWidth, setPdfViewportWidth] = useState(0);
+    const [replaceUploadingId, setReplaceUploadingId] = useState(null);
+    const [auditLogs, setAuditLogs] = useState([]);
+    const [showCreateUser, setShowCreateUser] = useState(false);
+    const [newUserEmail, setNewUserEmail] = useState("");
+    const [newUserPassword, setNewUserPassword] = useState("");
+    const [newUserRole, setNewUserRole] = useState("viewer");
+    const [newUserFirstName, setNewUserFirstName] = useState("");
+    const [newUserLastName, setNewUserLastName] = useState("");
+    const [rememberMe, setRememberMe] = useState(() => localStorage.getItem("securevault_remember") === "true");
+    const [showPassword, setShowPassword] = useState(false);
+    const [showNewUserPassword, setShowNewUserPassword] = useState(false);
+    const [resetUserId, setResetUserId] = useState(null);
+    const [resetNewPassword, setResetNewPassword] = useState("");
+    const [showResetPassword, setShowResetPassword] = useState(false);
+    const [isSessionChecking, setIsSessionChecking] = useState(true);
+    const [savedEmails, setSavedEmails] = useState(() => {
+        try {
+            const raw = localStorage.getItem("securevault_saved_emails");
+            return raw ? JSON.parse(raw) : [];
+        }
+        catch {
+            return [];
+        }
+    });
+    const viewerUrlRef = useRef(null);
+    const pdfCanvasRef = useRef(null);
+    const pdfCanvasWrapRef = useRef(null);
+    const pdfRenderTaskRef = useRef(null);
+    const pdfDocumentRef = useRef(null);
+    const isCurrentViewerPdf = viewerItem ? isPdfFile(viewerItem, viewerContentType) : false;
+    const selectedPdfPage = Math.max(1, Math.min(viewerPdfPage, viewerPdfPages));
+    // Restore session from localStorage on mount
+    useEffect(() => {
+        const saved = localStorage.getItem("securevault_session");
+        if (saved) {
+            try {
+                setSession(JSON.parse(saved));
+            }
+            catch (e) {
+                localStorage.removeItem("securevault_session");
+            }
+        }
+        setIsSessionChecking(false);
+    }, []);
+    // Persist rememberMe preference
+    useEffect(() => {
+        localStorage.setItem("securevault_remember", String(rememberMe));
+    }, [rememberMe]);
+    useEffect(() => {
+        viewerUrlRef.current = viewerUrl;
+    }, [viewerUrl]);
+    useEffect(() => {
+        return () => {
+            if (viewerUrlRef.current) {
+                URL.revokeObjectURL(viewerUrlRef.current);
+            }
+        };
+    }, []);
+    useEffect(() => {
+        if (!isCurrentViewerPdf) {
+            setPdfViewportWidth(0);
+            return;
+        }
+        const element = pdfCanvasWrapRef.current;
+        if (!element)
+            return;
+        const update = () => {
+            setPdfViewportWidth(element.clientWidth);
+        };
+        update();
+        const resizeObserver = new ResizeObserver(update);
+        resizeObserver.observe(element);
+        return () => resizeObserver.disconnect();
+    }, [isCurrentViewerPdf, viewerItem?.id]);
+    useEffect(() => {
+        let disposed = false;
+        let loadingTask = null;
+        if (pdfRenderTaskRef.current) {
+            pdfRenderTaskRef.current.cancel();
+            pdfRenderTaskRef.current = null;
+        }
+        if (pdfDocumentRef.current) {
+            void pdfDocumentRef.current.destroy();
+            pdfDocumentRef.current = null;
+        }
+        setPdfDocument(null);
+        setPdfRenderError(null);
+        setPdfRendering(false);
+        setPdfScalePercent(100);
+        if (!isCurrentViewerPdf || !viewerUrl)
+            return;
+        setPdfRendering(true);
+        loadingTask = pdfjsLib.getDocument(viewerUrl);
+        void loadingTask.promise
+            .then((loadedDoc) => {
+            if (disposed) {
+                void loadedDoc.destroy();
+                return;
+            }
+            pdfDocumentRef.current = loadedDoc;
+            setPdfDocument(loadedDoc);
+            setViewerPdfPages(Math.max(1, loadedDoc.numPages));
+            setViewerPdfPage((prev) => Math.min(Math.max(prev, 1), Math.max(1, loadedDoc.numPages)));
+        })
+            .catch((error) => {
+            if (disposed)
+                return;
+            console.error(error);
+            setPdfRenderError("Could not load PDF preview.");
+        })
+            .finally(() => {
+            if (!disposed) {
+                setPdfRendering(false);
+            }
+        });
+        return () => {
+            disposed = true;
+            if (loadingTask?.destroy) {
+                loadingTask.destroy();
+            }
+        };
+    }, [isCurrentViewerPdf, viewerUrl]);
+    useEffect(() => {
+        if (!isCurrentViewerPdf || !pdfDocument || !pdfCanvasRef.current)
+            return;
+        if (selectedPdfPage < 1 || selectedPdfPage > viewerPdfPages)
+            return;
+        let cancelled = false;
+        const canvas = pdfCanvasRef.current;
+        const canvasContext = canvas.getContext("2d");
+        if (!canvasContext) {
+            setPdfRenderError("PDF canvas is unavailable.");
+            return;
+        }
+        const renderPage = async () => {
+            try {
+                setPdfRenderError(null);
+                setPdfRendering(true);
+                const page = await pdfDocument.getPage(selectedPdfPage);
+                if (cancelled)
+                    return;
+                const baseViewport = page.getViewport({ scale: 1 });
+                const viewportWidth = Math.max(320, pdfViewportWidth - 24);
+                const scale = viewportWidth / baseViewport.width;
+                const viewport = page.getViewport({ scale });
+                const dpr = window.devicePixelRatio || 1;
+                canvas.width = Math.floor(viewport.width * dpr);
+                canvas.height = Math.floor(viewport.height * dpr);
+                canvas.style.width = `${Math.floor(viewport.width)}px`;
+                canvas.style.height = `${Math.floor(viewport.height)}px`;
+                canvasContext.setTransform(dpr, 0, 0, dpr, 0, 0);
+                canvasContext.clearRect(0, 0, viewport.width, viewport.height);
+                const task = page.render({ canvasContext, viewport, canvas });
+                pdfRenderTaskRef.current = task;
+                await task.promise;
+                if (cancelled)
+                    return;
+                setPdfScalePercent(Math.round(scale * 100));
+            }
+            catch (error) {
+                if (cancelled || error?.name === "RenderingCancelledException")
+                    return;
+                console.error(error);
+                setPdfRenderError("Could not render this PDF page.");
+            }
+            finally {
+                if (!cancelled) {
+                    setPdfRendering(false);
+                }
+            }
+        };
+        void renderPage();
+        return () => {
+            cancelled = true;
+            if (pdfRenderTaskRef.current) {
+                pdfRenderTaskRef.current.cancel();
+                pdfRenderTaskRef.current = null;
+            }
+        };
+    }, [isCurrentViewerPdf, pdfDocument, selectedPdfPage, viewerPdfPages, pdfViewportWidth]);
+    // Role-derived computed state
+    const userRolesList = session?.user?.roles ?? [];
+    const userPerms = session?.user?.permissions ?? [];
+    const isAdmin = userRolesList.includes("admin");
+    const canWrite = isAdmin || userPerms.includes("items:write");
+    const canDelete = isAdmin || userPerms.includes("items:delete");
+    const visibleTabs = useMemo(() => getTabsForRole(userRolesList), [userRolesList]);
+    const showToast = useCallback((type, title, message) => {
+        const id = ++toastId.current;
+        setToasts((prev) => [...prev, { id, type, title, message }]);
+        setTimeout(() => {
+            setToasts((prev) => prev.map((t) => t.id === id ? { ...t, leaving: true } : t));
+            setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 300);
+        }, 5000);
+    }, []);
+    const dismissToast = useCallback((id) => {
+        setToasts((prev) => prev.map((t) => t.id === id ? { ...t, leaving: true } : t));
+        setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 300);
+    }, []);
+    const accessToken = session?.accessToken;
+    const refreshData = async () => {
+        if (!accessToken)
+            return;
+        // Only admins can access admin endpoints
+        if (isAdmin) {
+            const [usersRes, rolesRes, permsRes, rolePermsRes] = await Promise.all([
+                listUsers(accessToken),
+                listRoles(accessToken),
+                listPermissions(accessToken),
+                listRolePermissions(accessToken)
+            ]);
+            setUsers(usersRes);
+            setRoles(rolesRes);
+            setPermissions(permsRes);
+            setRolePermMap(rolePermsRes);
+        }
+    };
+    const refreshItems = async (parentId) => {
+        if (!accessToken)
+            return;
+        const data = await listItems(accessToken, parentId ?? null);
+        setItems(data);
+    };
+    const onLogin = async () => {
+        setStatus(null);
+        try {
+            await login(email, password);
+            setLoginStep(3);
+            setStatus("OTP sent! Check your email inbox.");
+        }
+        catch (err) {
+            showToast("error", "Login failed", err?.message ?? "Please check your credentials.");
+        }
+    };
+    const onVerifyOtp = async () => {
+        setStatus(null);
+        try {
+            const data = await verifyOtp(email, otp);
+            setSession(data);
+            if (rememberMe) {
+                localStorage.setItem("securevault_session", JSON.stringify(data));
+                localStorage.setItem("securevault_last_email", email);
+                setSavedEmails((prev) => {
+                    const next = [email, ...prev.filter((value) => value !== email)].slice(0, 10);
+                    localStorage.setItem("securevault_saved_emails", JSON.stringify(next));
+                    return next;
+                });
+            }
+            else {
+                localStorage.removeItem("securevault_session");
+            }
+            setLoginStep(1);
+            setOtp("");
+            setPassword("");
+            // Set initial tab based on role
+            const userTabs = getTabsForRole(data.user?.roles ?? []);
+            setTab(userTabs.includes("Users") ? "Users" : "Files");
+        }
+        catch (err) {
+            showToast("error", "Verification failed", err?.message ?? "Invalid OTP code. Please try again.");
+        }
+    };
+    // Load data after session is set
+    useEffect(() => {
+        if (session?.accessToken) {
+            refreshData();
+            refreshItems(null);
+        }
+    }, [session?.accessToken]);
+    const onLogout = async () => {
+        if (session) {
+            try {
+                await logout(session.refreshToken);
+            }
+            catch (e) { }
+        }
+        localStorage.removeItem("securevault_session");
+        if (viewerUrl)
+            URL.revokeObjectURL(viewerUrl);
+        if (pdfRenderTaskRef.current) {
+            pdfRenderTaskRef.current.cancel();
+            pdfRenderTaskRef.current = null;
+        }
+        if (pdfDocumentRef.current) {
+            void pdfDocumentRef.current.destroy();
+            pdfDocumentRef.current = null;
+        }
+        setSession(null);
+        setSelectedUser(null);
+        setUserRoles([]);
+        setItems([]);
+        setPath([]);
+        setViewerItem(null);
+        setViewerUrl(null);
+        setPdfDocument(null);
+        setPdfRenderError(null);
+        setPdfRendering(false);
+        setPdfScalePercent(100);
+        setPdfViewportWidth(0);
+        setEmail(""); // Reset login details
+        setPassword("");
+        setOtp("");
+        setLoginStep(1);
+    };
+    const onSelectUser = async (user) => {
+        if (!accessToken)
+            return;
+        setSelectedUser(user);
+        const data = await listUserRoles(accessToken, user.id);
+        setUserRoles(data);
+    };
+    const onAddRole = async (roleId) => {
+        if (!accessToken || !selectedUser)
+            return;
+        await addUserRole(accessToken, selectedUser.id, roleId);
+        await onSelectUser(selectedUser);
+    };
+    const onRemoveRole = async (roleId) => {
+        if (!accessToken || !selectedUser)
+            return;
+        await removeUserRole(accessToken, selectedUser.id, roleId);
+        await onSelectUser(selectedUser);
+    };
+    const onResetRoles = async () => {
+        if (!accessToken || !selectedUser)
+            return;
+        await resetUserRoles(accessToken, selectedUser.id);
+        await onSelectUser(selectedUser);
+    };
+    const onToggleStatus = async (user) => {
+        if (!accessToken)
+            return;
+        const nextStatus = user.status === "active" ? "disabled" : "active";
+        await updateUserStatus(accessToken, user.id, nextStatus);
+        await refreshData();
+        if (selectedUser?.id === user.id) {
+            const updated = users.find((u) => u.id === user.id);
+            if (updated)
+                setSelectedUser(updated);
+        }
+    };
+    const selectedRoleIds = useMemo(() => new Set(userRoles.map((role) => role.id)), [userRoles]);
+    const currentFolderId = path.length ? path[path.length - 1].id : null;
+    const openFolder = async (item) => {
+        if (item.type !== "folder")
+            return;
+        const nextPath = [...path, { id: item.id, name: item.name }];
+        setPath(nextPath);
+        await refreshItems(item.id);
+    };
+    const goToRoot = async () => {
+        setPath([]);
+        await refreshItems(null);
+    };
+    const goToBreadcrumb = async (index) => {
+        const nextPath = path.slice(0, index + 1);
+        setPath(nextPath);
+        const folderId = nextPath.length ? nextPath[nextPath.length - 1].id : null;
+        await refreshItems(folderId);
+    };
+    const onCreateFolder = async () => {
+        if (!accessToken || !folderName.trim())
+            return;
+        setIsBusy(true);
+        try {
+            await createFolder(accessToken, folderName.trim(), currentFolderId);
+            await refreshItems(currentFolderId);
+            setShowFolderModal(false);
+            setFolderName("");
+        }
+        catch (error) {
+            showToast("error", "Folder not created", error?.message ?? "Could not create folder.");
+        }
+        finally {
+            setIsBusy(false);
+        }
+    };
+    const onUploadFile = async (file) => {
+        if (!accessToken)
+            return;
+        setIsBusy(true);
+        try {
+            await createFile(accessToken, file, currentFolderId);
+            await refreshItems(currentFolderId);
+            showToast("success", "File uploaded", `${file.name} uploaded successfully.`);
+        }
+        catch (error) {
+            showToast("error", "Upload failed", error?.message ?? "Could not upload file.");
+        }
+        finally {
+            setIsBusy(false);
+        }
+    };
+    const onConfirmDelete = async () => {
+        if (!accessToken || !deleteTarget)
+            return;
+        setIsBusy(true);
+        try {
+            await deleteItem(accessToken, deleteTarget.id);
+            await refreshItems(currentFolderId);
+            if (viewerItem?.id === deleteTarget.id) {
+                closeViewer();
+            }
+            showToast("success", "Deleted", `${deleteTarget.name} was deleted.`);
+            setDeleteTarget(null);
+        }
+        catch (error) {
+            showToast("error", "Delete failed", error?.message ?? "Could not delete item.");
+        }
+        finally {
+            setIsBusy(false);
+        }
+    };
+    const triggerBlobDownload = (blob, filename) => {
+        const objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(objectUrl);
+    };
+    const closeViewer = () => {
+        if (viewerUrl)
+            URL.revokeObjectURL(viewerUrl);
+        if (pdfRenderTaskRef.current) {
+            pdfRenderTaskRef.current.cancel();
+            pdfRenderTaskRef.current = null;
+        }
+        if (pdfDocumentRef.current) {
+            void pdfDocumentRef.current.destroy();
+            pdfDocumentRef.current = null;
+        }
+        setViewerItem(null);
+        setViewerUrl(null);
+        setViewerContentType("");
+        setViewerError(null);
+        setViewerTextPreview(null);
+        setViewerPreviewNote(null);
+        setViewerPdfPage(1);
+        setViewerPdfPages(1);
+        setPdfDocument(null);
+        setPdfRenderError(null);
+        setPdfRendering(false);
+        setPdfScalePercent(100);
+        setPdfViewportWidth(0);
+    };
+    const onOpenFile = async (item) => {
+        if (!accessToken || item.type !== "file")
+            return;
+        setViewerItem(item);
+        setViewerLoading(true);
+        setViewerError(null);
+        setViewerTextPreview(null);
+        setViewerPreviewNote(null);
+        try {
+            const result = await downloadItem(accessToken, item.id, {
+                disposition: "inline",
+                fallbackName: item.name
+            });
+            if (viewerUrl)
+                URL.revokeObjectURL(viewerUrl);
+            const resolvedType = resolveViewerContentType(item, result.contentType || item.content_type || "");
+            const previewBlob = resolvedType && result.blob.type !== resolvedType
+                ? new Blob([result.blob], { type: resolvedType })
+                : result.blob;
+            const nextUrl = URL.createObjectURL(previewBlob);
+            setViewerUrl(nextUrl);
+            setViewerContentType(resolvedType);
+            if (isPdfFile(item, resolvedType)) {
+                setViewerPdfPages(1);
+                setViewerPdfPage(1);
+            }
+            else if (isDocxFile(item, resolvedType)) {
+                setViewerPreviewNote("DOC/DOCX files are available for download. Browser preview support depends on installed plugins.");
+                setViewerPdfPages(1);
+                setViewerPdfPage(1);
+            }
+            else if (isTextPreviewable(item, resolvedType)) {
+                const text = await previewBlob.text();
+                setViewerTextPreview(text.slice(0, 800000));
+                setViewerPreviewNote(text.length > 800000 ? "Showing first 800,000 characters." : null);
+                setViewerPdfPages(1);
+                setViewerPdfPage(1);
+            }
+            else {
+                setViewerPreviewNote("Preview is shown when supported by your browser. You can always download the file.");
+                setViewerPdfPages(1);
+                setViewerPdfPage(1);
+            }
+        }
+        catch (error) {
+            setViewerError(error?.message ?? "Could not open file.");
+            setViewerUrl(null);
+        }
+        finally {
+            setViewerLoading(false);
+        }
+    };
+    const onDownload = async (item) => {
+        if (!accessToken)
+            return;
+        setIsBusy(true);
+        try {
+            const result = await downloadItem(accessToken, item.id, {
+                disposition: "attachment",
+                fallbackName: item.type === "folder" ? `${item.name}.zip` : item.name
+            });
+            triggerBlobDownload(result.blob, result.filename);
+            showToast("success", "Download ready", `${result.filename} downloaded.`);
+        }
+        catch (error) {
+            showToast("error", "Download failed", error?.message ?? "Could not download item.");
+        }
+        finally {
+            setIsBusy(false);
+        }
+    };
+    const onOpenEdit = (item) => {
+        setEditTarget(item);
+        setEditName(item.name);
+    };
+    const onConfirmEdit = async () => {
+        if (!accessToken || !editTarget || !editName.trim())
+            return;
+        setIsBusy(true);
+        try {
+            const updated = await updateItemName(accessToken, editTarget.id, editName.trim());
+            await refreshItems(currentFolderId);
+            if (viewerItem?.id === updated.id) {
+                setViewerItem(updated);
+            }
+            showToast("success", "Updated", "Item name updated successfully.");
+            setEditTarget(null);
+            setEditName("");
+        }
+        catch (error) {
+            showToast("error", "Update failed", error?.message ?? "Could not update name.");
+        }
+        finally {
+            setIsBusy(false);
+        }
+    };
+    const onReplaceFile = async (item, file) => {
+        if (!accessToken || item.type !== "file")
+            return;
+        setReplaceUploadingId(item.id);
+        try {
+            const updated = await replaceFile(accessToken, item.id, file, file.name);
+            await refreshItems(currentFolderId);
+            if (viewerItem?.id === item.id) {
+                await onOpenFile(updated);
+            }
+            showToast("success", "File replaced", `${file.name} uploaded as the latest version.`);
+        }
+        catch (error) {
+            showToast("error", "Replace failed", error?.message ?? "Could not replace file.");
+        }
+        finally {
+            setReplaceUploadingId(null);
+        }
+    };
+    const onCreateUserSubmit = async () => {
+        if (!accessToken)
+            return;
+        setIsBusy(true);
+        try {
+            await createUser(accessToken, newUserEmail, newUserPassword, newUserRole, newUserFirstName, newUserLastName);
+            showToast("success", "User created", `Welcome email invitation sent to ${newUserEmail}`);
+            setShowCreateUser(false);
+            setNewUserEmail("");
+            setNewUserPassword("");
+            setNewUserFirstName("");
+            setNewUserLastName("");
+            refreshData();
+        }
+        catch (err) {
+            showToast("error", "Failed to create user", err.message);
+        }
+        finally {
+            setIsBusy(false);
+        }
+    };
+    const onResetPassword = (userId) => {
+        setResetUserId(userId);
+        setResetNewPassword("");
+        setShowResetPassword(false);
+    };
+    const onConfirmResetPassword = async () => {
+        if (!accessToken || !resetUserId)
+            return;
+        if (resetNewPassword.length < 6) {
+            showToast("error", "Too short", "Password must be at least 6 characters.");
+            return;
+        }
+        setIsBusy(true);
+        try {
+            await resetUserPassword(accessToken, resetUserId, resetNewPassword);
+            showToast("success", "Password reset", "Password has been updated.");
+            setResetUserId(null);
+            setResetNewPassword("");
+        }
+        catch (err) {
+            showToast("error", "Reset failed", err?.message ?? "Could not reset password.");
+        }
+        finally {
+            setIsBusy(false);
+        }
+    };
+    const refreshAuditLogs = async () => {
+        if (!accessToken)
+            return;
+        try {
+            const logs = await listAuditLogs(accessToken, { limit: 100 });
+            setAuditLogs(logs);
+        }
+        catch {
+            // User might not have audit:read permission — silently ignore
+        }
+    };
+    useEffect(() => {
+        if (tab === "Audit Logs" && accessToken) {
+            refreshAuditLogs();
+        }
+    }, [tab, accessToken]);
+    if (isSessionChecking) {
+        return (_jsx("div", { style: { height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg)" }, children: _jsxs("div", { style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }, children: [_jsx(VaultIcon, { size: 48, color: "var(--accent)" }), _jsx("div", { style: { width: 24, height: 24, border: "2px solid var(--border)", borderTopColor: "var(--accent)", borderRadius: "50%", animation: "spin 1s linear infinite" } }), _jsx("style", { children: `@keyframes spin { to { transform: rotate(360deg); } }` })] }) }));
+    }
+    /* ---- LOGIN PAGE ---- */
+    if (!session) {
+        return (_jsxs("div", { className: "login-page", children: [_jsx(ToastContainer, { toasts: toasts, onDismiss: dismissToast }), loginStep === 1 && (_jsxs("div", { className: "login-card", children: [_jsxs("div", { className: "login-brand", children: [_jsx("div", { className: "login-brand-icon", children: _jsx(VaultIcon, { size: 24 }) }), _jsx("div", { className: "login-brand-text", children: "SecureVault" })] }), _jsxs("div", { className: "login-step-indicator", children: [_jsx("div", { className: "login-step-dot active" }), _jsx("div", { className: "login-step-dot" }), _jsx("div", { className: "login-step-dot" })] }), _jsx("h1", { className: "login-title", children: "Welcome back" }), _jsx("p", { className: "login-subtitle", children: "Enter your email address to continue." }), _jsxs("form", { className: "login-form", autoComplete: "on", onSubmit: (e) => { e.preventDefault(); if (email.trim())
+                                setLoginStep(2); }, children: [_jsxs("div", { className: "input-group", children: [_jsx("span", { className: "input-icon", children: _jsx(MailIcon, {}) }), _jsx("input", { type: "email", name: "email", autoComplete: "email", list: "remembered-emails", placeholder: "Enter your email", value: email, onChange: (e) => setEmail(e.target.value), required: true, autoFocus: true }), _jsx("datalist", { id: "remembered-emails", children: savedEmails.map((savedEmail) => (_jsx("option", { value: savedEmail }, savedEmail))) })] }), _jsxs("div", { style: { display: "flex", alignItems: "center", gap: 10, margin: "16px 0", cursor: "pointer", width: "fit-content" }, onClick: () => setRememberMe(!rememberMe), children: [_jsx("div", { style: {
+                                                width: 18,
+                                                height: 18,
+                                                borderRadius: 4,
+                                                border: "2px solid var(--border)",
+                                                background: rememberMe ? "var(--accent)" : "transparent",
+                                                borderColor: rememberMe ? "var(--accent)" : "var(--border)",
+                                                display: "flex",
+                                                alignItems: "center",
+                                                justifyContent: "center",
+                                                transition: "all 0.2s"
+                                            }, children: rememberMe && _jsx(CheckSmall, { size: 14, color: "white" }) }), _jsx("span", { style: { fontSize: 13, color: "var(--ink-3)", fontWeight: 500, userSelect: "none" }, children: "Remember me" })] }), _jsx("button", { className: "btn btn-primary", type: "submit", children: "Continue" })] })] }, "step-email")), loginStep === 2 && (_jsxs("div", { className: "login-card", children: [_jsxs("div", { className: "login-brand", children: [_jsx("div", { className: "login-brand-icon", children: _jsx(VaultIcon, { size: 24 }) }), _jsx("div", { className: "login-brand-text", children: "SecureVault" })] }), _jsxs("div", { className: "login-step-indicator", children: [_jsx("div", { className: "login-step-dot" }), _jsx("div", { className: "login-step-dot active" }), _jsx("div", { className: "login-step-dot" })] }), _jsx("h1", { className: "login-title", children: "Enter your password" }), _jsxs("p", { className: "login-subtitle", children: ["Signing in as ", _jsx("strong", { children: email })] }), _jsxs("form", { className: "login-form", autoComplete: "on", onSubmit: (e) => { e.preventDefault(); onLogin(); }, children: [_jsx("input", { type: "email", name: "username", autoComplete: "username", value: email, readOnly: true, style: { display: "none" } }), _jsxs("div", { className: "input-group", children: [_jsx("span", { className: "input-icon", children: _jsx(LockIcon, {}) }), _jsx("input", { type: showPassword ? "text" : "password", name: "password", autoComplete: "current-password", placeholder: "Enter your password", value: password, onChange: (e) => setPassword(e.target.value), required: true, autoFocus: true }), _jsx("button", { type: "button", className: "input-action-btn", onClick: () => setShowPassword(!showPassword), children: showPassword ? _jsx(EyeOffIcon, { size: 18 }) : _jsx(EyeIcon, { size: 18 }) })] }), _jsx("button", { className: "btn btn-primary", type: "submit", children: "Continue" })] }), _jsx("div", { className: "login-footer", children: _jsx("button", { className: "btn btn-ghost btn-sm", onClick: () => { setLoginStep(1); setPassword(""); }, style: { width: "100%", marginTop: 8 }, children: "\u2190 Use a different email" }) })] }, "step-password")), loginStep === 3 && (_jsxs("div", { className: "login-card", children: [_jsxs("div", { className: "login-brand", children: [_jsx("div", { className: "login-brand-icon", children: _jsx(VaultIcon, { size: 24 }) }), _jsx("div", { className: "login-brand-text", children: "SecureVault" })] }), _jsxs("div", { className: "login-step-indicator", children: [_jsx("div", { className: "login-step-dot" }), _jsx("div", { className: "login-step-dot" }), _jsx("div", { className: "login-step-dot active" })] }), _jsx("h1", { className: "login-title", children: "Check your email" }), _jsxs("p", { className: "login-subtitle", children: ["We sent a 6-digit code to ", _jsx("strong", { children: email })] }), _jsxs("form", { className: "login-form", onSubmit: (e) => { e.preventDefault(); onVerifyOtp(); }, children: [_jsxs("div", { className: "input-group", children: [_jsx("span", { className: "input-icon", children: _jsx(LockIcon, {}) }), _jsx("input", { type: "text", placeholder: "Enter 6-digit OTP", value: otp, onChange: (e) => setOtp(e.target.value), required: true, maxLength: 6, autoFocus: true })] }), _jsx("button", { className: "btn btn-primary", type: "submit", children: "Verify & Sign In" })] }), _jsx("div", { className: "login-footer", children: _jsx("button", { className: "btn btn-ghost btn-sm", onClick: () => { setLoginStep(1); setOtp(""); setPassword(""); setStatus(null); }, style: { width: "100%", marginTop: 8 }, children: "\u2190 Start over" }) }), status && _jsx("p", { className: "login-status", style: { marginTop: 12 }, children: status })] }, "step-otp"))] }));
+    }
+    /* ---- MAIN DASHBOARD ---- */
+    return (_jsxs("div", { className: "app", children: [_jsx(ToastContainer, { toasts: toasts, onDismiss: dismissToast }), _jsxs("aside", { className: "sidebar", children: [_jsxs("div", { className: "sidebar-brand", children: [_jsx("div", { className: "sidebar-brand-icon", children: _jsx(VaultIcon, { size: 22 }) }), _jsx("span", { className: "sidebar-brand-text", children: "SecureVault" })] }), _jsxs("div", { className: "sidebar-section", children: [_jsx("div", { className: "sidebar-label", children: "Main menu" }), _jsx("nav", { className: "sidebar-nav", children: visibleTabs.map((t) => {
+                                    const Icon = tabIcons[t];
+                                    return (_jsxs("button", { className: `sidebar-nav-item ${tab === t ? "active" : ""}`, onClick: () => setTab(t), children: [_jsx("span", { className: "nav-icon", children: _jsx(Icon, {}) }), t] }, t));
+                                }) })] }), _jsx("div", { className: "sidebar-spacer" }), _jsxs("div", { className: "sidebar-profile", children: [_jsx("div", { className: "sidebar-avatar", children: getInitials({ firstName: session.user.firstName, lastName: session.user.lastName, email: session.user.email }) }), _jsxs("div", { className: "sidebar-profile-info", children: [_jsx("div", { className: "sidebar-profile-name", children: session.user.firstName ? `${session.user.firstName} ${session.user.lastName}` : session.user.email.split('@')[0] }), _jsx("div", { className: "sidebar-profile-role", style: { textTransform: "capitalize" }, children: session.user.roles.join(", ") })] }), _jsx("button", { className: "btn-logout", onClick: onLogout, title: "Sign out", style: { marginLeft: "auto", background: "none", border: "none", padding: 8, cursor: "pointer", color: "var(--ink-4)", display: "flex", alignItems: "center", justifyContent: "center" }, children: _jsx(LogoutIcon, {}) })] })] }), _jsxs("main", { className: "content", children: [_jsxs("div", { className: "page-header", children: [_jsx("h1", { className: "page-title", children: tab }), _jsx("p", { className: "page-subtitle", children: tabDescriptions[tab] })] }), tab === "Users" && (_jsxs("div", { className: "panel", children: [_jsx("div", { style: { display: "flex", justifyContent: "flex-end", padding: "12px 16px", borderBottom: "1px solid var(--border)" }, children: _jsxs("button", { className: "btn btn-primary btn-sm", onClick: () => setShowCreateUser(true), children: [_jsx(PlusIcon, {}), " Create User"] }) }), _jsxs("table", { className: "data-table", children: [_jsx("thead", { children: _jsxs("tr", { children: [_jsx("th", { children: "User / Name" }), _jsx("th", { children: "Roles" }), _jsx("th", { children: "Status" }), _jsx("th", { children: "Created" })] }) }), _jsx("tbody", { children: users.map((user) => (_jsxs("tr", { onClick: () => onSelectUser(user), style: { background: selectedUser?.id === user.id ? "var(--accent-light)" : undefined }, children: [_jsx("td", { children: _jsxs("div", { style: { display: "flex", alignItems: "center", gap: 12 }, children: [_jsx("div", { className: "sidebar-avatar", style: { width: 32, height: 32, fontSize: 12 }, children: getInitials({ firstName: user.first_name, lastName: user.last_name, email: user.email }) }), _jsxs("div", { style: { display: "flex", flexDirection: "column" }, children: [_jsx("span", { className: "cell-email", style: { marginBottom: 2 }, children: user.first_name ? `${user.first_name} ${user.last_name}` : "-" }), _jsx("span", { style: { fontSize: 12, color: "var(--ink-4)" }, children: user.email })] })] }) }), _jsx("td", { children: (user.roles ?? []).map((r) => (_jsx("span", { className: `badge ${r === 'admin' ? 'badge-accent' : r === 'editor' ? 'badge-active' : 'badge-disabled'}`, style: { marginRight: 4 }, children: r }, r))) }), _jsx("td", { children: _jsx("span", { className: `badge ${user.status === "active" ? "badge-active" : "badge-disabled"}`, children: user.status }) }), _jsx("td", { className: "cell-muted", children: formatDate(user.created_at) })] }, user.id))) })] }), selectedUser && (_jsx("div", { className: "modal-overlay", onClick: () => setSelectedUser(null), children: _jsxs("div", { className: "modal", onClick: (e) => e.stopPropagation(), style: { maxWidth: 440 }, children: [_jsxs("div", { className: "user-detail-header", children: [_jsx("div", { className: "user-detail-avatar", children: getInitials({ firstName: selectedUser.first_name, lastName: selectedUser.last_name, email: selectedUser.email }) }), _jsxs("div", { children: [_jsx("div", { className: "user-detail-name", children: selectedUser.first_name ? `${selectedUser.first_name} ${selectedUser.last_name}` : "System User" }), _jsxs("div", { className: "user-detail-sub", children: [_jsx("span", { children: selectedUser.email }), _jsx("span", { className: `badge ${selectedUser.status === "active" ? "badge-active" : "badge-disabled"}`, style: { marginLeft: 8 }, children: selectedUser.status })] })] })] }), _jsx("div", { className: "user-detail-section-title", children: "Manage Access Roles" }), _jsx("div", { className: "role-grid", children: roles
+                                                .filter(r => ["editor", "viewer"].includes(r.name))
+                                                .map((role) => (_jsxs("div", { className: `role-chip ${selectedRoleIds.has(role.id) ? "assigned" : ""}`, style: { padding: "12px 16px", borderRadius: 12, border: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center", background: selectedRoleIds.has(role.id) ? "var(--accent-light)" : "transparent" }, children: [_jsx("span", { style: { fontWeight: 600, color: "var(--ink-1)", textTransform: "capitalize" }, children: role.name }), selectedRoleIds.has(role.id) ? (_jsx("button", { onClick: () => onRemoveRole(role.id), title: "Remove role", style: { background: "var(--red)", color: "white", border: "none", width: 20, height: 20, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 16 }, children: "\u00D7" })) : (_jsx("button", { onClick: () => onAddRole(role.id), title: "Add role", style: { background: "var(--accent)", color: "white", border: "none", width: 20, height: 20, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 16 }, children: "+" }))] }, role.id))) }), _jsxs("div", { className: "user-detail-actions", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 24 }, children: [_jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => onResetPassword(selectedUser.id), children: "Reset Password" }), _jsx("button", { className: `btn btn-sm ${selectedUser.status === "active" ? "btn-danger" : "btn-primary"}`, onClick: () => onToggleStatus(selectedUser), children: selectedUser.status === "active" ? "Disable User" : "Enable User" })] }), _jsx("div", { style: { marginTop: 24, paddingTop: 20, borderTop: "1px solid var(--border)" }, children: _jsx("button", { className: "btn btn-primary", onClick: () => setSelectedUser(null), style: { width: "100%" }, children: "Done" }) })] }) })), resetUserId && (_jsx("div", { className: "modal-overlay", onClick: () => setResetUserId(null), children: _jsxs("div", { className: "modal", onClick: (e) => e.stopPropagation(), style: { maxWidth: 400 }, children: [_jsx("div", { className: "modal-title", children: "Reset Password" }), _jsx("div", { className: "modal-desc", children: "Enter a new password for this user. It must be at least 6 characters long." }), _jsxs("div", { className: "input-group", style: { marginBottom: 20 }, children: [_jsx("span", { className: "input-icon", children: _jsx(LockIcon, {}) }), _jsx("input", { type: showResetPassword ? "text" : "password", placeholder: "New password", value: resetNewPassword, onChange: (e) => setResetNewPassword(e.target.value), required: true, autoFocus: true }), _jsx("button", { type: "button", className: "input-action-btn", onClick: () => setShowResetPassword(!showResetPassword), children: showResetPassword ? _jsx(EyeOffIcon, { size: 18 }) : _jsx(EyeIcon, { size: 18 }) })] }), _jsxs("div", { style: { display: "flex", gap: 12 }, children: [_jsx("button", { className: "btn btn-secondary", onClick: () => setResetUserId(null), style: { flex: 1 }, children: "Cancel" }), _jsx("button", { className: "btn btn-primary", onClick: onConfirmResetPassword, disabled: isBusy || resetNewPassword.length < 6, style: { flex: 1 }, children: isBusy ? "Resetting..." : "Reset Password" })] })] }) }))] })), tab === "Roles" && (_jsx("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 20 }, children: roles.map((role) => (_jsxs("div", { className: "panel", style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 24px" }, children: [_jsxs("div", { style: { display: "flex", alignItems: "center", gap: 14 }, children: [_jsx("div", { style: { width: 42, height: 42, borderRadius: 12, background: "var(--accent-light)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center" }, children: _jsx(ShieldIcon, {}) }), _jsxs("div", { children: [_jsx("div", { style: { fontSize: 16, fontWeight: 700, color: "var(--ink-1)", textTransform: "capitalize" }, children: role.name }), _jsxs("div", { style: { fontSize: 12, color: "var(--ink-4)", marginTop: 2, fontFamily: "monospace" }, children: ["ID: ", role.id.slice(0, 8), "..."] })] })] }), _jsx("div", { className: "badge badge-active", style: { fontSize: 11, fontWeight: 600 }, children: "Active" })] }, role.id))) })), tab === "Permissions" && (_jsxs("div", { className: "panel", style: { padding: 28 }, children: [_jsx("p", { style: { color: "var(--ink-3)", fontSize: 14, marginBottom: 24 }, children: "This matrix shows which permissions are granted to each role. Permissions determine what actions users with a given role can perform." }), _jsx("div", { style: { display: "grid", gap: 20 }, children: rolePermMap
+                                    .filter(rp => rp.role_name !== "user")
+                                    .map((rp) => (_jsxs("div", { style: {
+                                        background: "var(--bg)",
+                                        borderRadius: 12,
+                                        padding: "20px 24px",
+                                        border: "1px solid var(--border)"
+                                    }, children: [_jsxs("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }, children: [_jsx(ShieldIcon, {}), _jsx("span", { style: { fontSize: 16, fontWeight: 600, color: "var(--ink-1)", textTransform: "capitalize" }, children: rp.role_name }), _jsxs("span", { style: {
+                                                        fontSize: 12,
+                                                        color: "var(--ink-4)",
+                                                        background: "var(--surface)",
+                                                        padding: "2px 10px",
+                                                        borderRadius: 10
+                                                    }, children: [rp.permissions.filter(Boolean).length, " permission", rp.permissions.filter(Boolean).length !== 1 ? "s" : ""] })] }), _jsx("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 }, children: rp.permissions.filter(Boolean).length === 0 ? (_jsx("span", { style: { fontSize: 13, color: "var(--ink-4)", fontStyle: "italic" }, children: "No permissions assigned" })) : (rp.permissions.filter(Boolean).map((perm) => {
+                                                const category = perm.split(":")[0];
+                                                const action = perm.split(":")[1];
+                                                const colorMap = {
+                                                    items: "var(--accent)",
+                                                    users: "var(--green)",
+                                                    roles: "#e8912d",
+                                                    audit: "#9b59b6"
+                                                };
+                                                const color = colorMap[category] ?? "var(--ink-3)";
+                                                return (_jsxs("span", { style: {
+                                                        display: "inline-flex",
+                                                        alignItems: "center",
+                                                        gap: 4,
+                                                        padding: "4px 12px",
+                                                        borderRadius: 8,
+                                                        fontSize: 13,
+                                                        fontWeight: 500,
+                                                        color,
+                                                        background: `color-mix(in srgb, ${color} 12%, transparent)`,
+                                                        border: `1px solid color-mix(in srgb, ${color} 25%, transparent)`
+                                                    }, children: [_jsx("span", { style: { fontWeight: 600 }, children: category }), _jsx("span", { style: { opacity: 0.5 }, children: ":" }), _jsx("span", { children: action })] }, perm));
+                                            })) })] }, rp.role_name))) })] })), tab === "Files" && (_jsxs(_Fragment, { children: [viewerItem ? (_jsxs("div", { className: "file-viewer-shell", children: [_jsxs("div", { className: "file-viewer-header", children: [_jsxs("div", { style: { display: "flex", alignItems: "center", gap: 10 }, children: [_jsxs("button", { className: "btn btn-secondary btn-sm", onClick: closeViewer, children: [_jsx(ArrowLeftIcon, {}), " Back to Files"] }), _jsx("span", { className: "file-viewer-title", children: viewerItem.name })] }), _jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [_jsxs("button", { className: "btn btn-secondary btn-sm", onClick: () => onDownload(viewerItem), children: [_jsx(DownloadIcon, {}), " Download"] }), viewerUrl && (_jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => window.open(viewerUrl, "_blank", "noopener,noreferrer"), children: "Open Raw" })), canWrite && (_jsxs("button", { className: "btn btn-secondary btn-sm", onClick: () => onOpenEdit(viewerItem), children: [_jsx(EditIcon, {}), " Edit name"] })), canDelete && (_jsxs("button", { className: "btn btn-danger btn-sm", onClick: () => setDeleteTarget(viewerItem), children: [_jsx(TrashIcon, {}), " Delete"] }))] })] }), viewerLoading ? (_jsx("div", { className: "file-viewer-loading", children: "Loading file preview..." })) : viewerError ? (_jsx("div", { className: "file-viewer-error", children: viewerError })) : !viewerUrl ? (_jsx("div", { className: "file-viewer-error", children: "Preview unavailable." })) : isCurrentViewerPdf ? (_jsxs("div", { className: "pdf-editor-layout", children: [_jsxs("div", { className: "pdf-preview-pane", children: [_jsxs("div", { className: "pdf-preview-toolbar", children: [_jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => setViewerPdfPage((prev) => Math.max(1, prev - 1)), disabled: selectedPdfPage <= 1, children: "Previous" }), _jsxs("div", { className: "pdf-page-indicator", children: ["Page ", selectedPdfPage, " of ", viewerPdfPages] }), _jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => setViewerPdfPage((prev) => Math.min(viewerPdfPages, prev + 1)), disabled: selectedPdfPage >= viewerPdfPages, children: "Next" })] }), _jsxs("div", { className: "pdf-preview-meta", children: [_jsx("span", { children: "Fit to width" }), _jsxs("strong", { children: [pdfScalePercent, "%"] })] }), _jsxs("div", { className: "pdf-canvas-wrap", ref: pdfCanvasWrapRef, children: [_jsx("canvas", { ref: pdfCanvasRef, className: "pdf-preview-canvas" }), pdfRendering && (_jsx("div", { className: "pdf-render-overlay", children: "Rendering page\u2026" })), pdfRenderError && (_jsx("div", { className: "pdf-render-overlay pdf-render-overlay-error", children: pdfRenderError }))] })] }), _jsxs("div", { className: "file-details-pane", children: [_jsx("h3", { children: "PDF Details" }), _jsxs("div", { className: "file-detail-row", children: [_jsx("span", { children: "Name" }), _jsx("strong", { children: viewerItem.name })] }), _jsxs("div", { className: "file-detail-row", children: [_jsx("span", { children: "Type" }), _jsx("strong", { children: viewerContentType || viewerItem.content_type || "application/pdf" })] }), _jsxs("div", { className: "file-detail-row", children: [_jsx("span", { children: "Size" }), _jsx("strong", { children: formatBytes(viewerItem.size_bytes) })] }), _jsxs("div", { className: "file-detail-row", children: [_jsx("span", { children: "Total pages" }), _jsx("strong", { children: viewerPdfPages })] }), viewerItem.updated_at && (_jsxs("div", { className: "file-detail-row", children: [_jsx("span", { children: "Updated" }), _jsx("strong", { children: formatDate(viewerItem.updated_at) })] })), canWrite && (_jsxs("label", { className: "upload-label", style: { marginTop: 14, justifyContent: "center", width: "100%" }, children: [_jsx(UploadIcon, {}), " ", replaceUploadingId === viewerItem.id ? "Replacing..." : "Replace PDF", _jsx("input", { type: "file", accept: ".pdf,application/pdf", disabled: replaceUploadingId === viewerItem.id, onChange: (e) => {
+                                                                    const file = e.target.files?.[0];
+                                                                    if (file)
+                                                                        onReplaceFile(viewerItem, file);
+                                                                    e.currentTarget.value = "";
+                                                                } })] }))] })] })) : viewerTextPreview !== null ? (_jsxs("div", { className: "file-viewer-generic", children: [_jsx("div", { className: "file-text-preview", children: _jsx("pre", { children: viewerTextPreview || "(No preview available.)" }) }), _jsxs("div", { className: "file-details-pane", children: [_jsx("h3", { children: "File Details" }), _jsxs("div", { className: "file-detail-row", children: [_jsx("span", { children: "Name" }), _jsx("strong", { children: viewerItem.name })] }), _jsxs("div", { className: "file-detail-row", children: [_jsx("span", { children: "Type" }), _jsx("strong", { children: viewerContentType || viewerItem.content_type || "Unknown" })] }), _jsxs("div", { className: "file-detail-row", children: [_jsx("span", { children: "Size" }), _jsx("strong", { children: formatBytes(viewerItem.size_bytes) })] }), viewerItem.updated_at && (_jsxs("div", { className: "file-detail-row", children: [_jsx("span", { children: "Updated" }), _jsx("strong", { children: formatDate(viewerItem.updated_at) })] })), viewerPreviewNote && _jsx("div", { className: "file-preview-note", children: viewerPreviewNote }), canWrite && viewerItem.type === "file" && (_jsxs("label", { className: "upload-label", style: { marginTop: 14, justifyContent: "center", width: "100%" }, children: [_jsx(UploadIcon, {}), " ", replaceUploadingId === viewerItem.id ? "Replacing..." : "Replace File", _jsx("input", { type: "file", disabled: replaceUploadingId === viewerItem.id, onChange: (e) => {
+                                                                    const file = e.target.files?.[0];
+                                                                    if (file)
+                                                                        onReplaceFile(viewerItem, file);
+                                                                    e.currentTarget.value = "";
+                                                                } })] }))] })] })) : (_jsxs("div", { className: "file-viewer-generic", children: [_jsx("div", { className: "file-generic-preview", children: viewerContentType.startsWith("image/") ? (_jsx("img", { src: viewerUrl, alt: viewerItem.name, className: "file-image-preview" })) : (_jsx("object", { data: viewerUrl, type: viewerContentType || "application/octet-stream", className: "file-generic-frame", children: _jsx("iframe", { title: viewerItem.name, src: viewerUrl, className: "file-generic-frame" }) })) }), _jsxs("div", { className: "file-details-pane", children: [_jsx("h3", { children: "File Details" }), _jsxs("div", { className: "file-detail-row", children: [_jsx("span", { children: "Name" }), _jsx("strong", { children: viewerItem.name })] }), _jsxs("div", { className: "file-detail-row", children: [_jsx("span", { children: "Type" }), _jsx("strong", { children: viewerContentType || viewerItem.content_type || "Unknown" })] }), _jsxs("div", { className: "file-detail-row", children: [_jsx("span", { children: "Size" }), _jsx("strong", { children: formatBytes(viewerItem.size_bytes) })] }), viewerItem.updated_at && (_jsxs("div", { className: "file-detail-row", children: [_jsx("span", { children: "Updated" }), _jsx("strong", { children: formatDate(viewerItem.updated_at) })] })), viewerPreviewNote && _jsx("div", { className: "file-preview-note", children: viewerPreviewNote }), canWrite && viewerItem.type === "file" && (_jsxs("label", { className: "upload-label", style: { marginTop: 14, justifyContent: "center", width: "100%" }, children: [_jsx(UploadIcon, {}), " ", replaceUploadingId === viewerItem.id ? "Replacing..." : "Replace File", _jsx("input", { type: "file", disabled: replaceUploadingId === viewerItem.id, onChange: (e) => {
+                                                                    const file = e.target.files?.[0];
+                                                                    if (file)
+                                                                        onReplaceFile(viewerItem, file);
+                                                                    e.currentTarget.value = "";
+                                                                } })] }))] })] }))] })) : (_jsxs(_Fragment, { children: [_jsxs("div", { className: "breadcrumb", children: [_jsxs("button", { className: `breadcrumb-item ${path.length === 0 ? "current" : ""}`, onClick: goToRoot, children: [_jsx(HomeIcon, {}), " Root"] }), path.map((crumb, index) => (_jsxs("span", { style: { display: "flex", alignItems: "center", gap: 4 }, children: [_jsx("span", { className: "breadcrumb-sep", children: _jsx(ChevronIcon, {}) }), _jsx("button", { className: `breadcrumb-item ${index === path.length - 1 ? "current" : ""}`, onClick: () => goToBreadcrumb(index), children: crumb.name })] }, crumb.id)))] }), canWrite ? (_jsxs("div", { className: "file-toolbar", children: [_jsxs("button", { className: "btn btn-primary btn-sm", onClick: () => { setFolderName(""); setShowFolderModal(true); }, disabled: isBusy, children: [_jsx(PlusIcon, {}), " New Folder"] }), _jsxs("label", { className: "upload-label", children: [_jsx(UploadIcon, {}), " Upload File", _jsx("input", { type: "file", onChange: (e) => {
+                                                            const file = e.target.files?.[0];
+                                                            if (file)
+                                                                onUploadFile(file);
+                                                            e.currentTarget.value = "";
+                                                        } })] })] })) : (_jsxs("div", { style: { padding: "8px 16px", fontSize: 13, color: "var(--ink-4)", display: "flex", alignItems: "center", gap: 6 }, children: [_jsx(KeyIcon, {}), " Read-only access \u2014 you can view and download files."] })), _jsx("div", { className: "panel", children: items.length === 0 ? (_jsxs("div", { style: { textAlign: "center", padding: "48px 0", color: "var(--ink-3)" }, children: [_jsx(FolderIcon, { size: 40 }), _jsx("p", { style: { marginTop: 12, fontSize: 15 }, children: "This folder is empty" }), _jsx("p", { style: { fontSize: 13, color: "var(--ink-4)" }, children: "Create a folder or upload a file to get started." })] })) : (_jsx("div", { className: "file-grid", children: items.map((item) => (_jsxs("div", { className: "file-row", children: [_jsx("div", { className: `file-icon-box ${item.type === "folder" ? "file-icon-folder" : "file-icon-file"}`, children: item.type === "folder" ? _jsx(FolderIcon, {}) : _jsx(FileIcon, {}) }), _jsxs("div", { children: [_jsx("div", { className: "file-name clickable", onClick: () => (item.type === "folder" ? openFolder(item) : onOpenFile(item)), children: item.name }), _jsxs("div", { className: "file-type", children: [item.type, " ", item.type === "file" ? `· ${formatBytes(item.size_bytes)}` : ""] })] }), _jsxs("div", { className: "file-actions", children: [item.type === "file" && (_jsx("button", { className: "btn btn-ghost btn-sm", onClick: () => onOpenFile(item), title: "Open", children: _jsx(EyeIcon, { size: 16 }) })), _jsx("button", { className: "btn btn-ghost btn-sm", onClick: () => onDownload(item), title: "Download", children: _jsx(DownloadIcon, {}) }), canWrite && (_jsx("button", { className: "btn btn-ghost btn-sm", onClick: () => onOpenEdit(item), title: "Edit", children: _jsx(EditIcon, {}) })), canDelete && (_jsx("button", { className: "btn btn-ghost btn-sm", onClick: () => setDeleteTarget(item), title: "Delete", style: { color: "var(--red)" }, children: _jsx(TrashIcon, {}) }))] })] }, item.id))) })) })] })), showFolderModal && (_jsx("div", { className: "modal-overlay", onClick: () => setShowFolderModal(false), children: _jsxs("div", { className: "modal", onClick: (e) => e.stopPropagation(), children: [_jsx("div", { className: "modal-icon modal-icon-folder", children: _jsx(FolderIcon, { size: 24 }) }), _jsx("div", { className: "modal-title", children: "Create new folder" }), _jsx("div", { className: "modal-desc", children: "Enter a name for your new folder." }), _jsxs("form", { onSubmit: (e) => { e.preventDefault(); onCreateFolder(); }, children: [_jsx("input", { className: "modal-input", placeholder: "Folder name", value: folderName, onChange: (e) => setFolderName(e.target.value), autoFocus: true, required: true }), _jsxs("div", { className: "modal-actions", children: [_jsx("button", { type: "button", className: "btn btn-secondary btn-sm", onClick: () => setShowFolderModal(false), children: "Cancel" }), _jsx("button", { type: "submit", className: "btn btn-primary btn-sm", disabled: !folderName.trim() || isBusy, children: "Create" })] })] })] }) })), deleteTarget && (_jsx("div", { className: "modal-overlay", onClick: () => setDeleteTarget(null), children: _jsxs("div", { className: "modal", onClick: (e) => e.stopPropagation(), children: [_jsx("div", { className: "modal-icon modal-icon-danger", children: _jsx(TrashIcon, {}) }), _jsxs("div", { className: "modal-title", children: ["Delete ", deleteTarget.type] }), _jsxs("div", { className: "modal-desc", children: ["Are you sure you want to delete ", _jsxs("strong", { children: ["\u201C", deleteTarget.name, "\u201D"] }), "? This action cannot be undone."] }), _jsxs("div", { className: "modal-actions", children: [_jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => setDeleteTarget(null), children: "Cancel" }), _jsx("button", { className: "btn btn-danger btn-sm", onClick: onConfirmDelete, disabled: isBusy, children: "Delete" })] })] }) })), editTarget && (_jsx("div", { className: "modal-overlay", onClick: () => setEditTarget(null), children: _jsxs("div", { className: "modal", onClick: (e) => e.stopPropagation(), children: [_jsx("div", { className: "modal-icon modal-icon-folder", children: _jsx(EditIcon, { size: 22 }) }), _jsxs("div", { className: "modal-title", children: ["Edit ", editTarget.type, " name"] }), _jsxs("div", { className: "modal-desc", children: ["Update the display name for this ", editTarget.type, "."] }), _jsxs("form", { onSubmit: (e) => { e.preventDefault(); onConfirmEdit(); }, children: [_jsx("input", { className: "modal-input", placeholder: "Enter new name", value: editName, onChange: (e) => setEditName(e.target.value), autoFocus: true, required: true }), _jsxs("div", { className: "modal-actions", children: [_jsx("button", { type: "button", className: "btn btn-secondary btn-sm", onClick: () => setEditTarget(null), children: "Cancel" }), _jsx("button", { type: "submit", className: "btn btn-primary btn-sm", disabled: !editName.trim() || isBusy, children: "Save" })] })] })] }) }))] })), tab === "Audit Logs" && (_jsxs("div", { className: "panel", style: { background: "transparent", border: "none", boxShadow: "none" }, children: [_jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24, padding: "0 4px" }, children: [_jsxs("div", { children: [_jsx("h2", { style: { fontSize: 20, fontWeight: 800, color: "var(--ink-1)", marginBottom: 4 }, children: "System Activity" }), _jsx("p", { style: { fontSize: 14, color: "var(--ink-3)" }, children: "Monitoring all administrative and user actions in real-time." })] }), _jsxs("button", { className: "btn btn-secondary btn-sm", onClick: refreshAuditLogs, style: { borderRadius: 12, padding: "10px 20px" }, children: [_jsx(ActivityIcon, { size: 16 }), " Refresh logs"] })] }), auditLogs.length === 0 ? (_jsxs("div", { className: "panel", style: { textAlign: "center", padding: "80px 0", borderRadius: 24 }, children: [_jsx(ActivityIcon, { size: 48, opacity: 0.1 }), _jsx("p", { style: { marginTop: 16, fontSize: 16, fontWeight: 600, color: "var(--ink-2)" }, children: "No activity found" })] })) : (_jsx("div", { style: { display: "flex", flexDirection: "column", gap: 32 }, children: (() => {
+                                    const groups = {};
+                                    auditLogs.forEach(log => {
+                                        const date = new Date(log.created_at);
+                                        const label = date.toDateString() === new Date().toDateString() ? "Today" :
+                                            date.toDateString() === new Date(Date.now() - 86400000).toDateString() ? "Yesterday" :
+                                                date.toLocaleDateString(undefined, { month: 'long', day: 'numeric' });
+                                        if (!groups[label])
+                                            groups[label] = [];
+                                        groups[label].push(log);
+                                    });
+                                    return Object.entries(groups).map(([date, logs]) => (_jsxs("div", { children: [_jsxs("div", { style: { fontSize: 13, fontWeight: 700, color: "var(--ink-4)", marginBottom: 16, display: "flex", alignItems: "center", gap: 12 }, children: [date, _jsx("div", { style: { flex: 1, height: 1, background: "var(--border)", opacity: 0.5 } })] }), _jsx("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 16 }, children: logs.map((log) => {
+                                                    const actionThemes = {
+                                                        "auth.login": { color: "#27ae60", bg: "#eef9f1", icon: KeyIcon },
+                                                        "auth.login_failed": { color: "#e74c3c", bg: "#fdf2f1", icon: ShieldIcon },
+                                                        "item.created": { color: "#3498db", bg: "#ebf5fb", icon: FolderIcon },
+                                                        "user.created": { color: "#8e44ad", bg: "#f5eef8", icon: UsersIcon },
+                                                        "item.deleted": { color: "#e67e22", bg: "#fdf5ed", icon: TrashIcon },
+                                                        "item.download": { color: "#16a085", bg: "#e8f6f3", icon: DownloadIcon }
+                                                    };
+                                                    const theme = actionThemes[log.action] ?? { color: "var(--ink-3)", bg: "var(--bg)", icon: ActivityIcon };
+                                                    const Icon = theme.icon;
+                                                    return (_jsxs("div", { className: "panel", style: {
+                                                            padding: "20px",
+                                                            borderRadius: 20,
+                                                            display: "flex",
+                                                            gap: 16,
+                                                            alignItems: "start",
+                                                            border: `1px solid ${theme.bg}`,
+                                                            boxShadow: "0 4px 12px rgba(0,0,0,0.02)",
+                                                            transition: "transform 0.2s, box-shadow 0.2s",
+                                                            cursor: "pointer"
+                                                        }, onMouseEnter: (e) => { e.currentTarget.style.transform = "translateY(-4px)"; e.currentTarget.style.boxShadow = "0 8px 24px rgba(0,0,0,0.06)"; }, onMouseLeave: (e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.02)"; }, children: [_jsx("div", { style: {
+                                                                    width: 50,
+                                                                    height: 50,
+                                                                    borderRadius: 16,
+                                                                    background: theme.bg,
+                                                                    color: theme.color,
+                                                                    display: "flex",
+                                                                    alignItems: "center",
+                                                                    justifyContent: "center",
+                                                                    flexShrink: 0
+                                                                }, children: _jsx(Icon, { size: 24 }) }), _jsxs("div", { style: { flex: 1 }, children: [_jsxs("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 6 }, children: [_jsx("div", { style: { fontSize: 14, fontWeight: 700, color: "var(--ink-1)" }, children: log.action.replace(/\./g, ' ').toUpperCase() }), _jsx("div", { style: { fontSize: 11, fontWeight: 600, color: "var(--ink-4)" }, children: new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })] }), _jsx("div", { style: { fontSize: 13, color: "var(--ink-2)", fontWeight: 500, marginBottom: 12 }, children: log.actor_email ?? "System" }), log.metadata && (_jsx("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 }, children: Object.entries(log.metadata).slice(0, 3).map(([k, v]) => (_jsxs("div", { style: {
+                                                                                fontSize: 10,
+                                                                                fontWeight: 700,
+                                                                                padding: "4px 8px",
+                                                                                borderRadius: 6,
+                                                                                background: "var(--surface)",
+                                                                                color: "var(--ink-3)",
+                                                                                border: "1px solid var(--border)",
+                                                                                textTransform: "uppercase"
+                                                                            }, children: [k, ": ", String(v).slice(0, 15)] }, k))) }))] })] }, log.id));
+                                                }) })] }, date)));
+                                })() }))] })), showCreateUser && (_jsx("div", { className: "modal-overlay", onClick: () => setShowCreateUser(false), children: _jsxs("div", { className: "modal", onClick: (e) => e.stopPropagation(), children: [_jsx("div", { className: "modal-icon modal-icon-folder", children: _jsx(UsersIcon, {}) }), _jsx("div", { className: "modal-title", children: "Create new user" }), _jsx("div", { className: "modal-desc", children: "Add a new user to the system with their personal details and role." }), _jsxs("form", { onSubmit: (e) => { e.preventDefault(); onCreateUserSubmit(); }, children: [_jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }, children: [_jsx("input", { className: "modal-input", type: "text", placeholder: "First Name", value: newUserFirstName, onChange: (e) => setNewUserFirstName(e.target.value), required: true, style: { margin: 0 } }), _jsx("input", { className: "modal-input", type: "text", placeholder: "Last Name", value: newUserLastName, onChange: (e) => setNewUserLastName(e.target.value), required: true, style: { margin: 0 } })] }), _jsx("input", { className: "modal-input", type: "email", placeholder: "Email address", value: newUserEmail, onChange: (e) => setNewUserEmail(e.target.value), required: true, style: { marginBottom: 12 } }), _jsxs("div", { style: { position: "relative", marginBottom: 12 }, children: [_jsx("input", { className: "modal-input", type: showNewUserPassword ? "text" : "password", placeholder: "Password (min 6 chars)", value: newUserPassword, onChange: (e) => setNewUserPassword(e.target.value), required: true, minLength: 6, style: { margin: 0, paddingRight: 40 } }), _jsx("button", { type: "button", onClick: () => setShowNewUserPassword(!showNewUserPassword), style: { position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "var(--ink-4)", cursor: "pointer", display: "flex", alignItems: "center" }, children: showNewUserPassword ? _jsx(EyeOffIcon, { size: 18 }) : _jsx(EyeIcon, { size: 18 }) })] }), _jsxs("select", { className: "modal-input", value: newUserRole, onChange: (e) => setNewUserRole(e.target.value), style: { marginBottom: 12 }, children: [_jsx("option", { value: "viewer", children: "Viewer (read-only)" }), _jsx("option", { value: "editor", children: "Editor (read/write)" })] }), _jsxs("div", { className: "modal-actions", children: [_jsx("button", { type: "button", className: "btn btn-secondary btn-sm", onClick: () => setShowCreateUser(false), children: "Cancel" }), _jsx("button", { type: "submit", className: "btn btn-primary btn-sm", disabled: !newUserEmail.trim() || newUserPassword.length < 6 || isBusy, children: isBusy ? "Creating..." : "Create User" })] })] })] }) }))] }, tab)] }));
+}

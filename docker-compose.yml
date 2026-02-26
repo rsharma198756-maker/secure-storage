@@ -1,0 +1,141 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: secure_storage
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - internal
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    networks:
+      - internal
+
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - internal
+      - public
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set local http://minio:9000 minio minio123 &&
+      /usr/bin/mc mb -p local/secure-storage || true
+      "
+    networks:
+      - internal
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    networks:
+      - internal
+      - public
+
+  storage:
+    build:
+      context: .
+      dockerfile: services/storage/Dockerfile
+    environment:
+      PORT: 4000
+      INTERNAL_TOKEN: dev-internal-token
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/secure_storage
+      S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_ENDPOINT: http://localhost:9000
+      S3_REGION: us-east-1
+      S3_FORCE_PATH_STYLE: "true"
+      S3_ACCESS_KEY: minio
+      S3_SECRET_KEY: minio123
+      S3_BUCKET: secure-storage
+      S3_AUTO_CREATE_BUCKET: "true"
+    depends_on:
+      - postgres
+      - minio
+      - minio-init
+    networks:
+      - internal
+
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    environment:
+      PORT: 3000
+      STORAGE_URL: http://storage:4000
+      INTERNAL_TOKEN: dev-internal-token
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/secure_storage
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: dev-jwt-secret
+      OTP_SECRET: dev-otp-secret
+      OTP_TTL_MINUTES: 10
+      OTP_MAX_ATTEMPTS: 5
+      JWT_ACCESS_TTL_MINUTES: 60
+      REFRESH_TOKEN_TTL_DAYS: 30
+      RETURN_OTP_IN_RESPONSE: ${RETURN_OTP_IN_RESPONSE:-true}
+      ALLOW_DEV_HEADER: "true"
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_REQUIRE_TLS: ${SMTP_REQUIRE_TLS:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-no-reply@secure-storage.local}
+      OTP_REQUEST_MAX: 20
+      OTP_REQUEST_WINDOW_SECONDS: 60
+      OTP_VERIFY_MAX: 20
+      OTP_VERIFY_WINDOW_SECONDS: 60
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+      - redis
+      - storage
+    networks:
+      - internal
+      - public
+
+  admin-ui:
+    build:
+      context: .
+      dockerfile: apps/admin-ui/Dockerfile
+    environment:
+      VITE_API_BASE: http://localhost:3000
+    ports:
+      - "5173:5173"
+    depends_on:
+      - gateway
+    networks:
+      - public
+
+networks:
+  internal:
+    internal: true
+  public:
+
+volumes:
+  postgres_data:
+  minio_data:

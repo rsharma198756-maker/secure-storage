@@ -1,0 +1,16 @@
+{
+  "name": "secure-storage",
+  "private": true,
+  "workspaces": ["services/*", "packages/*", "apps/*"],
+  "scripts": {
+    "dev:gateway": "npm --workspace services/gateway run dev",
+    "dev:storage": "npm --workspace services/storage run dev",
+    "build": "npm --workspace services/gateway run build && npm --workspace services/storage run build",
+    "test:e2e": "vitest run --config vitest.config.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "tsx": "^4.7.0",
+    "vitest": "^1.2.2"
+  }
+}
