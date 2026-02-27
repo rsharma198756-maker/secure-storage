@@ -1,10 +1,7 @@
 import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
-import { Resend } from "resend";
 import bcrypt from "bcryptjs";
 import { config } from "./config.js";
-
-const resend = new Resend(config.resendApiKey);
 
 export const hashPassword = (password: string) => bcrypt.hash(password, 12);
 export const verifyPassword = (password: string, hash: string) =>
@@ -46,14 +43,28 @@ export const signServiceToken = (claims: ServiceTokenClaims) =>
   });
 
 export const sendOtpEmail = async (email: string, otp: string) => {
-  const { error } = await resend.emails.send({
-    from: config.emailFrom,
-    to: email,
+  const body = {
+    sender: {
+      name: config.emailFromName,
+      email: config.emailFromAddress
+    },
+    to: [{ email }],
     subject: "Your Secure Storage OTP",
-    text: `Your OTP code is: ${otp}. It expires in ${config.otpTtlMinutes} minutes.`
+    textContent: `Your OTP code is: ${otp}. It expires in ${config.otpTtlMinutes} minutes.`
+  };
+
+  const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      "accept": "application/json",
+      "api-key": config.brevoApiKey,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(body)
   });
 
-  if (error) {
-    throw new Error(`otp_email_send_failed:${error.message}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as any;
+    throw new Error(`otp_email_send_failed:${err?.message ?? res.status}`);
   }
 };
