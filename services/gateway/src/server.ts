@@ -113,12 +113,11 @@ const storageFetch = (
 app.register(cors, {
   origin: (origin, cb) => {
     // No origin = server-to-server or same-origin — always allow
-    if (!origin) return cb(null, true);
+    if (!origin) { cb(null, true); return; }
     // If no allowlist configured, allow all (dev/local mode)
-    if (config.corsOrigins.length === 0) return cb(null, true);
+    if (config.corsOrigins.length === 0) { cb(null, true); return; }
     // Check against explicit allowlist
-    if (config.corsOrigins.includes(origin)) return cb(null, true);
-    cb(new Error(`CORS: origin '${origin}' not allowed`), false);
+    cb(null, config.corsOrigins.includes(origin));
   },
   allowedHeaders: ["Authorization", "Content-Type", "X-File-Name"],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
@@ -833,7 +832,7 @@ app.post("/admin/users/:id/reset-password", async (request, reply) => {
     return;
   }
 
-  const passwordHash = await hashPassword(body.password);
+  const passwordHash = await hashPassword(body.password!);
   const res = await pool.query(
     "UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2 RETURNING id",
     [passwordHash, id]
