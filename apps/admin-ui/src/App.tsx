@@ -1386,7 +1386,10 @@ export default function App() {
                 <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 400 }}>
                   <div className="modal-title">Reset Password</div>
                   <div className="modal-desc">
-                    Enter a new password for this user. It must be at least 6 characters long.
+                    Enter a new password for this user.
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--ink-4)", marginBottom: 14, padding: "10px 14px", background: "var(--surface)", borderRadius: 10, lineHeight: 1.6 }}>
+                    🔒 Must be <strong>8+ characters</strong> with uppercase, lowercase, number and special character (e.g. <code>Secure@123</code>).
                   </div>
 
                   <div className="input-group" style={{ marginBottom: 20 }}>
@@ -1407,7 +1410,7 @@ export default function App() {
                     <button className="btn btn-secondary" onClick={() => setResetUserId(null)} style={{ flex: 1 }}>
                       Cancel
                     </button>
-                    <button className="btn btn-primary" onClick={onConfirmResetPassword} disabled={isBusy || resetNewPassword.length < 6} style={{ flex: 1 }}>
+                    <button className="btn btn-primary" onClick={onConfirmResetPassword} disabled={isBusy || resetNewPassword.length < 8} style={{ flex: 1 }}>
                       {isBusy ? "Resetting..." : "Reset Password"}
                     </button>
                   </div>
@@ -2024,20 +2027,24 @@ export default function App() {
                   required
                   style={{ marginBottom: 12 }}
                 />
-                <div style={{ position: "relative", marginBottom: 12 }}>
+                <div style={{ position: "relative", marginBottom: 6 }}>
                   <input
                     className="modal-input"
                     type={showNewUserPassword ? "text" : "password"}
-                    placeholder="Password (min 6 chars)"
+                    placeholder="Password"
                     value={newUserPassword}
                     onChange={(e) => setNewUserPassword(e.target.value)}
                     required
-                    minLength={6}
+                    minLength={8}
                     style={{ margin: 0, paddingRight: 40 }}
                   />
                   <button type="button" onClick={() => setShowNewUserPassword(!showNewUserPassword)} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "var(--ink-4)", cursor: "pointer", display: "flex", alignItems: "center" }}>
                     {showNewUserPassword ? <EyeOffIcon size={18} /> : <EyeIcon size={18} />}
                   </button>
+                </div>
+                <div style={{ fontSize: 12, color: "var(--ink-4)", marginBottom: 12, padding: "8px 12px", background: "var(--surface)", borderRadius: 10, lineHeight: 1.6 }}>
+                  🔒 Min 8 chars · Uppercase · Lowercase · Number · Special char<br />
+                  <span style={{ color: "var(--ink-3)" }}>e.g. <code>Secure@123</code></span>
                 </div>
                 <select
                   className="modal-input"
@@ -2050,7 +2057,7 @@ export default function App() {
                 </select>
                 <div className="modal-actions">
                   <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowCreateUser(false)}>Cancel</button>
-                  <button type="submit" className="btn btn-primary btn-sm" disabled={!newUserEmail.trim() || newUserPassword.length < 6 || isBusy}>
+                  <button type="submit" className="btn btn-primary btn-sm" disabled={!newUserEmail.trim() || newUserPassword.length < 8 || isBusy}>
                     {isBusy ? "Creating..." : "Create User"}
                   </button>
                 </div>
