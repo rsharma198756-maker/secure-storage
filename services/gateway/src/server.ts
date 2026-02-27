@@ -1146,7 +1146,21 @@ const createItem = async (params: {
       );
     }
 
+    // Auto-share with all roles: editor gets 'write', viewer gets 'read'
+    await client.query(
+      `
+      INSERT INTO item_grants (item_id, subject_type, subject_id, permission)
+      SELECT $1, 'role', r.id,
+        CASE r.name WHEN 'editor' THEN 'write' ELSE 'read' END
+      FROM roles r
+      WHERE r.name IN ('editor', 'viewer')
+      ON CONFLICT DO NOTHING
+      `,
+      [id]
+    );
+
     await client.query("COMMIT");
+
     return insertRes.rows[0];
   } catch (error) {
     await client.query("ROLLBACK");
