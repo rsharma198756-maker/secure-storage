@@ -3,7 +3,15 @@ export const config = {
   storageUrl: process.env.STORAGE_URL ?? "http://localhost:4000",
   internalToken: process.env.INTERNAL_TOKEN ?? "dev-internal-token",
   resendApiKey: process.env.RESEND_API_KEY ?? "",
-  emailFrom: process.env.EMAIL_FROM ?? "SecureVault <onboarding@resend.dev>",
+  emailFrom: process.env.EMAIL_FROM ?? "SecureVault <noreply@securestorage.app>",
+  smtp: {
+    host: process.env.SMTP_HOST ?? "smtp.gmail.com",
+    port: Number(process.env.SMTP_PORT ?? 587),
+    secure: process.env.SMTP_SECURE === "true",
+    requireTls: process.env.SMTP_REQUIRE_TLS !== "false",
+    user: process.env.SMTP_USER ?? "",
+    pass: process.env.SMTP_PASS ?? ""
+  },
   serviceJwt: {
     secret: process.env.SERVICE_JWT_SECRET ?? "dev-service-jwt-secret",
     issuer: process.env.SERVICE_JWT_ISSUER ?? "secure-gateway",
