@@ -15,7 +15,7 @@ export const isValidEmail = (email: string) =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
 export const generateOtp = () =>
-  Math.floor(100000 + Math.random() * 900000).toString();
+  crypto.randomInt(100000, 1000000).toString();
 
 export const hashOtp = (otp: string) =>
   crypto.createHmac("sha256", config.otpSecret).update(otp).digest("hex");

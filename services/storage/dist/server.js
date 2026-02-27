@@ -4,9 +4,12 @@ import { Readable } from "node:stream";
 import jwt from "jsonwebtoken";
 import { Pool } from "pg";
 import { config } from "./config.js";
-import { getObject, presignDownload, presignInternalDownload, presignUpload } from "./s3.js";
+import { getObject, presignDownload, presignInternalDownload, presignUpload, putObject } from "./s3.js";
 const app = Fastify({ logger: true });
 const pool = new Pool({ connectionString: config.databaseUrl });
+// Accept raw binary bodies for file uploads.
+// Fastify's built-in application/json parser still takes priority over "*".
+app.addContentTypeParser("*", { parseAs: "buffer" }, (_req, body, done) => done(null, body));
 const INTERNAL_AUTH_HEADER = "x-internal-token";
 const SERVICE_AUTH_HEADER = "x-service-authorization";
 const FORWARDED_USER_AUTH_HEADER = "x-user-authorization";
@@ -126,11 +129,17 @@ const getFileStorageKey = async (itemId) => {
     return { storageKey: item.storage_key };
 };
 app.addHook("onRequest", async (request, reply) => {
+    // Health/ready checks only need the internal token — no service JWT required.
+    // This allows the gateway's /ready endpoint to call storage's /health without
+    // needing to produce a full service JWT.
+    const isHealthCheck = request.url === "/health" || request.url === "/ready";
     const internalToken = request.headers[INTERNAL_AUTH_HEADER];
     if (internalToken !== config.internalToken) {
         reply.code(401).send({ error: "unauthorized" });
         return;
     }
+    if (isHealthCheck)
+        return; // Internal token is enough for health checks
     const authHeader = request.headers[SERVICE_AUTH_HEADER];
     const serviceToken = parseBearerToken(authHeader);
     if (!serviceToken) {
@@ -232,6 +241,47 @@ app.post("/internal/presign/download-internal", async (request, reply) => {
     const result = await presignInternalDownload(resolved.storageKey);
     reply.send(result);
 });
+app.post("/internal/object/upload", async (request, reply) => {
+    const userId = await requireForwardedUser(request, reply);
+    if (!userId)
+        return;
+    const itemId = request.headers["x-item-id"];
+    if (!itemId) {
+        reply.code(400).send({ error: "x-item-id_header_required" });
+        return;
+    }
+    const canWrite = await hasPermission(userId, "items:write");
+    if (!canWrite) {
+        reply.code(403).send({ error: "forbidden" });
+        return;
+    }
+    const canWriteItem = await hasItemPermission(userId, itemId, "write");
+    if (!canWriteItem) {
+        reply.code(403).send({ error: "forbidden" });
+        return;
+    }
+    const resolved = await getFileStorageKey(itemId);
+    if ("error" in resolved) {
+        reply.code(400).send({ error: resolved.error });
+        return;
+    }
+    const contentType = request.headers["x-file-content-type"] ||
+        "application/octet-stream";
+    const body = request.body;
+    const buffer = Buffer.isBuffer(body)
+        ? body
+        : body instanceof Uint8Array
+            ? Buffer.from(body)
+            : typeof body === "string"
+                ? Buffer.from(body)
+                : null;
+    if (!buffer) {
+        reply.code(400).send({ error: "binary_body_required" });
+        return;
+    }
+    await putObject(resolved.storageKey, buffer, contentType);
+    reply.send({ status: "ok" });
+});
 const toNodeReadable = (body) => {
     if (!body) {
         throw new Error("object_body_missing");
@@ -276,11 +326,15 @@ app.post("/internal/object/download", async (request, reply) => {
     }
     try {
         const object = await getObject(resolved.storageKey);
-        reply.header("content-type", object.contentType);
-        if (typeof object.contentLength === "number") {
-            reply.header("content-length", String(object.contentLength));
+        // Collect stream into buffer for reliable cross-network response
+        const chunks = [];
+        for await (const chunk of object.body) {
+            chunks.push(Buffer.from(chunk));
         }
-        reply.send(toNodeReadable(object.body));
+        const data = Buffer.concat(chunks);
+        reply.header("content-type", object.contentType);
+        reply.header("content-length", String(data.byteLength));
+        reply.send(data);
     }
     catch (error) {
         request.log.error({ err: error, itemId: body.itemId }, "object_download_failed");

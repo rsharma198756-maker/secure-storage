@@ -111,7 +111,15 @@ const storageFetch = (
   });
 
 app.register(cors, {
-  origin: true,
+  origin: (origin, cb) => {
+    // No origin = server-to-server or same-origin — always allow
+    if (!origin) return cb(null, true);
+    // If no allowlist configured, allow all (dev/local mode)
+    if (config.corsOrigins.length === 0) return cb(null, true);
+    // Check against explicit allowlist
+    if (config.corsOrigins.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS: origin '${origin}' not allowed`), false);
+  },
   allowedHeaders: ["Authorization", "Content-Type", "X-File-Name"],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 });
@@ -119,6 +127,17 @@ app.register(cors, {
 app.addContentTypeParser("*", { parseAs: "buffer" }, (_request, body, done) => {
   done(null, body);
 });
+
+// Password complexity validator
+const validatePassword = (password: string): string | null => {
+  if (!password || password.length < 8) return "password_min_8_chars";
+  if (!/[A-Z]/.test(password)) return "password_needs_uppercase";
+  if (!/[a-z]/.test(password)) return "password_needs_lowercase";
+  if (!/[0-9]/.test(password)) return "password_needs_number";
+  if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]/.test(password))
+    return "password_needs_special_char";
+  return null;
+};
 
 app.addHook("preHandler", async (request, reply) => {
   if (
@@ -757,8 +776,9 @@ app.post("/admin/users", async (request, reply) => {
     return;
   }
 
-  if (body.password.length < 6) {
-    reply.code(400).send({ error: "password_too_short" });
+  const pwError = validatePassword(body.password);
+  if (pwError) {
+    reply.code(400).send({ error: pwError });
     return;
   }
 
@@ -807,8 +827,9 @@ app.post("/admin/users/:id/reset-password", async (request, reply) => {
 
   const { id } = request.params as { id: string };
   const body = request.body as { password?: string };
-  if (!body?.password || body.password.length < 6) {
-    reply.code(400).send({ error: "password_required_min_6" });
+  const pwErr = validatePassword(body?.password ?? "");
+  if (pwErr) {
+    reply.code(400).send({ error: pwErr });
     return;
   }
 

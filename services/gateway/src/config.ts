@@ -27,7 +27,12 @@ export const config = {
   maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES ?? 104857600),
   maxNameLength: Number(process.env.MAX_NAME_LENGTH ?? 255),
   returnOtpInResponse: process.env.RETURN_OTP_IN_RESPONSE === "true",
-  allowDevHeader: process.env.ALLOW_DEV_HEADER === "true"
+  allowDevHeader: process.env.ALLOW_DEV_HEADER === "true",
+  // Comma-separated list of allowed CORS origins, e.g. "https://app.netlify.app,https://myapp.com"
+  // Leave empty to allow all origins (development only)
+  corsOrigins: process.env.CORS_ORIGINS
+    ? process.env.CORS_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean)
+    : [] as string[]
 };
 
 if (process.env.NODE_ENV === "production") {

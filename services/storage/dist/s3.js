@@ -72,3 +72,12 @@ export const getObject = async (key) => {
         contentLength: result.ContentLength
     };
 };
+export const putObject = async (key, body, contentType) => {
+    await ensureBucket();
+    await s3Internal.send(new PutObjectCommand({
+        Bucket: config.s3Bucket,
+        Key: key,
+        Body: body,
+        ContentType: contentType || "application/octet-stream"
+    }));
+};

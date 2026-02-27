@@ -2,6 +2,8 @@ export const config = {
     port: Number(process.env.PORT ?? 3000),
     storageUrl: process.env.STORAGE_URL ?? "http://localhost:4000",
     internalToken: process.env.INTERNAL_TOKEN ?? "dev-internal-token",
+    resendApiKey: process.env.RESEND_API_KEY ?? "",
+    emailFrom: process.env.EMAIL_FROM ?? "SecureVault <onboarding@resend.dev>",
     serviceJwt: {
         secret: process.env.SERVICE_JWT_SECRET ?? "dev-service-jwt-secret",
         issuer: process.env.SERVICE_JWT_ISSUER ?? "secure-gateway",
@@ -24,20 +26,7 @@ export const config = {
     maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES ?? 104857600),
     maxNameLength: Number(process.env.MAX_NAME_LENGTH ?? 255),
     returnOtpInResponse: process.env.RETURN_OTP_IN_RESPONSE === "true",
-    allowDevHeader: process.env.ALLOW_DEV_HEADER === "true",
-    smtp: {
-        host: process.env.SMTP_HOST ?? "localhost",
-        port: Number(process.env.SMTP_PORT ?? 1025),
-        secure: process.env.SMTP_SECURE !== undefined
-            ? process.env.SMTP_SECURE === "true"
-            : Number(process.env.SMTP_PORT ?? 1025) === 465,
-        requireTls: process.env.SMTP_REQUIRE_TLS === "true",
-        user: process.env.SMTP_USER ?? "",
-        pass: process.env.SMTP_PASS ?? "",
-        from: process.env.SMTP_FROM ??
-            process.env.SMTP_USER ??
-            "no-reply@secure-storage.local"
-    }
+    allowDevHeader: process.env.ALLOW_DEV_HEADER === "true"
 };
 if (process.env.NODE_ENV === "production") {
     if (config.serviceJwt.secret === "dev-service-jwt-secret") {
