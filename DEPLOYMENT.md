@@ -47,7 +47,7 @@ Admin UI: https://securestorage.netlify.app  (Netlify, static)
 |---|---|---|
 | Gateway API | `https://securestorage-production.up.railway.app` | akumar Railway |
 | Storage API | `https://secure-storage-production.up.railway.app` | rsharma Railway |
-| Admin UI | `https://<netlify-url>.netlify.app` | Netlify |
+| Admin UI | `https://securestorage.netlify.app` | Netlify |
 | Gateway Health | `https://securestorage-production.up.railway.app/health` | - |
 | Gateway Ready | `https://securestorage-production.up.railway.app/ready` | - |
 
@@ -165,6 +165,7 @@ S3_PUBLIC_ENDPOINT=
 ### Environment Variables
 ```env
 VITE_API_BASE=https://securestorage-production.up.railway.app
+CORS_ORIGINS=https://securestorage.netlify.app
 ```
 
 > ⚠️ **Important:** VITE_ variables are baked in at **build time**. If you change this, you must redeploy.
@@ -231,10 +232,10 @@ Gateway → Storage (Layer 2)
 ### Secret Values (for production rotation)
 | Secret | Current Value | Where Used |
 |---|---|---|
-| `JWT_SECRET` | `my-jwt-secret-456` | Both gateway + storage |
-| `INTERNAL_TOKEN` | `my-super-secret-token-123` | Both gateway + storage |
-| `SERVICE_JWT_SECRET` | `gw-storage-super-secret-2024-xK9mP` | Both gateway + storage |
-| `OTP_SECRET` | `my-otp-secret-789` | Gateway only |
+| `JWT_SECRET` | `ae3343208a1170d43e44bebdc227fd224b046383efa6b563b9e474626ca6faa74365d27171b1e06c402b917280f50953` | Both gateway + storage |
+| `INTERNAL_TOKEN` | `95304adfa540f5841eee486fded9fd34aca6b36df504c25db1685873dc889e94` | Both gateway + storage |
+| `SERVICE_JWT_SECRET` | `8df255ae18ef9106ff1484e665c1ec4e4275ba18a4c7e7d4ba2737b260fb0b5520f5f74147353e476184f0b4df42fbe5` | Both gateway + storage |
+| `OTP_SECRET` | `6f0bd09409f52aefdac267e20da3a1b83178f86599c14f0fbb9f2c73968dfc04` | Gateway only |
 | MinIO root password | `minioadmin123` | rsharma MinIO |
 | Postgres password | `ZBxapsXAUPQaiErUGtGlFkIsmDcShakJ` | akumar Postgres |
 
@@ -335,7 +336,7 @@ curl -H "x-internal-token: my-super-secret-token-123" \
 ```
 Gateway:          https://securestorage-production.up.railway.app
 Storage:          https://secure-storage-production.up.railway.app
-Admin UI:         https://<netlify-subdomain>.netlify.app
+Admin UI:         https://securestorage.netlify.app
 MinIO (internal): http://minio.railway.internal:9000
 Postgres (proxy): yamanote.proxy.rlwy.net:33260
 ```
