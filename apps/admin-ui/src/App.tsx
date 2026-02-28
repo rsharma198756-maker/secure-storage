@@ -2602,7 +2602,7 @@ export default function App() {
               description: "Full system access — manages users, roles, permissions, files, and audit logs. Cannot be removed or modified.",
               iconBg: "var(--yellow-bg)",
               iconColor: "var(--yellow)",
-              icon: <ShieldIcon size={20} />,
+              icon: <KeyIcon size={20} />,
               badgeClass: "badge",
               badgeLabel: "Protected"
             },
@@ -2611,7 +2611,7 @@ export default function App() {
               description: "Can upload, edit, rename, move, and delete files and folders they have access to.",
               iconBg: "var(--accent-light)",
               iconColor: "var(--accent)",
-              icon: <ShieldIcon size={20} />,
+              icon: <EditIcon size={20} />,
               badgeClass: "badge badge-active",
               badgeLabel: "Active"
             },
@@ -2620,7 +2620,7 @@ export default function App() {
               description: "Read-only access — can view and download files that have been shared with them. Cannot modify anything.",
               iconBg: "var(--green-bg)",
               iconColor: "var(--green)",
-              icon: <ShieldIcon size={20} />,
+              icon: <EyeIcon size={20} />,
               badgeClass: "badge badge-active",
               badgeLabel: "Active"
             }
