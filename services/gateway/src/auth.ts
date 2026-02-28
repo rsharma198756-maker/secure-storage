@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
+import nodemailer from "nodemailer";
 import { config } from "./config.js";
 
 export const hashPassword = (password: string) => bcrypt.hash(password, 12);
@@ -43,28 +44,45 @@ export const signServiceToken = (claims: ServiceTokenClaims) =>
   });
 
 export const sendOtpEmail = async (email: string, otp: string) => {
-  const body = {
-    sender: {
-      name: config.emailFromName,
-      email: config.emailFromAddress
-    },
-    to: [{ email }],
-    subject: "Your Secure Storage OTP",
-    textContent: `Your OTP code is: ${otp}. It expires in ${config.otpTtlMinutes} minutes.`
-  };
+  const subject = "Your Secure Storage OTP";
+  const text = `Your OTP code is: ${otp}. It expires in ${config.otpTtlMinutes} minutes.`;
 
-  const res = await fetch("https://api.brevo.com/v3/smtp/email", {
-    method: "POST",
-    headers: {
-      "accept": "application/json",
-      "api-key": config.brevoApiKey,
-      "content-type": "application/json"
-    },
-    body: JSON.stringify(body)
+  // ── Brevo REST API (production) ──────────────────────────────────────────
+  if (config.brevoApiKey) {
+    const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        "accept": "application/json",
+        "api-key": config.brevoApiKey,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        sender: { name: config.emailFromName, email: config.emailFromAddress },
+        to: [{ email }],
+        subject,
+        textContent: text
+      })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as any;
+      throw new Error(`otp_email_send_failed:${err?.message ?? res.status}`);
+    }
+    return;
+  }
+
+  // ── SMTP fallback (local dev via Mailpit) ────────────────────────────────
+  const transporter = nodemailer.createTransport({
+    host: config.smtp.host,
+    port: config.smtp.port,
+    secure: config.smtp.secure,
+    requireTLS: config.smtp.requireTls,
+    ...(config.smtp.user ? { auth: { user: config.smtp.user, pass: config.smtp.pass } } : {})
   });
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({})) as any;
-    throw new Error(`otp_email_send_failed:${err?.message ?? res.status}`);
-  }
+  await transporter.sendMail({
+    from: `"${config.emailFromName}" <${config.emailFromAddress}>`,
+    to: email,
+    subject,
+    text
+  });
 };

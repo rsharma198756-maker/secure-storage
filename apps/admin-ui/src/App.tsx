@@ -3,12 +3,13 @@ import * as pdfjsLib from "pdfjs-dist";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import {
-  addUserRole,
   createFile,
   createFolder,
   createUser,
   deleteItem,
   downloadItem,
+  fetchDashboardSummary,
+  fetchUserDashboardSummary,
   listAuditLogs,
   listItems,
   listPermissions,
@@ -18,15 +19,15 @@ import {
   listUsers,
   login,
   logout,
-  replaceFile,
-  removeUserRole,
+  removeUser,
   resetUserPassword,
-  resetUserRoles,
+  setUserRole,
   updateItemName,
-  updateUserStatus,
+  updateUserInfo,
+  updateRolePermissions,
   verifyOtp
 } from "./api";
-import type { AuditLog, Item, UserProfile } from "./api";
+import type { AuditLog, DashboardSummary, Item, UserDashboardSummary, UserProfile } from "./api";
 import "./styles.css";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -192,11 +193,58 @@ const EyeOffIcon = ({ size = 20, ...props }: IconProps) => (
   </svg>
 );
 
+const RefreshCwIcon = ({ size = 16, ...props }: IconProps) => (
+  <svg {...svgBase} width={size} height={size} {...props}>
+    <path d="M21 2v6h-6" />
+    <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+    <path d="M3 22v-6h6" />
+    <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+  </svg>
+);
+
+const LayersIcon = ({ size = 20, ...props }: IconProps) => (
+  <svg {...svgBase} width={size} height={size} {...props}>
+    <polygon points="12 2 2 7 12 12 22 7 12 2" />
+    <polyline points="2 17 12 22 22 17" />
+    <polyline points="2 12 12 17 22 12" />
+  </svg>
+);
+
+const ShieldAlertIcon = ({ size = 20, ...props }: IconProps) => (
+  <svg {...svgBase} width={size} height={size} {...props}>
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    <line x1="12" y1="8" x2="12" y2="12" />
+    <line x1="12" y1="16" x2="12.01" y2="16" />
+  </svg>
+);
+
+const SearchIcon = ({ size = 16, ...props }: IconProps) => (
+  <svg {...svgBase} width={size} height={size} {...props}>
+    <circle cx="11" cy="11" r="8" />
+    <line x1="21" y1="21" x2="16.65" y2="16.65" />
+  </svg>
+);
+
+const FilterIcon = ({ size = 16, ...props }: IconProps) => (
+  <svg {...svgBase} width={size} height={size} {...props}>
+    <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+  </svg>
+);
+
+const CalendarIcon = ({ size = 14, ...props }: IconProps) => (
+  <svg {...svgBase} width={size} height={size} {...props}>
+    <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+    <line x1="16" y1="2" x2="16" y2="6" />
+    <line x1="8" y1="2" x2="8" y2="6" />
+    <line x1="3" y1="10" x2="21" y2="10" />
+  </svg>
+);
+
 /* =============================================
    Types
    ============================================= */
 
-const ALL_TABS = ["Users", "Roles", "Permissions", "Files", "Audit Logs"] as const;
+const ALL_TABS = ["Dashboard", "Users", "Roles", "Permissions", "Files", "Audit Logs"] as const;
 type Tab = (typeof ALL_TABS)[number];
 
 type User = {
@@ -294,6 +342,34 @@ const isDocxFile = (item: Item, contentType?: string) => {
   );
 };
 
+const isBrowserEmbeddable = (item: Item, contentType?: string) => {
+  const mime = (contentType ?? item.content_type ?? "").toLowerCase();
+  const ext = getFileExtension(item.name);
+  if (mime.startsWith("image/") || mime.startsWith("audio/") || mime.startsWith("video/")) {
+    return true;
+  }
+  if (mime === "text/html" || mime === "application/xhtml+xml") {
+    return true;
+  }
+  return ["html", "htm", "svg", "mp4", "webm", "ogg", "mp3", "wav"].includes(ext);
+};
+
+const getJwtExpiryTime = (token: string): number | null => {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const payloadPart = parts[1];
+    const base64 = payloadPart.replace(/-/g, "+").replace(/_/g, "/");
+    const padLength = (4 - (base64.length % 4)) % 4;
+    const padded = `${base64}${"=".repeat(padLength)}`;
+    const payload = JSON.parse(atob(padded)) as { exp?: number };
+    if (typeof payload.exp !== "number") return null;
+    return payload.exp * 1000;
+  } catch {
+    return null;
+  }
+};
+
 const getInitials = (user: { firstName?: string; lastName?: string; email: string }) => {
   if (user.firstName && user.lastName) {
     return (user.firstName[0] + user.lastName[0]).toUpperCase();
@@ -303,6 +379,7 @@ const getInitials = (user: { firstName?: string; lastName?: string; email: strin
 };
 
 const tabIcons: Record<Tab, (props: IconProps) => JSX.Element> = {
+  Dashboard: VaultIcon,
   Users: UsersIcon,
   Roles: ShieldIcon,
   Permissions: KeyIcon,
@@ -311,6 +388,7 @@ const tabIcons: Record<Tab, (props: IconProps) => JSX.Element> = {
 };
 
 const tabDescriptions: Record<Tab, string> = {
+  Dashboard: "High-level view of users, files, and security activity across your system.",
   Users: "Manage user accounts, assign roles, and control access permissions.",
   Roles: "View and manage the available roles in the system.",
   Permissions: "See which permissions are assigned to each role.",
@@ -320,7 +398,93 @@ const tabDescriptions: Record<Tab, string> = {
 
 const getTabsForRole = (roles: string[]): Tab[] => {
   if (roles.includes("admin")) return [...ALL_TABS];
+  if (roles.some((role) => ["viewer", "editor"].includes(role))) {
+    return ["Dashboard", "Files"];
+  }
   return ["Files"];
+};
+
+const normalizeEmail = (value: string) => value.trim().toLowerCase();
+
+const formatActionLabel = (action: string) =>
+  action.replace(/\./g, " ").replace(/_/g, " ");
+
+const formatAuditMetadataValue = (value: unknown): string => {
+  if (value === null || value === undefined) return "-";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return JSON.stringify(value);
+};
+
+const summarizeAuditMetadata = (metadata: Record<string, unknown> | null): string => {
+  if (!metadata) return "-";
+  const entries = Object.entries(metadata);
+  if (entries.length === 0) return "-";
+  return entries
+    .slice(0, 3)
+    .map(([key, value]) => `${formatActionLabel(key)}: ${formatAuditMetadataValue(value)}`)
+    .join(" | ");
+};
+
+type AuditCategory = "auth" | "file" | "admin" | "danger" | "info";
+
+const getAuditCategory = (action: string): AuditCategory => {
+  const a = action.toLowerCase();
+  if (a.includes("failed") || a.includes("delete") || a.includes("removed") || a.includes("banned") || a.includes("disabled")) return "danger";
+  if (a.includes("login") || a.includes("logout") || a.includes("otp") || a.includes("auth") || a.includes("token") || a.includes("password")) return "auth";
+  if (a.includes("upload") || a.includes("download") || a.includes("file") || a.includes("folder") || a.includes("item") || a.includes("storage")) return "file";
+  if (a.includes("user") || a.includes("role") || a.includes("permission") || a.includes("admin")) return "admin";
+  return "info";
+};
+
+const AUDIT_CATEGORY_STYLES: Record<AuditCategory, { bg: string; color: string; border: string; label: string }> = {
+  danger: { bg: "var(--red-bg)", color: "var(--red)", border: "rgba(248,113,113,0.25)", label: "⚠ Danger" },
+  auth: { bg: "rgba(251,191,36,0.12)", color: "var(--yellow)", border: "rgba(251,191,36,0.25)", label: "🔐 Auth" },
+  file: { bg: "var(--blue-bg)", color: "var(--blue)", border: "rgba(96,165,250,0.25)", label: "📂 File" },
+  admin: { bg: "var(--accent-light)", color: "var(--accent)", border: "rgba(129,140,248,0.25)", label: "🛡 Admin" },
+  info: { bg: "var(--border)", color: "var(--ink-3)", border: "var(--border-hover)", label: "ℹ Info" },
+};
+
+const formatDateGroup = (isoString: string): string => {
+  const d = new Date(isoString);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return "Today";
+  if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
+  return d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+};
+
+const permissionLabels: Record<string, string> = {
+  "items:read": "View files and folders",
+  "items:write": "Upload and edit files/folders",
+  "items:delete": "Delete files and folders",
+  "items:share": "Share files and manage access",
+  "users:manage": "Manage users",
+  "roles:manage": "Manage roles and permissions",
+  "audit:read": "View audit logs"
+};
+
+const getPermissionDisplayLabel = (permission: Permission) => {
+  if (permission.description && permission.description.trim()) {
+    return permission.description.trim();
+  }
+  if (permissionLabels[permission.key]) {
+    return permissionLabels[permission.key];
+  }
+  return permission.key;
+};
+
+const getPasswordValidationError = (password: string): string | null => {
+  if (!password || password.length < 8) return "Password must be at least 8 characters.";
+  if (!/[A-Z]/.test(password)) return "Password must include at least one uppercase letter.";
+  if (!/[a-z]/.test(password)) return "Password must include at least one lowercase letter.";
+  if (!/[0-9]/.test(password)) return "Password must include at least one number.";
+  if (!/[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>\/?`~]/.test(password)) {
+    return "Password must include at least one special character.";
+  }
+  return null;
 };
 
 /* =============================================
@@ -394,6 +558,9 @@ export default function App() {
   const [permissions, setPermissions] = useState<Permission[]>([]);
   const [rolePermMap, setRolePermMap] = useState<RolePermMap[]>([]);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  const [editUserEmail, setEditUserEmail] = useState("");
+  const [editUserFirstName, setEditUserFirstName] = useState("");
+  const [editUserLastName, setEditUserLastName] = useState("");
   const [userRoles, setUserRoles] = useState<Role[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [items, setItems] = useState<Item[]>([]);
@@ -420,8 +587,19 @@ export default function App() {
   const [pdfRendering, setPdfRendering] = useState(false);
   const [pdfScalePercent, setPdfScalePercent] = useState(100);
   const [pdfViewportWidth, setPdfViewportWidth] = useState(0);
-  const [replaceUploadingId, setReplaceUploadingId] = useState<string | null>(null);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [auditFilterUserId, setAuditFilterUserId] = useState("");
+  const [auditFilterAction, setAuditFilterAction] = useState("");
+  const [auditFilterSearch, setAuditFilterSearch] = useState("");
+  const [auditFilterDateFrom, setAuditFilterDateFrom] = useState("");
+  const [auditFilterDateTo, setAuditFilterDateTo] = useState("");
+  const [auditExpandedRows, setAuditExpandedRows] = useState<Set<string>>(new Set());
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditError, setAuditError] = useState<string | null>(null);
+  const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
+  const [userDashboard, setUserDashboard] = useState<UserDashboardSummary | null>(null);
+  const [dashboardLoading, setDashboardLoading] = useState(false);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [showCreateUser, setShowCreateUser] = useState(false);
   const [newUserEmail, setNewUserEmail] = useState("");
   const [newUserPassword, setNewUserPassword] = useState("");
@@ -430,8 +608,17 @@ export default function App() {
   const [newUserLastName, setNewUserLastName] = useState("");
   const [rememberMe, setRememberMe] = useState(() => localStorage.getItem("securevault_remember") === "true");
   const [showPassword, setShowPassword] = useState(false);
+  const [isLoginSubmitting, setIsLoginSubmitting] = useState(false);
+  const [isOtpSubmitting, setIsOtpSubmitting] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
   const [showNewUserPassword, setShowNewUserPassword] = useState(false);
   const [resetUserId, setResetUserId] = useState<string | null>(null);
+  const [deleteUserId, setDeleteUserId] = useState<string | null>(null);
+  const [pendingRoleChange, setPendingRoleChange] = useState<{
+    roleId: string;
+    roleName: string;
+    currentRoleName: string | null;
+  } | null>(null);
   const [resetNewPassword, setResetNewPassword] = useState("");
   const [showResetPassword, setShowResetPassword] = useState(false);
   const [isSessionChecking, setIsSessionChecking] = useState(true);
@@ -449,7 +636,12 @@ export default function App() {
   const pdfRenderTaskRef = useRef<RenderTask | null>(null);
   const pdfDocumentRef = useRef<PDFDocumentProxy | null>(null);
   const isCurrentViewerPdf = viewerItem ? isPdfFile(viewerItem, viewerContentType) : false;
+  const canEmbedCurrentViewer = viewerItem
+    ? isBrowserEmbeddable(viewerItem, viewerContentType)
+    : false;
   const selectedPdfPage = Math.max(1, Math.min(viewerPdfPage, viewerPdfPages));
+  const newUserPasswordError = getPasswordValidationError(newUserPassword);
+  const resetPasswordError = getPasswordValidationError(resetNewPassword);
 
   // Restore session from localStorage on mount
   useEffect(() => {
@@ -472,6 +664,12 @@ export default function App() {
   useEffect(() => {
     viewerUrlRef.current = viewerUrl;
   }, [viewerUrl]);
+
+  useEffect(() => {
+    if (!selectedUser) {
+      setPendingRoleChange(null);
+    }
+  }, [selectedUser]);
 
   useEffect(() => {
     return () => {
@@ -623,6 +821,10 @@ export default function App() {
   const canWrite = isAdmin || userPerms.includes("items:write");
   const canDelete = isAdmin || userPerms.includes("items:delete");
   const visibleTabs = useMemo(() => getTabsForRole(userRolesList), [userRolesList]);
+  const auditActionOptions = useMemo(
+    () => Array.from(new Set(auditLogs.map((log) => log.action))).sort(),
+    [auditLogs]
+  );
 
   const showToast = useCallback((type: Toast["type"], title: string, message: string) => {
     const id = ++toastId.current;
@@ -640,20 +842,61 @@ export default function App() {
 
   const accessToken = session?.accessToken;
 
+  const refreshDashboard = async () => {
+    if (!accessToken) return;
+    setDashboardLoading(true);
+    setDashboardError(null);
+    try {
+      if (isAdmin) {
+        const data = await fetchDashboardSummary(accessToken);
+        setDashboard(data);
+        setUserDashboard(null);
+      } else {
+        const data = await fetchUserDashboardSummary(accessToken);
+        setUserDashboard(data);
+        setDashboard(null);
+      }
+    } catch (error: any) {
+      setDashboardError(error?.message ?? "Failed to load dashboard metrics.");
+    } finally {
+      setDashboardLoading(false);
+    }
+  };
+
   const refreshData = async () => {
     if (!accessToken) return;
-    // Only admins can access admin endpoints
-    if (isAdmin) {
-      const [usersRes, rolesRes, permsRes, rolePermsRes] = await Promise.all([
-        listUsers(accessToken),
-        listRoles(accessToken),
-        listPermissions(accessToken),
-        listRolePermissions(accessToken)
-      ]);
-      setUsers(usersRes);
-      setRoles(rolesRes);
-      setPermissions(permsRes);
-      setRolePermMap(rolePermsRes);
+    try {
+      if (isAdmin) {
+        const [usersRes, rolesRes, permsRes, rolePermsRes, dashboardRes] = await Promise.all([
+          listUsers(accessToken),
+          listRoles(accessToken),
+          listPermissions(accessToken),
+          listRolePermissions(accessToken),
+          fetchDashboardSummary(accessToken)
+        ]);
+        setUsers(usersRes);
+        setRoles(rolesRes);
+        setPermissions(permsRes);
+        setRolePermMap(rolePermsRes);
+        setDashboard(dashboardRes);
+        setUserDashboard(null);
+        setDashboardError(null);
+        setDashboardLoading(false);
+      } else {
+        const dashboardRes = await fetchUserDashboardSummary(accessToken);
+        setUserDashboard(dashboardRes);
+        setDashboard(null);
+        setUsers([]);
+        setRoles([]);
+        setPermissions([]);
+        setRolePermMap([]);
+        setAuditLogs([]);
+        setDashboardError(null);
+        setDashboardLoading(false);
+      }
+    } catch (error: any) {
+      setDashboardError(error?.message ?? "Failed to load dashboard metrics.");
+      setDashboardLoading(false);
     }
   };
 
@@ -663,41 +906,59 @@ export default function App() {
     setItems(data);
   };
 
+  const completeSessionLogin = (data: Session) => {
+    setSession(data);
+    if (rememberMe) {
+      localStorage.setItem("securevault_session", JSON.stringify(data));
+      localStorage.setItem("securevault_last_email", email);
+      setSavedEmails((prev) => {
+        const next = [email, ...prev.filter((value) => value !== email)].slice(0, 10);
+        localStorage.setItem("securevault_saved_emails", JSON.stringify(next));
+        return next;
+      });
+    } else {
+      localStorage.removeItem("securevault_session");
+    }
+    setLoginStep(1);
+    setOtp("");
+    setPassword("");
+    const userTabs = getTabsForRole(data.user?.roles ?? []);
+    setTab(userTabs.includes("Dashboard") ? "Dashboard" : "Files");
+  };
+
   const onLogin = async () => {
+    if (isLoginSubmitting) return;
     setStatus(null);
+    setLoginError(null);
+    setIsLoginSubmitting(true);
     try {
-      await login(email, password);
+      const loginResult = await login(email, password);
+      if ("accessToken" in loginResult && loginResult.accessToken) {
+        completeSessionLogin(loginResult);
+        return;
+      }
       setLoginStep(3);
       setStatus("OTP sent! Check your email inbox.");
     } catch (err: any) {
-      showToast("error", "Login failed", err?.message ?? "Please check your credentials.");
+      const msg = err?.message ?? "Please check your credentials.";
+      setLoginError(msg);
+      showToast("error", "Login failed", msg);
+    } finally {
+      setIsLoginSubmitting(false);
     }
   };
 
   const onVerifyOtp = async () => {
+    if (isOtpSubmitting) return;
     setStatus(null);
+    setIsOtpSubmitting(true);
     try {
       const data = await verifyOtp(email, otp);
-      setSession(data);
-      if (rememberMe) {
-        localStorage.setItem("securevault_session", JSON.stringify(data));
-        localStorage.setItem("securevault_last_email", email);
-        setSavedEmails((prev) => {
-          const next = [email, ...prev.filter((value) => value !== email)].slice(0, 10);
-          localStorage.setItem("securevault_saved_emails", JSON.stringify(next));
-          return next;
-        });
-      } else {
-        localStorage.removeItem("securevault_session");
-      }
-      setLoginStep(1);
-      setOtp("");
-      setPassword("");
-      // Set initial tab based on role
-      const userTabs = getTabsForRole(data.user?.roles ?? []);
-      setTab(userTabs.includes("Users") ? "Users" : "Files");
+      completeSessionLogin(data);
     } catch (err: any) {
       showToast("error", "Verification failed", err?.message ?? "Invalid OTP code. Please try again.");
+    } finally {
+      setIsOtpSubmitting(false);
     }
   };
 
@@ -709,10 +970,7 @@ export default function App() {
     }
   }, [session?.accessToken]);
 
-  const onLogout = async () => {
-    if (session) {
-      try { await logout(session.refreshToken); } catch (e) { }
-    }
+  const clearClientSession = useCallback(() => {
     localStorage.removeItem("securevault_session");
     if (viewerUrl) URL.revokeObjectURL(viewerUrl);
     if (pdfRenderTaskRef.current) {
@@ -727,6 +985,15 @@ export default function App() {
     setSelectedUser(null);
     setUserRoles([]);
     setItems([]);
+    setDashboard(null);
+    setUserDashboard(null);
+    setDashboardError(null);
+    setDashboardLoading(false);
+    setAuditLogs([]);
+    setAuditFilterUserId("");
+    setAuditFilterAction("");
+    setAuditLoading(false);
+    setAuditError(null);
     setPath([]);
     setViewerItem(null);
     setViewerUrl(null);
@@ -739,41 +1006,279 @@ export default function App() {
     setPassword("");
     setOtp("");
     setLoginStep(1);
+  }, [viewerUrl]);
+
+  const onLogout = async () => {
+    if (session) {
+      try { await logout(session.refreshToken); } catch (e) { }
+    }
+    clearClientSession();
   };
+
+  useEffect(() => {
+    if (!session?.accessToken) return;
+    const expiryMs = getJwtExpiryTime(session.accessToken);
+    if (!expiryMs) return;
+
+    const msUntilExpiry = expiryMs - Date.now();
+    const refreshToken = session.refreshToken;
+
+    if (msUntilExpiry <= 0) {
+      if (refreshToken) {
+        void logout(refreshToken).catch(() => undefined);
+      }
+      showToast("error", "Session expired", "Your session expired. Please sign in again.");
+      clearClientSession();
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      if (refreshToken) {
+        void logout(refreshToken).catch(() => undefined);
+      }
+      showToast("error", "Session expired", "Your session expired. Please sign in again.");
+      clearClientSession();
+    }, msUntilExpiry);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [session?.accessToken, session?.refreshToken, clearClientSession, showToast]);
 
   const onSelectUser = async (user: User) => {
     if (!accessToken) return;
+    setPendingRoleChange(null);
     setSelectedUser(user);
+    setEditUserEmail(user.email);
+    setEditUserFirstName(user.first_name ?? "");
+    setEditUserLastName(user.last_name ?? "");
     const data = await listUserRoles(accessToken, user.id);
     setUserRoles(data);
   };
 
-  const onAddRole = async (roleId: string) => {
-    if (!accessToken || !selectedUser) return;
-    await addUserRole(accessToken, selectedUser.id, roleId);
-    await onSelectUser(selectedUser);
+  const onSaveUserProfile = async (): Promise<boolean> => {
+    if (!accessToken || !selectedUser) return false;
+
+    const emailValue = normalizeEmail(editUserEmail);
+    const firstNameValue = editUserFirstName.trim();
+    const lastNameValue = editUserLastName.trim();
+
+    if (!emailValue) {
+      showToast("error", "Invalid email", "Email is required.");
+      return false;
+    }
+
+    const currentFirst = selectedUser.first_name ?? "";
+    const currentLast = selectedUser.last_name ?? "";
+    if (
+      emailValue === selectedUser.email &&
+      firstNameValue === currentFirst &&
+      lastNameValue === currentLast
+    ) {
+      showToast("success", "No changes", "User details are already up to date.");
+      return true;
+    }
+
+    setIsBusy(true);
+    try {
+      const updated = await updateUserInfo(accessToken, selectedUser.id, {
+        email: emailValue,
+        firstName: firstNameValue,
+        lastName: lastNameValue
+      });
+
+      setUsers((prev) =>
+        prev.map((u) =>
+          u.id === updated.id
+            ? {
+              ...u,
+              email: updated.email,
+              first_name: updated.first_name ?? "",
+              last_name: updated.last_name ?? ""
+            }
+            : u
+        )
+      );
+      setSelectedUser((prev) =>
+        prev && prev.id === updated.id
+          ? {
+            ...prev,
+            email: updated.email,
+            first_name: updated.first_name ?? "",
+            last_name: updated.last_name ?? ""
+          }
+          : prev
+      );
+      setEditUserEmail(updated.email);
+      setEditUserFirstName(updated.first_name ?? "");
+      setEditUserLastName(updated.last_name ?? "");
+
+      if (session?.user?.id === updated.id) {
+        const nextSession = {
+          ...session,
+          user: {
+            ...session.user,
+            email: updated.email,
+            firstName: updated.first_name ?? "",
+            lastName: updated.last_name ?? ""
+          }
+        };
+        setSession(nextSession);
+        if (rememberMe) {
+          localStorage.setItem("securevault_session", JSON.stringify(nextSession));
+        }
+      }
+
+      showToast("success", "User updated", "User profile information has been saved.");
+      return true;
+    } catch (error: any) {
+      showToast("error", "Update failed", error?.message ?? "Could not update user details.");
+      return false;
+    } finally {
+      setIsBusy(false);
+    }
   };
 
-  const onRemoveRole = async (roleId: string) => {
-    if (!accessToken || !selectedUser) return;
-    await removeUserRole(accessToken, selectedUser.id, roleId);
-    await onSelectUser(selectedUser);
+  const onRequestUserAccessRoleChange = (roleId: string) => {
+    if (!selectedUser || isBusy) return;
+    const roleName = roles.find((role) => role.id === roleId)?.name;
+    if (!roleName || !["viewer", "editor"].includes(roleName)) return;
+    const currentRole = userRoles.find((role) => ["viewer", "editor"].includes(role.name));
+    if (currentRole?.id === roleId) return;
+    setPendingRoleChange({
+      roleId,
+      roleName,
+      currentRoleName: currentRole?.name ?? null
+    });
   };
 
-  const onResetRoles = async () => {
-    if (!accessToken || !selectedUser) return;
-    await resetUserRoles(accessToken, selectedUser.id);
-    await onSelectUser(selectedUser);
+  const onConfirmUserAccessRoleChange = async () => {
+    if (!accessToken || !selectedUser || !pendingRoleChange || isBusy) return;
+
+    setIsBusy(true);
+    try {
+      await setUserRole(accessToken, selectedUser.id, pendingRoleChange.roleId);
+      setUsers((prev) =>
+        prev.map((user) =>
+          user.id === selectedUser.id
+            ? { ...user, roles: [pendingRoleChange.roleName] }
+            : user
+        )
+      );
+      await onSelectUser(selectedUser);
+      showToast(
+        "success",
+        "Role updated",
+        `${pendingRoleChange.roleName} role assigned successfully.`
+      );
+      setPendingRoleChange(null);
+    } catch (error: any) {
+      showToast("error", "Role update failed", error?.message ?? "Could not change role.");
+    } finally {
+      setIsBusy(false);
+    }
   };
 
-  const onToggleStatus = async (user: User) => {
-    if (!accessToken) return;
-    const nextStatus = user.status === "active" ? "disabled" : "active";
-    await updateUserStatus(accessToken, user.id, nextStatus as "active" | "disabled");
-    await refreshData();
-    if (selectedUser?.id === user.id) {
-      const updated = users.find((u) => u.id === user.id);
-      if (updated) setSelectedUser(updated);
+  const onToggleRolePermission = async (roleName: string, permissionKey: string) => {
+    if (!accessToken || isBusy) return;
+
+    const role = roles.find((entry) => entry.name === roleName);
+    if (!role) {
+      showToast("error", "Permission update failed", "Role not found.");
+      return;
+    }
+
+    const currentKeys = (
+      rolePermMap.find((entry) => entry.role_name === roleName)?.permissions ?? []
+    ).filter(Boolean);
+    const nextKeySet = new Set(currentKeys);
+    if (nextKeySet.has(permissionKey)) {
+      nextKeySet.delete(permissionKey);
+    } else {
+      nextKeySet.add(permissionKey);
+    }
+
+    const permissionIdByKey = new Map(permissions.map((entry) => [entry.key, entry.id]));
+    const nextKeys = Array.from(nextKeySet).sort();
+    const nextPermissionIds: string[] = [];
+    for (const key of nextKeys) {
+      const permissionId = permissionIdByKey.get(key);
+      if (!permissionId) {
+        showToast("error", "Permission update failed", `Permission ${key} was not found.`);
+        return;
+      }
+      nextPermissionIds.push(permissionId);
+    }
+
+    setIsBusy(true);
+    try {
+      await updateRolePermissions(accessToken, role.id, nextPermissionIds);
+      setRolePermMap((prev) => {
+        const found = prev.some((entry) => entry.role_name === roleName);
+        if (found) {
+          return prev.map((entry) =>
+            entry.role_name === roleName
+              ? { ...entry, permissions: nextKeys }
+              : entry
+          );
+        }
+        return [...prev, { role_name: roleName, permissions: nextKeys }];
+      });
+      showToast("success", "Permissions updated", `${roleName} role permissions updated.`);
+    } catch (error: any) {
+      showToast(
+        "error",
+        "Permission update failed",
+        error?.message ?? "Could not update role permissions."
+      );
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onConfirmRemoveUser = async () => {
+    if (!accessToken || !deleteUserId) return;
+    setIsBusy(true);
+    try {
+      const removed = users.find((u) => u.id === deleteUserId);
+      await removeUser(accessToken, deleteUserId);
+      setUsers((prev) => prev.filter((u) => u.id !== deleteUserId));
+      setUserRoles([]);
+      if (selectedUser?.id === deleteUserId) {
+        setSelectedUser(null);
+      }
+      setDeleteUserId(null);
+      showToast(
+        "success",
+        "User removed",
+        `${removed?.email ?? "The user"} has been removed successfully.`
+      );
+    } catch (error: any) {
+      showToast("error", "Remove failed", error?.message ?? "Could not remove user.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const isUserProfileDirty = useMemo(() => {
+    if (!selectedUser) return false;
+    const emailValue = normalizeEmail(editUserEmail);
+    const firstNameValue = editUserFirstName.trim();
+    const lastNameValue = editUserLastName.trim();
+    return (
+      emailValue !== selectedUser.email ||
+      firstNameValue !== (selectedUser.first_name ?? "") ||
+      lastNameValue !== (selectedUser.last_name ?? "")
+    );
+  }, [selectedUser, editUserEmail, editUserFirstName, editUserLastName]);
+
+  const onDoneUserDetails = async () => {
+    if (!selectedUser) return;
+    if (!isUserProfileDirty) {
+      setSelectedUser(null);
+      return;
+    }
+    const saved = await onSaveUserProfile();
+    if (saved) {
+      setSelectedUser(null);
     }
   };
 
@@ -781,6 +1286,10 @@ export default function App() {
     () => new Set(userRoles.map((role) => role.id)),
     [userRoles]
   );
+  const deleteUserTarget = useMemo(() => {
+    if (!deleteUserId) return null;
+    return users.find((u) => u.id === deleteUserId) ?? (selectedUser?.id === deleteUserId ? selectedUser : null);
+  }, [deleteUserId, selectedUser, users]);
 
   const currentFolderId = path.length ? path[path.length - 1].id : null;
 
@@ -818,15 +1327,49 @@ export default function App() {
     }
   };
 
-  const onUploadFile = async (file: File) => {
+  const onUploadFiles = async (files: FileList | File[]) => {
     if (!accessToken) return;
+    const selectedFiles = Array.from(files);
+    if (selectedFiles.length === 0) return;
+
     setIsBusy(true);
+    let uploadedCount = 0;
+    const uploadedNames: string[] = [];
+    let failedCount = 0;
+    let firstError: string | null = null;
+
     try {
-      await createFile(accessToken, file, currentFolderId);
+      for (const file of selectedFiles) {
+        try {
+          await createFile(accessToken, file, currentFolderId);
+          uploadedCount += 1;
+          uploadedNames.push(file.name);
+        } catch (error: any) {
+          failedCount += 1;
+          if (!firstError) {
+            firstError = error?.message ?? `Could not upload ${file.name}.`;
+          }
+        }
+      }
+
       await refreshItems(currentFolderId);
-      showToast("success", "File uploaded", `${file.name} uploaded successfully.`);
-    } catch (error: any) {
-      showToast("error", "Upload failed", error?.message ?? "Could not upload file.");
+
+      if (uploadedCount > 0) {
+        const title = uploadedCount === 1 ? "File uploaded" : "Files uploaded";
+        const message =
+          uploadedCount === 1
+            ? `${uploadedNames[0]} uploaded successfully.`
+            : `${uploadedCount} files uploaded successfully.`;
+        showToast("success", title, message);
+      }
+
+      if (failedCount > 0) {
+        showToast(
+          "error",
+          failedCount === 1 ? "Upload failed" : "Some uploads failed",
+          firstError ?? `${failedCount} files could not be uploaded.`
+        );
+      }
     } finally {
       setIsBusy(false);
     }
@@ -977,25 +1520,12 @@ export default function App() {
     }
   };
 
-  const onReplaceFile = async (item: Item, file: File) => {
-    if (!accessToken || item.type !== "file") return;
-    setReplaceUploadingId(item.id);
-    try {
-      const updated = await replaceFile(accessToken, item.id, file, file.name);
-      await refreshItems(currentFolderId);
-      if (viewerItem?.id === item.id) {
-        await onOpenFile(updated);
-      }
-      showToast("success", "File replaced", `${file.name} uploaded as the latest version.`);
-    } catch (error: any) {
-      showToast("error", "Replace failed", error?.message ?? "Could not replace file.");
-    } finally {
-      setReplaceUploadingId(null);
-    }
-  };
-
   const onCreateUserSubmit = async () => {
     if (!accessToken) return;
+    if (newUserPasswordError) {
+      showToast("error", "Invalid password", newUserPasswordError);
+      return;
+    }
     setIsBusy(true);
     try {
       await createUser(
@@ -1006,7 +1536,7 @@ export default function App() {
         newUserFirstName,
         newUserLastName
       );
-      showToast("success", "User created", `Welcome email invitation sent to ${newUserEmail}`);
+      showToast("success", "User created", `${newUserEmail} has been created successfully.`);
       setShowCreateUser(false);
       setNewUserEmail("");
       setNewUserPassword("");
@@ -1028,8 +1558,8 @@ export default function App() {
 
   const onConfirmResetPassword = async () => {
     if (!accessToken || !resetUserId) return;
-    if (resetNewPassword.length < 6) {
-      showToast("error", "Too short", "Password must be at least 6 characters.");
+    if (resetPasswordError) {
+      showToast("error", "Invalid password", resetPasswordError);
       return;
     }
     setIsBusy(true);
@@ -1045,21 +1575,38 @@ export default function App() {
     }
   };
 
-  const refreshAuditLogs = async () => {
+  const refreshAuditLogs = async (filters?: { action?: string; userId?: string }) => {
     if (!accessToken) return;
+    setAuditLoading(true);
+    setAuditError(null);
     try {
-      const logs = await listAuditLogs(accessToken, { limit: 100 });
+      const actionFilter = filters?.action ?? auditFilterAction;
+      const userFilter = filters?.userId ?? auditFilterUserId;
+      const logs = await listAuditLogs(accessToken, {
+        limit: 200,
+        action: actionFilter || undefined,
+        userId: userFilter || undefined
+      });
       setAuditLogs(logs);
-    } catch {
-      // User might not have audit:read permission — silently ignore
+    } catch (error: any) {
+      setAuditLogs([]);
+      setAuditError(error?.message ?? "Failed to load audit logs.");
+    } finally {
+      setAuditLoading(false);
     }
   };
 
   useEffect(() => {
     if (tab === "Audit Logs" && accessToken) {
-      refreshAuditLogs();
+      void refreshAuditLogs();
     }
   }, [tab, accessToken]);
+
+  useEffect(() => {
+    if (tab === "Dashboard" && accessToken) {
+      refreshDashboard();
+    }
+  }, [tab, accessToken, isAdmin]);
 
   if (isSessionChecking) {
     return (
@@ -1158,17 +1705,47 @@ export default function App() {
                   placeholder="Enter your password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                  disabled={isLoginSubmitting}
                   required
                   autoFocus
                 />
-                <button type="button" className="input-action-btn" onClick={() => setShowPassword(!showPassword)}>
+                <button
+                  type="button"
+                  className="input-action-btn"
+                  onClick={() => setShowPassword(!showPassword)}
+                  disabled={isLoginSubmitting}
+                >
                   {showPassword ? <EyeOffIcon size={18} /> : <EyeIcon size={18} />}
                 </button>
               </div>
-              <button className="btn btn-primary" type="submit">Continue</button>
+              {loginError && (
+                <div style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "10px 14px",
+                  borderRadius: 10,
+                  background: "var(--red-bg, rgba(248,113,113,0.1))",
+                  border: "1px solid rgba(248,113,113,0.3)",
+                  color: "var(--red, #f87171)",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  marginBottom: 4
+                }}>
+                  <span>⚠</span> {loginError}
+                </div>
+              )}
+              <button className="btn btn-primary" type="submit" disabled={isLoginSubmitting}>
+                {isLoginSubmitting ? "Signing in..." : "Continue"}
+              </button>
             </form>
             <div className="login-footer">
-              <button className="btn btn-ghost btn-sm" onClick={() => { setLoginStep(1); setPassword(""); }} style={{ width: "100%", marginTop: 8 }}>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => { setLoginStep(1); setPassword(""); setLoginError(null); }}
+                disabled={isLoginSubmitting}
+                style={{ width: "100%", marginTop: 8 }}
+              >
                 ← Use a different email
               </button>
             </div>
@@ -1191,12 +1768,28 @@ export default function App() {
             <form className="login-form" onSubmit={(e) => { e.preventDefault(); onVerifyOtp(); }}>
               <div className="input-group">
                 <span className="input-icon"><LockIcon /></span>
-                <input type="text" placeholder="Enter 6-digit OTP" value={otp} onChange={(e) => setOtp(e.target.value)} required maxLength={6} autoFocus />
+                <input
+                  type="text"
+                  placeholder="Enter 6-digit OTP"
+                  value={otp}
+                  onChange={(e) => setOtp(e.target.value)}
+                  disabled={isOtpSubmitting}
+                  required
+                  maxLength={6}
+                  autoFocus
+                />
               </div>
-              <button className="btn btn-primary" type="submit">Verify &amp; Sign In</button>
+              <button className="btn btn-primary" type="submit" disabled={isOtpSubmitting}>
+                {isOtpSubmitting ? "Verifying..." : "Verify & Sign In"}
+              </button>
             </form>
             <div className="login-footer">
-              <button className="btn btn-ghost btn-sm" onClick={() => { setLoginStep(1); setOtp(""); setPassword(""); setStatus(null); }} style={{ width: "100%", marginTop: 8 }}>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => { setLoginStep(1); setOtp(""); setPassword(""); setStatus(null); }}
+                disabled={isOtpSubmitting}
+                style={{ width: "100%", marginTop: 8 }}
+              >
                 ← Start over
               </button>
             </div>
@@ -1262,10 +1855,422 @@ export default function App() {
 
       {/* Content */}
       <main className="content" key={tab}>
-        <div className="page-header">
-          <h1 className="page-title">{tab}</h1>
-          <p className="page-subtitle">{tabDescriptions[tab]}</p>
+        {/* ── Top page header ── */}
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: tab === "Dashboard" ? 0 : 24,
+          gap: 12,
+          flexWrap: "wrap"
+        }}>
+          {tab !== "Dashboard" ? (
+            <div className="page-header" style={{ margin: 0 }}>
+              <h1 className="page-title">{tab}</h1>
+              <p className="page-subtitle">{tabDescriptions[tab]}</p>
+            </div>
+          ) : (
+            <div /> /* Dashboard has its own header inside */
+          )}
+
+          {isAdmin && (
+            <div style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 7,
+              padding: "6px 14px",
+              borderRadius: 999,
+              background: "linear-gradient(135deg, rgba(129,140,248,0.18) 0%, rgba(99,102,241,0.1) 100%)",
+              border: "1px solid rgba(129,140,248,0.35)",
+              color: "var(--accent)",
+              fontSize: 12,
+              fontWeight: 700,
+              letterSpacing: "0.5px",
+              whiteSpace: "nowrap",
+              flexShrink: 0,
+              boxShadow: "0 0 0 3px rgba(129,140,248,0.08)"
+            }}>
+              <ShieldIcon size={13} />
+              Admin
+            </div>
+          )}
         </div>
+
+
+        {/* ---- DASHBOARD TAB ---- */}
+        {tab === "Dashboard" && (
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {dashboardLoading && !(isAdmin ? dashboard : userDashboard) ? (
+              <div className="panel" style={{ textAlign: "center", padding: "56px 0", color: "var(--ink-3)" }}>
+                Loading dashboard metrics...
+              </div>
+            ) : dashboardError && !(isAdmin ? dashboard : userDashboard) ? (
+              <div className="panel" style={{ textAlign: "center", padding: "56px 0", color: "var(--red)" }}>
+                {dashboardError}
+              </div>
+            ) : isAdmin && dashboard ? (
+              <>
+                <div className="dashboard-v2-header">
+                  <div>
+                    <h1>Security Overview</h1>
+                    <p>High-level view of users, files, and system activity.</p>
+                  </div>
+                  <div className="time-range-picker" onClick={refreshDashboard}>
+                    <CalendarIcon />
+                    <span>Last 7 Days</span>
+                    <ChevronIcon />
+                  </div>
+                </div>
+
+                <section className="metrics-v2-grid">
+                  <div className="metric-v2-card" style={{ transitionDelay: "0.1s" }}>
+                    <div className="m-v2-header">
+                      <span className="m-v2-title">Total Users</span>
+                      <UsersIcon size={16} className="m-v2-icon" />
+                    </div>
+                    <div className="m-v2-value">{dashboard.users.total.toLocaleString()}</div>
+                    <div className="m-v2-footer">
+                      <span className="text-green">{dashboard.users.active} Active</span>
+                      <span className="m-divider"></span>
+                      <span style={{ color: "var(--ink-4)" }}>{dashboard.users.disabled} Disabled</span>
+                    </div>
+                  </div>
+
+                  <div className="metric-v2-card" style={{ transitionDelay: "0.15s" }}>
+                    <div className="m-v2-header">
+                      <span className="m-v2-title">Active Items</span>
+                      <LayersIcon size={16} className="m-v2-icon" />
+                    </div>
+                    <div className="m-v2-value">{dashboard.items.total_active.toLocaleString()}</div>
+                    <div className="m-v2-footer">
+                      <span style={{ color: "var(--ink-3)" }}>{dashboard.items.files} Files</span>
+                      <span className="m-divider"></span>
+                      <span style={{ color: "var(--ink-3)" }}>{dashboard.items.folders} Folders</span>
+                    </div>
+                  </div>
+
+                  <div className="metric-v2-card" style={{ transitionDelay: "0.2s" }}>
+                    <div className="m-v2-header">
+                      <span className="m-v2-title">Role / Permission Sets</span>
+                      <KeyIcon size={16} className="m-v2-icon" />
+                    </div>
+                    <div className="m-v2-value">
+                      {dashboard.roles.total}
+                      <span style={{ color: "var(--ink-4)", fontWeight: 400, margin: "0 4px" }}>/</span>
+                      {dashboard.permissions.total}
+                    </div>
+                    <div className="m-v2-footer">
+                      <span style={{ color: "var(--ink-3)" }}>{dashboard.shares.total} Grants</span>
+                      <span className="m-divider"></span>
+                      <span style={{ color: "var(--ink-3)" }}>{dashboard.items.deleted} Deleted</span>
+                    </div>
+                  </div>
+
+                  <div className="metric-v2-card bg-alert-subtle" style={{ border: "1px solid rgba(248, 113, 113, 0.2)", transitionDelay: "0.25s" }}>
+                    <div className="m-v2-header">
+                      <span className="m-v2-title text-alert">Auth Security (24H)</span>
+                      <ShieldAlertIcon size={16} className="m-v2-icon text-alert" />
+                    </div>
+                    <div className="m-v2-value text-alert">{dashboard.activityLast24h.login_failed}</div>
+                    <div className="m-v2-footer">
+                      <span className="badge badge-disabled" style={{ padding: "2px 6px", fontSize: 11 }}>Failed Logins</span>
+                      <span className="m-divider"></span>
+                      <span style={{ color: "var(--ink-3)" }}>{dashboard.activityLast24h.logins} total</span>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="bento-v2-grid">
+                  <div className="panel-v2">
+                    <div className="panel-v2-header">
+                      <h2>Top Actions (7 Days)</h2>
+                      <button className="btn-ghost" style={{ padding: 4 }}><ActivityIcon size={16} /></button>
+                    </div>
+
+                    <div className="action-v2-list">
+                      {dashboard.topActions7d.length === 0 ? (
+                        <div style={{ color: "var(--ink-4)", fontSize: 14, padding: "20px 0", textAlign: "center" }}>No recent activity.</div>
+                      ) : (
+                        dashboard.topActions7d.map((row) => {
+                          const max = Math.max(...dashboard.topActions7d.map((a) => a.count), 1);
+                          const width = Math.max(8, Math.round((row.count / max) * 100));
+                          const isAlert = row.action.includes("failed") || row.action.includes("delete");
+                          return (
+                            <div className="action-v2-item" key={row.action}>
+                              <div className="a-v2-info">
+                                <span className={`a-v2-name ${isAlert ? "text-alert" : ""}`}>{formatActionLabel(row.action)}</span>
+                                <span className="a-v2-count">{row.count}</span>
+                              </div>
+                              <div className="progress-v2-track">
+                                <div
+                                  className={`progress-v2-fill ${isAlert ? "fill-red" : row.action.includes("create") || row.action.includes("upload") ? "fill-accent" : "fill-muted"}`}
+                                  style={{ width: `${width}%` }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="panel-v2">
+                    <div className="panel-v2-header">
+                      <h2>Activity Snapshot</h2>
+                      <span className="badge badge-neutral" style={{ fontSize: 11 }}>24h</span>
+                    </div>
+
+                    <div className="snapshot-v2-grid">
+                      <div className="snap-v2-box">
+                        <span className="s-v2-label">Logins</span>
+                        <span className="s-v2-val">{dashboard.activityLast24h.logins}</span>
+                      </div>
+                      <div className="snap-v2-box bg-alert-subtle">
+                        <span className="s-v2-label text-alert">Login Failed</span>
+                        <span className="s-v2-val text-alert">{dashboard.activityLast24h.login_failed}</span>
+                      </div>
+                      <div className="snap-v2-box">
+                        <span className="s-v2-label">Uploads</span>
+                        <span className="s-v2-val">{dashboard.activityLast24h.uploads}</span>
+                      </div>
+                      <div className="snap-v2-box">
+                        <span className="s-v2-label">Downloads</span>
+                        <span className="s-v2-val">{dashboard.activityLast24h.downloads}</span>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <div className="panel-v2 table-panel-v2">
+                  <div className="panel-v2-header">
+                    <h2>Recent Security Activity</h2>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                        <SearchIcon style={{ position: "absolute", left: 10, color: "var(--ink-4)" }} />
+                        <input
+                          type="text"
+                          placeholder="Search logs..."
+                          className="modal-input"
+                          style={{ margin: 0, paddingLeft: 34, width: 180, fontSize: 13, height: 34 }}
+                        />
+                      </div>
+                      <button className="btn-ghost" style={{ border: "1px solid var(--border)", borderRadius: 8, height: 34, width: 34, padding: 0 }}>
+                        <FilterIcon size={14} />
+                      </button>
+                    </div>
+                  </div>
+                  {dashboard.recentAudit.length === 0 ? (
+                    <div style={{ color: "var(--ink-4)", fontSize: 14, padding: "40px 0", textAlign: "center" }}>No security entries yet.</div>
+                  ) : (
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Time</th>
+                          <th>Action</th>
+                          <th>Actor</th>
+                          <th>Target</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dashboard.recentAudit.map((log) => {
+                          const isAlert = log.action.includes("failed") || log.action.includes("delete");
+                          return (
+                            <tr key={log.id} className={isAlert ? "row-danger" : ""}>
+                              <td className="cell-muted" style={{ fontSize: 12 }}>{formatDate(log.created_at)}</td>
+                              <td>
+                                <span className={`pill-v2 ${isAlert ? "pill-v2-red" : "pill-v2-blue"}`}>{formatActionLabel(log.action)}</span>
+                              </td>
+                              <td className="t-main" style={{ fontWeight: 600 }}>{log.actor_email ?? "system"}</td>
+                              <td className="cell-muted" style={{ fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
+                                {log.target_type}{log.target_id ? ` · ${String(log.target_id).slice(0, 8)}...` : ""}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </>
+            ) : !isAdmin && userDashboard ? (
+              <>
+                <div className="dashboard-v2-header">
+                  <div>
+                    <h1>My Dashboard</h1>
+                    <p>Live usage and activity for your account.</p>
+                  </div>
+                  <div className="time-range-picker" onClick={refreshDashboard}>
+                    <CalendarIcon />
+                    <span>Last 7 Days</span>
+                    <ChevronIcon />
+                  </div>
+                </div>
+
+                <section className="metrics-v2-grid">
+                  <div className="metric-v2-card" style={{ transitionDelay: "0.1s" }}>
+                    <div className="m-v2-header">
+                      <span className="m-v2-title">Accessible Items</span>
+                      <LayersIcon size={16} className="m-v2-icon" />
+                    </div>
+                    <div className="m-v2-value">{userDashboard.items.total_accessible.toLocaleString()}</div>
+                    <div className="m-v2-footer">
+                      <span style={{ color: "var(--ink-3)" }}>{userDashboard.items.files} Files</span>
+                      <span className="m-divider"></span>
+                      <span style={{ color: "var(--ink-3)" }}>{userDashboard.items.folders} Folders</span>
+                    </div>
+                  </div>
+
+                  <div className="metric-v2-card" style={{ transitionDelay: "0.15s" }}>
+                    <div className="m-v2-header">
+                      <span className="m-v2-title">Ownership</span>
+                      <UsersIcon size={16} className="m-v2-icon" />
+                    </div>
+                    <div className="m-v2-value">{userDashboard.items.owned.toLocaleString()}</div>
+                    <div className="m-v2-footer">
+                      <span style={{ color: "var(--ink-3)" }}>Owned by you</span>
+                      <span className="m-divider"></span>
+                      <span style={{ color: "var(--ink-3)" }}>{userDashboard.items.shared_with_me} Shared with you</span>
+                    </div>
+                  </div>
+
+                  <div className="metric-v2-card" style={{ transitionDelay: "0.2s" }}>
+                    <div className="m-v2-header">
+                      <span className="m-v2-title">Current Role</span>
+                      <ShieldIcon size={16} className="m-v2-icon" />
+                    </div>
+                    <div className="m-v2-value" style={{ textTransform: "capitalize" }}>{userDashboard.role}</div>
+                    <div className="m-v2-footer">
+                      <span style={{ color: "var(--ink-3)" }}>{userDashboard.permissions.length} Active permissions</span>
+                    </div>
+                  </div>
+
+                  <div className="metric-v2-card" style={{ transitionDelay: "0.25s" }}>
+                    <div className="m-v2-header">
+                      <span className="m-v2-title">24H Actions</span>
+                      <ActivityIcon size={16} className="m-v2-icon" />
+                    </div>
+                    <div className="m-v2-value">
+                      {(userDashboard.activityLast24h.uploads + userDashboard.activityLast24h.downloads + userDashboard.activityLast24h.updates + userDashboard.activityLast24h.deletes).toLocaleString()}
+                    </div>
+                    <div className="m-v2-footer">
+                      <span style={{ color: "var(--ink-3)" }}>{userDashboard.activityLast24h.logins} Logins</span>
+                      <span className="m-divider"></span>
+                      <span style={{ color: "var(--ink-3)" }}>{userDashboard.activityLast24h.shares} Shares</span>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="bento-v2-grid">
+                  <div className="panel-v2">
+                    <div className="panel-v2-header">
+                      <h2>Top Actions (7 Days)</h2>
+                      <button className="btn-ghost" style={{ padding: 4 }}><ActivityIcon size={16} /></button>
+                    </div>
+                    <div className="action-v2-list">
+                      {userDashboard.topActions7d.length === 0 ? (
+                        <div style={{ color: "var(--ink-4)", fontSize: 14, padding: "20px 0", textAlign: "center" }}>No recent activity.</div>
+                      ) : (
+                        userDashboard.topActions7d.map((row) => {
+                          const max = Math.max(...userDashboard.topActions7d.map((a) => a.count), 1);
+                          const width = Math.max(8, Math.round((row.count / max) * 100));
+                          const isAlert = row.action.includes("failed") || row.action.includes("delete");
+                          return (
+                            <div className="action-v2-item" key={row.action}>
+                              <div className="a-v2-info">
+                                <span className={`a-v2-name ${isAlert ? "text-alert" : ""}`}>{formatActionLabel(row.action)}</span>
+                                <span className="a-v2-count">{row.count}</span>
+                              </div>
+                              <div className="progress-v2-track">
+                                <div
+                                  className={`progress-v2-fill ${isAlert ? "fill-red" : row.action.includes("create") || row.action.includes("upload") ? "fill-accent" : "fill-muted"}`}
+                                  style={{ width: `${width}%` }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="panel-v2">
+                    <div className="panel-v2-header">
+                      <h2>Activity Snapshot</h2>
+                      <span className="badge badge-neutral" style={{ fontSize: 11 }}>24h</span>
+                    </div>
+                    <div className="snapshot-v2-grid">
+                      <div className="snap-v2-box">
+                        <span className="s-v2-label">Logins</span>
+                        <span className="s-v2-val">{userDashboard.activityLast24h.logins}</span>
+                      </div>
+                      <div className="snap-v2-box">
+                        <span className="s-v2-label">Uploads</span>
+                        <span className="s-v2-val">{userDashboard.activityLast24h.uploads}</span>
+                      </div>
+                      <div className="snap-v2-box">
+                        <span className="s-v2-label">Downloads</span>
+                        <span className="s-v2-val">{userDashboard.activityLast24h.downloads}</span>
+                      </div>
+                      <div className="snap-v2-box">
+                        <span className="s-v2-label">Updates</span>
+                        <span className="s-v2-val">{userDashboard.activityLast24h.updates}</span>
+                      </div>
+                      <div className="snap-v2-box bg-alert-subtle">
+                        <span className="s-v2-label text-alert">Deletes</span>
+                        <span className="s-v2-val text-alert">{userDashboard.activityLast24h.deletes}</span>
+                      </div>
+                      <div className="snap-v2-box">
+                        <span className="s-v2-label">Shares</span>
+                        <span className="s-v2-val">{userDashboard.activityLast24h.shares}</span>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <div className="panel-v2 table-panel-v2">
+                  <div className="panel-v2-header">
+                    <h2>Recent Activity</h2>
+                  </div>
+                  {userDashboard.recentActivity.length === 0 ? (
+                    <div style={{ color: "var(--ink-4)", fontSize: 14, padding: "40px 0", textAlign: "center" }}>No activity entries yet.</div>
+                  ) : (
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Time</th>
+                          <th>Action</th>
+                          <th>Actor</th>
+                          <th>Target</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {userDashboard.recentActivity.map((log) => {
+                          const isAlert = log.action.includes("failed") || log.action.includes("delete");
+                          return (
+                            <tr key={log.id} className={isAlert ? "row-danger" : ""}>
+                              <td className="cell-muted" style={{ fontSize: 12 }}>{formatDate(log.created_at)}</td>
+                              <td>
+                                <span className={`pill-v2 ${isAlert ? "pill-v2-red" : "pill-v2-blue"}`}>{formatActionLabel(log.action)}</span>
+                              </td>
+                              <td className="t-main" style={{ fontWeight: 600 }}>{log.actor_email ?? session.user.email}</td>
+                              <td className="cell-muted" style={{ fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
+                                {log.target_type}{log.target_id ? ` · ${String(log.target_id).slice(0, 8)}...` : ""}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="panel" style={{ textAlign: "center", padding: "56px 0", color: "var(--ink-3)" }}>
+                Dashboard data is unavailable.
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ---- USERS TAB ---- */}
         {tab === "Users" && (
@@ -1285,38 +2290,79 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {users.map((user) => (
-                  <tr
-                    key={user.id}
-                    onClick={() => onSelectUser(user)}
-                    style={{ background: selectedUser?.id === user.id ? "var(--accent-light)" : undefined }}
-                  >
-                    <td>
-                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                        <div className="sidebar-avatar" style={{ width: 32, height: 32, fontSize: 12 }}>
-                          {getInitials({ firstName: user.first_name, lastName: user.last_name, email: user.email })}
-                        </div>
-                        <div style={{ display: "flex", flexDirection: "column" }}>
-                          <span className="cell-email" style={{ marginBottom: 2 }}>
-                            {user.first_name ? `${user.first_name} ${user.last_name}` : "-"}
+                {(() => {
+                  const adminUsers = users.filter(u => !u.roles || u.roles.length === 0);
+                  const regularUsers = users.filter(u => u.roles && u.roles.length > 0);
+
+                  const renderRow = (user: typeof users[0]) => {
+                    const isAdminUser = !user.roles || user.roles.length === 0;
+                    return (
+                      <tr
+                        key={user.id}
+                        onClick={() => !isAdminUser && onSelectUser(user)}
+                        style={{
+                          background: selectedUser?.id === user.id ? "var(--accent-light)" : undefined,
+                          cursor: isAdminUser ? "default" : "pointer",
+                          opacity: isAdminUser ? 0.7 : 1
+                        }}
+                      >
+                        <td>
+                          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                            <div className="sidebar-avatar" style={{ width: 32, height: 32, fontSize: 12 }}>
+                              {getInitials({ firstName: user.first_name, lastName: user.last_name, email: user.email })}
+                            </div>
+                            <div style={{ display: "flex", flexDirection: "column" }}>
+                              <span className="cell-email" style={{ marginBottom: 2 }}>
+                                {user.first_name ? `${user.first_name} ${user.last_name}` : "-"}
+                              </span>
+                              <span style={{ fontSize: 12, color: "var(--ink-4)" }}>{user.email}</span>
+                            </div>
+                          </div>
+                        </td>
+                        <td>
+                          {isAdminUser ? (
+                            <span className="badge badge-accent" style={{ fontSize: 11 }}>
+                              <ShieldIcon size={11} style={{ marginRight: 3 }} /> admin
+                            </span>
+                          ) : (() => {
+                            const visibleRoles = (user.roles ?? []).filter(r => ["viewer", "editor"].includes(r));
+                            if (visibleRoles.length === 0) return <span className="cell-muted">-</span>;
+                            return visibleRoles.map(role => (
+                              <span key={role} className={`badge ${role === "editor" ? "badge-active" : "badge-disabled"}`} style={{ marginRight: 4 }}>
+                                {role}
+                              </span>
+                            ));
+                          })()}
+                        </td>
+                        <td>
+                          <span className={`badge ${user.status === "active" ? "badge-active" : "badge-disabled"}`}>
+                            {user.status}
                           </span>
-                          <span style={{ fontSize: 12, color: "var(--ink-4)" }}>{user.email}</span>
-                        </div>
-                      </div>
-                    </td>
-                    <td>
-                      {(user.roles ?? []).map((r) => (
-                        <span key={r} className={`badge ${r === 'admin' ? 'badge-accent' : r === 'editor' ? 'badge-active' : 'badge-disabled'}`} style={{ marginRight: 4 }}>{r}</span>
-                      ))}
-                    </td>
-                    <td>
-                      <span className={`badge ${user.status === "active" ? "badge-active" : "badge-disabled"}`}>
-                        {user.status}
-                      </span>
-                    </td>
-                    <td className="cell-muted">{formatDate(user.created_at)}</td>
-                  </tr>
-                ))}
+                        </td>
+                        <td className="cell-muted">{formatDate(user.created_at)}</td>
+                      </tr>
+                    );
+                  };
+
+                  const sectionLabel = (label: string) => (
+                    <tr key={`section-${label}`} style={{ pointerEvents: "none" }}>
+                      <td colSpan={4} style={{ padding: "8px 16px 4px", background: "var(--bg)" }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-4)", letterSpacing: "0.6px", textTransform: "uppercase" }}>
+                          {label}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+
+                  return (
+                    <>
+                      {adminUsers.length > 0 && sectionLabel("Administrators")}
+                      {adminUsers.map(u => renderRow(u))}
+                      {regularUsers.length > 0 && sectionLabel("Users")}
+                      {regularUsers.map(u => renderRow(u))}
+                    </>
+                  );
+                })()}
               </tbody>
             </table>
 
@@ -1340,10 +2386,48 @@ export default function App() {
                     </div>
                   </div>
 
+                  <div className="user-detail-section-title">Edit User Details</div>
+                  <div style={{ display: "grid", gap: 10 }}>
+                    <input
+                      className="modal-input"
+                      type="text"
+                      placeholder="First Name"
+                      value={editUserFirstName}
+                      onChange={(e) => setEditUserFirstName(e.target.value)}
+                      style={{ margin: 0 }}
+                    />
+                    <input
+                      className="modal-input"
+                      type="text"
+                      placeholder="Last Name"
+                      value={editUserLastName}
+                      onChange={(e) => setEditUserLastName(e.target.value)}
+                      style={{ margin: 0 }}
+                    />
+                    <input
+                      className="modal-input"
+                      type="email"
+                      placeholder="Email address"
+                      value={editUserEmail}
+                      onChange={(e) => setEditUserEmail(e.target.value)}
+                      style={{ margin: 0 }}
+                    />
+                  </div>
+                  <div style={{ display: "flex", marginTop: 12, marginBottom: 12 }}>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={onSaveUserProfile}
+                      disabled={isBusy || !editUserEmail.trim()}
+                      style={{ width: "100%" }}
+                    >
+                      {isBusy ? "Saving..." : "Save Details"}
+                    </button>
+                  </div>
+
                   <div className="user-detail-section-title">Manage Access Roles</div>
                   <div className="role-grid">
                     {roles
-                      .filter(r => ["editor", "viewer"].includes(r.name))
+                      .filter((role) => ["viewer", "editor"].includes(role.name))
                       .map((role) => (
                         <div
                           key={role.id}
@@ -1351,30 +2435,67 @@ export default function App() {
                           style={{ padding: "12px 16px", borderRadius: 12, border: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center", background: selectedRoleIds.has(role.id) ? "var(--accent-light)" : "transparent" }}
                         >
                           <span style={{ fontWeight: 600, color: "var(--ink-1)", textTransform: "capitalize" }}>{role.name}</span>
-                          {selectedRoleIds.has(role.id) ? (
-                            <button onClick={() => onRemoveRole(role.id)} title="Remove role" style={{ background: "var(--red)", color: "white", border: "none", width: 20, height: 20, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 16 }}>×</button>
-                          ) : (
-                            <button onClick={() => onAddRole(role.id)} title="Add role" style={{ background: "var(--accent)", color: "white", border: "none", width: 20, height: 20, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 16 }}>+</button>
-                          )}
+                          <button
+                            onClick={() => onRequestUserAccessRoleChange(role.id)}
+                            disabled={isBusy || selectedRoleIds.has(role.id)}
+                            title={selectedRoleIds.has(role.id) ? "Current role" : "Set role"}
+                            style={{ background: selectedRoleIds.has(role.id) ? "var(--green)" : "var(--accent)", color: "white", border: "none", width: 20, height: 20, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 16, opacity: isBusy ? 0.6 : 1 }}
+                          >
+                            {selectedRoleIds.has(role.id) ? "✓" : "+"}
+                          </button>
                         </div>
                       ))}
                   </div>
 
-                  <div className="user-detail-actions" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 24 }}>
+                  <div className="user-detail-actions" style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12, marginTop: 24 }}>
                     <button className="btn btn-secondary btn-sm" onClick={() => onResetPassword(selectedUser.id)}>
                       Reset Password
                     </button>
-                    <button
-                      className={`btn btn-sm ${selectedUser.status === "active" ? "btn-danger" : "btn-primary"}`}
-                      onClick={() => onToggleStatus(selectedUser)}
-                    >
-                      {selectedUser.status === "active" ? "Disable User" : "Enable User"}
-                    </button>
+                    {(() => {
+                      const isAdminUser = !selectedUser.roles || selectedUser.roles.length === 0;
+                      const isSelf = selectedUser.id === session?.user?.id;
+                      if (isAdminUser) {
+                        return (
+                          <div style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            padding: "8px 14px",
+                            borderRadius: 8,
+                            background: "rgba(129,140,248,0.08)",
+                            border: "1px solid rgba(129,140,248,0.2)",
+                            fontSize: 12,
+                            color: "var(--accent)",
+                            fontWeight: 600
+                          }}>
+                            <ShieldIcon size={14} />
+                            Admin account — cannot be removed
+                          </div>
+                        );
+                      }
+                      return (
+                        <button
+                          className="btn btn-danger btn-sm"
+                          onClick={() => setDeleteUserId(selectedUser.id)}
+                          disabled={isBusy || isSelf}
+                          title={isSelf ? "You cannot remove your own account" : "Remove user"}
+                        >
+                          Remove User
+                        </button>
+                      );
+                    })()}
                   </div>
 
                   <div style={{ marginTop: 24, paddingTop: 20, borderTop: "1px solid var(--border)" }}>
-                    <button className="btn btn-primary" onClick={() => setSelectedUser(null)} style={{ width: "100%" }}>
-                      Done
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => {
+                        void onDoneUserDetails();
+                      }}
+                      disabled={isBusy}
+                      style={{ width: "100%" }}
+                    >
+                      {isBusy ? "Saving..." : isUserProfileDirty ? "Save & Done" : "Done"}
                     </button>
                   </div>
                 </div>
@@ -1410,8 +2531,61 @@ export default function App() {
                     <button className="btn btn-secondary" onClick={() => setResetUserId(null)} style={{ flex: 1 }}>
                       Cancel
                     </button>
-                    <button className="btn btn-primary" onClick={onConfirmResetPassword} disabled={isBusy || resetNewPassword.length < 8} style={{ flex: 1 }}>
+                    <button className="btn btn-primary" onClick={onConfirmResetPassword} disabled={isBusy || Boolean(resetPasswordError)} style={{ flex: 1 }}>
                       {isBusy ? "Resetting..." : "Reset Password"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {pendingRoleChange && selectedUser && (
+              <div className="modal-overlay" onClick={() => (!isBusy ? setPendingRoleChange(null) : undefined)}>
+                <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420 }}>
+                  <div className="modal-title">Confirm role change</div>
+                  <div className="modal-desc" style={{ lineHeight: 1.6 }}>
+                    Change <strong>{selectedUser.email}</strong> from{" "}
+                    <strong>{pendingRoleChange.currentRoleName ?? "no role"}</strong> to{" "}
+                    <strong>{pendingRoleChange.roleName}</strong>?
+                  </div>
+                  <div style={{ display: "flex", gap: 12 }}>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => setPendingRoleChange(null)}
+                      disabled={isBusy}
+                      style={{ flex: 1 }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={() => {
+                        void onConfirmUserAccessRoleChange();
+                      }}
+                      disabled={isBusy}
+                      style={{ flex: 1 }}
+                    >
+                      {isBusy ? "Updating..." : "Confirm"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {deleteUserId && (
+              <div className="modal-overlay" onClick={() => (!isBusy ? setDeleteUserId(null) : undefined)}>
+                <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420 }}>
+                  <div className="modal-title">Remove user</div>
+                  <div className="modal-desc" style={{ lineHeight: 1.6 }}>
+                    This will permanently remove <strong>{deleteUserTarget?.email ?? "this user"}</strong> and all owned data.
+                    This action cannot be undone.
+                  </div>
+                  <div style={{ display: "flex", gap: 12 }}>
+                    <button className="btn btn-secondary btn-sm" onClick={() => setDeleteUserId(null)} disabled={isBusy} style={{ flex: 1 }}>
+                      Cancel
+                    </button>
+                    <button className="btn btn-danger btn-sm" onClick={onConfirmRemoveUser} disabled={isBusy} style={{ flex: 1 }}>
+                      {isBusy ? "Removing..." : "Remove User"}
                     </button>
                   </div>
                 </div>
@@ -1423,20 +2597,22 @@ export default function App() {
         {/* ---- ROLES TAB ---- */}
         {tab === "Roles" && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 20 }}>
-            {roles.map((role) => (
-              <div key={role.id} className="panel" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 24px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                  <div style={{ width: 42, height: 42, borderRadius: 12, background: "var(--accent-light)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <ShieldIcon />
+            {roles
+              .filter((role) => ["viewer", "editor"].includes(role.name))
+              .map((role) => (
+                <div key={role.id} className="panel" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 24px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                    <div style={{ width: 42, height: 42, borderRadius: 12, background: "var(--accent-light)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <ShieldIcon />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 16, fontWeight: 700, color: "var(--ink-1)", textTransform: "capitalize" }}>{role.name}</div>
+                      <div style={{ fontSize: 12, color: "var(--ink-4)", marginTop: 2, fontFamily: "monospace" }}>ID: {role.id.slice(0, 8)}...</div>
+                    </div>
                   </div>
-                  <div>
-                    <div style={{ fontSize: 16, fontWeight: 700, color: "var(--ink-1)", textTransform: "capitalize" }}>{role.name}</div>
-                    <div style={{ fontSize: 12, color: "var(--ink-4)", marginTop: 2, fontFamily: "monospace" }}>ID: {role.id.slice(0, 8)}...</div>
-                  </div>
+                  <div className="badge badge-active" style={{ fontSize: 11, fontWeight: 600 }}>Active</div>
                 </div>
-                <div className="badge badge-active" style={{ fontSize: 11, fontWeight: 600 }}>Active</div>
-              </div>
-            ))}
+              ))}
           </div>
         )}
 
@@ -1444,70 +2620,136 @@ export default function App() {
         {tab === "Permissions" && (
           <div className="panel" style={{ padding: 28 }}>
             <p style={{ color: "var(--ink-3)", fontSize: 14, marginBottom: 24 }}>
-              This matrix shows which permissions are granted to each role. Permissions determine what actions users with a given role can perform.
+              Permission settings for each role are editable here. Changes are saved immediately.
             </p>
+            <div
+              style={{
+                marginBottom: 20,
+                padding: "12px 14px",
+                borderRadius: 10,
+                border: "1px solid var(--border)",
+                background: "var(--surface)",
+                color: "var(--ink-2)",
+                fontSize: 13,
+                lineHeight: 1.6
+              }}
+            >
+              This can be edited: click any permission row to switch it between <strong>Enabled</strong> and <strong>Disabled</strong>.
+            </div>
             <div style={{ display: "grid", gap: 20 }}>
-              {rolePermMap
-                .filter(rp => rp.role_name !== "user")
-                .map((rp) => (
-                  <div key={rp.role_name} style={{
-                    background: "var(--bg)",
-                    borderRadius: 12,
-                    padding: "20px 24px",
-                    border: "1px solid var(--border)"
-                  }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-                      <ShieldIcon />
-                      <span style={{ fontSize: 16, fontWeight: 600, color: "var(--ink-1)", textTransform: "capitalize" }}>
-                        {rp.role_name}
-                      </span>
-                      <span style={{
-                        fontSize: 12,
-                        color: "var(--ink-4)",
-                        background: "var(--surface)",
-                        padding: "2px 10px",
-                        borderRadius: 10
-                      }}>
-                        {rp.permissions.filter(Boolean).length} permission{rp.permissions.filter(Boolean).length !== 1 ? "s" : ""}
-                      </span>
-                    </div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                      {rp.permissions.filter(Boolean).length === 0 ? (
-                        <span style={{ fontSize: 13, color: "var(--ink-4)", fontStyle: "italic" }}>No permissions assigned</span>
+              {roles
+                .filter((role) => ["viewer", "editor"].includes(role.name))
+                .map((role) => {
+                  const assignedSet = new Set(
+                    (rolePermMap.find((entry) => entry.role_name === role.name)?.permissions ?? []).filter(Boolean)
+                  );
+                  return (
+                    <div key={role.id} style={{
+                      background: "var(--bg)",
+                      borderRadius: 12,
+                      padding: "20px 24px",
+                      border: "1px solid var(--border)"
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                        <ShieldIcon />
+                        <span style={{ fontSize: 16, fontWeight: 600, color: "var(--ink-1)", textTransform: "capitalize" }}>
+                          {role.name}
+                        </span>
+                        <span style={{
+                          fontSize: 12,
+                          color: "var(--ink-4)",
+                          background: "var(--surface)",
+                          padding: "2px 10px",
+                          borderRadius: 10
+                        }}>
+                          {assignedSet.size} permission{assignedSet.size !== 1 ? "s" : ""}
+                        </span>
+                        <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--accent)", fontWeight: 600 }}>
+                          Editable
+                        </span>
+                      </div>
+
+                      {permissions.length === 0 ? (
+                        <span style={{ fontSize: 13, color: "var(--ink-4)", fontStyle: "italic" }}>
+                          No permissions available
+                        </span>
                       ) : (
-                        rp.permissions.filter(Boolean).map((perm) => {
-                          const category = perm.split(":")[0];
-                          const action = perm.split(":")[1];
-                          const colorMap: Record<string, string> = {
-                            items: "var(--accent)",
-                            users: "var(--green)",
-                            roles: "#e8912d",
-                            audit: "#9b59b6"
-                          };
-                          const color = colorMap[category] ?? "var(--ink-3)";
-                          return (
-                            <span key={perm} style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: 4,
-                              padding: "4px 12px",
-                              borderRadius: 8,
-                              fontSize: 13,
-                              fontWeight: 500,
-                              color,
-                              background: `color-mix(in srgb, ${color} 12%, transparent)`,
-                              border: `1px solid color-mix(in srgb, ${color} 25%, transparent)`
-                            }}>
-                              <span style={{ fontWeight: 600 }}>{category}</span>
-                              <span style={{ opacity: 0.5 }}>:</span>
-                              <span>{action}</span>
-                            </span>
-                          );
-                        })
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10 }}>
+                          {permissions.map((perm) => {
+                            const [category] = perm.key.split(":");
+                            const colorMap: Record<string, string> = {
+                              items: "var(--accent)",
+                              users: "var(--green)",
+                              roles: "#e8912d",
+                              audit: "#9b59b6"
+                            };
+                            const color = colorMap[category] ?? "var(--ink-3)";
+                            const assigned = assignedSet.has(perm.key);
+                            const label = getPermissionDisplayLabel(perm);
+                            return (
+                              <button
+                                key={`${role.id}:${perm.id}`}
+                                type="button"
+                                disabled={isBusy}
+                                onClick={() => {
+                                  void onToggleRolePermission(role.name, perm.key);
+                                }}
+                                title={assigned ? "Revoke permission" : "Grant permission"}
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 10,
+                                  width: "100%",
+                                  padding: "10px 12px",
+                                  borderRadius: 8,
+                                  fontSize: 13,
+                                  fontWeight: 500,
+                                  color,
+                                  background: assigned
+                                    ? `color-mix(in srgb, ${color} 14%, transparent)`
+                                    : "var(--surface)",
+                                  border: assigned
+                                    ? `1px solid color-mix(in srgb, ${color} 30%, transparent)`
+                                    : "1px solid var(--border)",
+                                  cursor: isBusy ? "not-allowed" : "pointer",
+                                  opacity: isBusy ? 0.65 : 1,
+                                  textAlign: "left"
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    width: 16,
+                                    height: 16,
+                                    borderRadius: 4,
+                                    border: assigned ? `1px solid ${color}` : "1px solid var(--border)",
+                                    background: assigned ? color : "transparent",
+                                    color: "white",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    fontSize: 11,
+                                    flexShrink: 0
+                                  }}
+                                >
+                                  {assigned ? "✓" : ""}
+                                </span>
+                                <span style={{ display: "grid", gap: 2 }}>
+                                  <span style={{ fontWeight: 600, color: "var(--ink-1)" }}>{label}</span>
+                                  <span style={{ fontSize: 11, color: "var(--ink-4)", fontFamily: "ui-monospace, monospace" }}>
+                                    {perm.key}
+                                  </span>
+                                </span>
+                                <span style={{ marginLeft: "auto", fontSize: 12, opacity: 0.9 }}>
+                                  {assigned ? "Enabled" : "Disabled"}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
                       )}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
             </div>
           </div>
         )}
@@ -1601,21 +2843,21 @@ export default function App() {
                       {viewerItem.updated_at && (
                         <div className="file-detail-row"><span>Updated</span><strong>{formatDate(viewerItem.updated_at)}</strong></div>
                       )}
-                      {canWrite && (
-                        <label className="upload-label" style={{ marginTop: 14, justifyContent: "center", width: "100%" }}>
-                          <UploadIcon /> {replaceUploadingId === viewerItem.id ? "Replacing..." : "Replace PDF"}
-                          <input
-                            type="file"
-                            accept=".pdf,application/pdf"
-                            disabled={replaceUploadingId === viewerItem.id}
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              if (file) onReplaceFile(viewerItem, file);
-                              e.currentTarget.value = "";
-                            }}
-                          />
-                        </label>
-                      )}
+                      {viewerItem.owner_user_id && (() => {
+                        const owner = users.find(u => u.id === viewerItem.owner_user_id);
+                        const display = owner?.email ?? viewerItem.owner_user_id.slice(0, 8);
+                        return (
+                          <div className="file-detail-row">
+                            <span>Uploaded by</span>
+                            <strong style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                              <span style={{ width: 20, height: 20, borderRadius: 10, background: "var(--accent-light)", color: "var(--accent)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, flexShrink: 0 }}>
+                                {display[0]?.toUpperCase()}
+                              </span>
+                              {display}
+                            </strong>
+                          </div>
+                        );
+                      })()}
                     </div>
                   </div>
                 ) : viewerTextPreview !== null ? (
@@ -1631,21 +2873,22 @@ export default function App() {
                       {viewerItem.updated_at && (
                         <div className="file-detail-row"><span>Updated</span><strong>{formatDate(viewerItem.updated_at)}</strong></div>
                       )}
+                      {viewerItem.owner_user_id && (() => {
+                        const owner = users.find(u => u.id === viewerItem.owner_user_id);
+                        const display = owner?.email ?? viewerItem.owner_user_id.slice(0, 8);
+                        return (
+                          <div className="file-detail-row">
+                            <span>Uploaded by</span>
+                            <strong style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                              <span style={{ width: 20, height: 20, borderRadius: 10, background: "var(--accent-light)", color: "var(--accent)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, flexShrink: 0 }}>
+                                {display[0]?.toUpperCase()}
+                              </span>
+                              {display}
+                            </strong>
+                          </div>
+                        );
+                      })()}
                       {viewerPreviewNote && <div className="file-preview-note">{viewerPreviewNote}</div>}
-                      {canWrite && viewerItem.type === "file" && (
-                        <label className="upload-label" style={{ marginTop: 14, justifyContent: "center", width: "100%" }}>
-                          <UploadIcon /> {replaceUploadingId === viewerItem.id ? "Replacing..." : "Replace File"}
-                          <input
-                            type="file"
-                            disabled={replaceUploadingId === viewerItem.id}
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              if (file) onReplaceFile(viewerItem, file);
-                              e.currentTarget.value = "";
-                            }}
-                          />
-                        </label>
-                      )}
                     </div>
                   </div>
                 ) : (
@@ -1653,7 +2896,7 @@ export default function App() {
                     <div className="file-generic-preview">
                       {viewerContentType.startsWith("image/") ? (
                         <img src={viewerUrl} alt={viewerItem.name} className="file-image-preview" />
-                      ) : (
+                      ) : canEmbedCurrentViewer ? (
                         <object
                           data={viewerUrl}
                           type={viewerContentType || "application/octet-stream"}
@@ -1661,6 +2904,22 @@ export default function App() {
                         >
                           <iframe title={viewerItem.name} src={viewerUrl} className="file-generic-frame" />
                         </object>
+                      ) : (
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            height: "100%",
+                            padding: "24px",
+                            color: "var(--ink-3)",
+                            textAlign: "center",
+                            lineHeight: 1.6
+                          }}
+                        >
+                          This file type cannot be previewed in the browser.
+                          Use Download to view it in the native app.
+                        </div>
                       )}
                     </div>
                     <div className="file-details-pane">
@@ -1671,21 +2930,22 @@ export default function App() {
                       {viewerItem.updated_at && (
                         <div className="file-detail-row"><span>Updated</span><strong>{formatDate(viewerItem.updated_at)}</strong></div>
                       )}
+                      {viewerItem.owner_user_id && (() => {
+                        const owner = users.find(u => u.id === viewerItem.owner_user_id);
+                        const display = owner?.email ?? viewerItem.owner_user_id.slice(0, 8);
+                        return (
+                          <div className="file-detail-row">
+                            <span>Uploaded by</span>
+                            <strong style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                              <span style={{ width: 20, height: 20, borderRadius: 10, background: "var(--accent-light)", color: "var(--accent)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, flexShrink: 0 }}>
+                                {display[0]?.toUpperCase()}
+                              </span>
+                              {display}
+                            </strong>
+                          </div>
+                        );
+                      })()}
                       {viewerPreviewNote && <div className="file-preview-note">{viewerPreviewNote}</div>}
-                      {canWrite && viewerItem.type === "file" && (
-                        <label className="upload-label" style={{ marginTop: 14, justifyContent: "center", width: "100%" }}>
-                          <UploadIcon /> {replaceUploadingId === viewerItem.id ? "Replacing..." : "Replace File"}
-                          <input
-                            type="file"
-                            disabled={replaceUploadingId === viewerItem.id}
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              if (file) onReplaceFile(viewerItem, file);
-                              e.currentTarget.value = "";
-                            }}
-                          />
-                        </label>
-                      )}
                     </div>
                   </div>
                 )}
@@ -1718,12 +2978,13 @@ export default function App() {
                       <PlusIcon /> New Folder
                     </button>
                     <label className="upload-label">
-                      <UploadIcon /> Upload File
+                      <UploadIcon /> Upload Files
                       <input
                         type="file"
+                        multiple
                         onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) onUploadFile(file);
+                          const files = e.target.files;
+                          if (files?.length) onUploadFiles(files);
                           e.currentTarget.value = "";
                         }}
                       />
@@ -1866,127 +3127,271 @@ export default function App() {
         )}
 
         {/* ---- AUDIT LOGS TAB ---- */}
-        {tab === "Audit Logs" && (
-          <div className="panel" style={{ background: "transparent", border: "none", boxShadow: "none" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24, padding: "0 4px" }}>
-              <div>
-                <h2 style={{ fontSize: 20, fontWeight: 800, color: "var(--ink-1)", marginBottom: 4 }}>System Activity</h2>
-                <p style={{ fontSize: 14, color: "var(--ink-3)" }}>Monitoring all administrative and user actions in real-time.</p>
+        {tab === "Audit Logs" && (() => {
+          const filteredLogs = auditLogs;
+
+          const dangerCount = filteredLogs.filter(l => getAuditCategory(l.action) === "danger").length;
+          const authCount = filteredLogs.filter(l => getAuditCategory(l.action) === "auth").length;
+          const fileCount = filteredLogs.filter(l => getAuditCategory(l.action) === "file").length;
+          const adminCount = filteredLogs.filter(l => getAuditCategory(l.action) === "admin").length;
+
+          // Build rows with date-group separators
+          const rows: Array<{ type: "separator"; label: string } | { type: "log"; log: typeof filteredLogs[0] }> = [];
+          let lastGroup = "";
+          for (const log of filteredLogs) {
+            const group = formatDateGroup(log.created_at);
+            if (group !== lastGroup) {
+              rows.push({ type: "separator", label: group });
+              lastGroup = group;
+            }
+            rows.push({ type: "log", log });
+          }
+
+          return (
+            <div className="panel">
+              {/* Header */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: 20, flexWrap: "wrap" }}>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: "var(--ink-1)" }}>Audit Activity</h2>
+                  <p style={{ margin: "6px 0 0", fontSize: 14, color: "var(--ink-3)" }}>
+                    Track who did what, when, and on which target.
+                  </p>
+                </div>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => void refreshAuditLogs()}
+                  disabled={auditLoading}
+                >
+                  <RefreshCwIcon size={14} style={{ marginRight: 4 }} />
+                  {auditLoading ? "Refreshing..." : "Refresh"}
+                </button>
               </div>
-              <button className="btn btn-secondary btn-sm" onClick={refreshAuditLogs} style={{ borderRadius: 12, padding: "10px 20px" }}>
-                <ActivityIcon size={16} /> Refresh logs
-              </button>
-            </div>
 
-            {auditLogs.length === 0 ? (
-              <div className="panel" style={{ textAlign: "center", padding: "80px 0", borderRadius: 24 }}>
-                <ActivityIcon size={48} opacity={0.1} />
-                <p style={{ marginTop: 16, fontSize: 16, fontWeight: 600, color: "var(--ink-2)" }}>No activity found</p>
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
-                {(() => {
-                  const groups: Record<string, AuditLog[]> = {};
-                  auditLogs.forEach(log => {
-                    const date = new Date(log.created_at);
-                    const label = date.toDateString() === new Date().toDateString() ? "Today" :
-                      date.toDateString() === new Date(Date.now() - 86400000).toDateString() ? "Yesterday" :
-                        date.toLocaleDateString(undefined, { month: 'long', day: 'numeric' });
-                    if (!groups[label]) groups[label] = [];
-                    groups[label].push(log);
-                  });
 
-                  return Object.entries(groups).map(([date, logs]) => (
-                    <div key={date}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink-4)", marginBottom: 16, display: "flex", alignItems: "center", gap: 12 }}>
-                        {date}
-                        <div style={{ flex: 1, height: 1, background: "var(--border)", opacity: 0.5 }} />
-                      </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 16 }}>
-                        {logs.map((log) => {
-                          const actionThemes: Record<string, { color: string; bg: string; icon: any }> = {
-                            "auth.login": { color: "#27ae60", bg: "#eef9f1", icon: KeyIcon },
-                            "auth.login_failed": { color: "#e74c3c", bg: "#fdf2f1", icon: ShieldIcon },
-                            "item.created": { color: "#3498db", bg: "#ebf5fb", icon: FolderIcon },
-                            "user.created": { color: "#8e44ad", bg: "#f5eef8", icon: UsersIcon },
-                            "item.deleted": { color: "#e67e22", bg: "#fdf5ed", icon: TrashIcon },
-                            "item.download": { color: "#16a085", bg: "#e8f6f3", icon: DownloadIcon }
-                          };
-                          const theme = actionThemes[log.action] ?? { color: "var(--ink-3)", bg: "var(--bg)", icon: ActivityIcon };
-                          const Icon = theme.icon;
+              {/* Stats bar */}
+              {filteredLogs.length > 0 && (
+                <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+                  <span style={{ fontSize: 12, color: "var(--ink-4)", fontWeight: 600 }}>
+                    {filteredLogs.length} event{filteredLogs.length !== 1 ? "s" : ""}
+                  </span>
+                  {dangerCount > 0 && (
+                    <span className="audit-stat-chip audit-stat-chip-danger">{dangerCount} danger</span>
+                  )}
+                  {authCount > 0 && (
+                    <span className="audit-stat-chip audit-stat-chip-auth">{authCount} auth</span>
+                  )}
+                  {fileCount > 0 && (
+                    <span className="audit-stat-chip audit-stat-chip-file">{fileCount} file</span>
+                  )}
+                  {adminCount > 0 && (
+                    <span className="audit-stat-chip audit-stat-chip-admin">{adminCount} admin</span>
+                  )}
+                </div>
+              )}
 
+              {/* Content */}
+              {auditError ? (
+                <div style={{ color: "var(--red)", textAlign: "center", padding: "32px 0", fontSize: 14 }}>
+                  ⚠ {auditError}
+                </div>
+              ) : auditLoading && auditLogs.length === 0 ? (
+                <div style={{ color: "var(--ink-3)", textAlign: "center", padding: "40px 0", fontSize: 14 }}>
+                  <div style={{ marginBottom: 8, opacity: 0.5 }}>⏳</div>
+                  Loading activity logs…
+                </div>
+              ) : filteredLogs.length === 0 ? (
+                <div style={{ color: "var(--ink-3)", textAlign: "center", padding: "40px 0", fontSize: 14 }}>
+                  <div style={{ fontSize: 28, marginBottom: 8 }}>🔍</div>
+                  No activity found for the selected filters.
+                </div>
+              ) : (
+                <div style={{ overflowX: "auto" }}>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th style={{ minWidth: 160 }}>Time</th>
+                        <th style={{ minWidth: 200 }}>User / Actor</th>
+                        <th style={{ minWidth: 170 }}>Action</th>
+                        <th style={{ minWidth: 150 }}>Target</th>
+                        <th>Details</th>
+                        <th style={{ width: 36 }} />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((row, idx) => {
+                        if (row.type === "separator") {
                           return (
-                            <div key={log.id} className="panel" style={{
-                              padding: "20px",
-                              borderRadius: 20,
-                              display: "flex",
-                              gap: 16,
-                              alignItems: "start",
-                              border: `1px solid ${theme.bg}`,
-                              boxShadow: "0 4px 12px rgba(0,0,0,0.02)",
-                              transition: "transform 0.2s, box-shadow 0.2s",
-                              cursor: "pointer"
-                            }} onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-4px)"; e.currentTarget.style.boxShadow = "0 8px 24px rgba(0,0,0,0.06)"; }}
-                              onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.02)"; }}>
-
-                              <div style={{
-                                width: 50,
-                                height: 50,
-                                borderRadius: 16,
-                                background: theme.bg,
-                                color: theme.color,
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                flexShrink: 0
-                              }}>
-                                <Icon size={24} />
-                              </div>
-
-                              <div style={{ flex: 1 }}>
-                                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--ink-1)" }}>
-                                    {log.action.replace(/\./g, ' ').toUpperCase()}
+                            <tr key={`sep-${idx}`} className="date-separator">
+                              <td colSpan={6}>{row.label}</td>
+                            </tr>
+                          );
+                        }
+                        const { log } = row;
+                        const cat = getAuditCategory(log.action);
+                        const catStyle = AUDIT_CATEGORY_STYLES[cat];
+                        const isExpanded = auditExpandedRows.has(log.id);
+                        const hasMetadata = log.metadata && Object.keys(log.metadata).length > 0;
+                        const isDanger = cat === "danger";
+                        return (
+                          <>
+                            <tr
+                              key={log.id}
+                              className={`audit-row-hover${isDanger ? " bg-alert-subtle" : ""}`}
+                              style={{ cursor: hasMetadata ? "pointer" : "default" }}
+                              onClick={() => {
+                                if (!hasMetadata) return;
+                                setAuditExpandedRows((prev) => {
+                                  const next = new Set(prev);
+                                  next.has(log.id) ? next.delete(log.id) : next.add(log.id);
+                                  return next;
+                                });
+                              }}
+                            >
+                              <td className="cell-muted" style={{ whiteSpace: "nowrap", fontSize: 12 }}>
+                                <CalendarIcon size={12} style={{ marginRight: 4, opacity: 0.5, verticalAlign: "middle" }} />
+                                {formatDate(log.created_at)}
+                              </td>
+                              <td>
+                                {log.actor_email ? (
+                                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                    <div style={{
+                                      width: 28,
+                                      height: 28,
+                                      borderRadius: "50%",
+                                      background: "var(--accent-light)",
+                                      color: "var(--accent)",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                      fontSize: 11,
+                                      fontWeight: 700,
+                                      flexShrink: 0
+                                    }}>
+                                      {log.actor_email.slice(0, 2).toUpperCase()}
+                                    </div>
+                                    <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-2)" }}>
+                                      {log.actor_email}
+                                    </span>
                                   </div>
-                                  <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-4)" }}>
-                                    {new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                  </div>
-                                </div>
-
-                                <div style={{ fontSize: 13, color: "var(--ink-2)", fontWeight: 500, marginBottom: 12 }}>
-                                  {log.actor_email ?? "System"}
-                                </div>
-
-                                {log.metadata && (
-                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                                    {Object.entries(log.metadata).slice(0, 3).map(([k, v]) => (
-                                      <div key={k} style={{
-                                        fontSize: 10,
-                                        fontWeight: 700,
-                                        padding: "4px 8px",
+                                ) : (
+                                  <span style={{ fontSize: 12, color: "var(--ink-4)", fontStyle: "italic" }}>System</span>
+                                )}
+                              </td>
+                              <td>
+                                <span
+                                  style={{
+                                    display: "inline-flex",
+                                    padding: "3px 9px",
+                                    borderRadius: 6,
+                                    fontSize: 11,
+                                    fontWeight: 600,
+                                    fontFamily: "ui-monospace, monospace",
+                                    background: catStyle.bg,
+                                    color: catStyle.color,
+                                    border: `1px solid ${catStyle.border}`,
+                                    letterSpacing: "0.01em"
+                                  }}
+                                >
+                                  {formatActionLabel(log.action)}
+                                </span>
+                              </td>
+                              <td className="cell-muted" style={{ fontSize: 12 }}>
+                                {log.target_type === "item" && log.target_id ? (() => {
+                                  const fileName = (log.metadata as any)?.name as string | undefined;
+                                  const isFolder = log.action.includes("folder") || (log.metadata as any)?.type === "folder";
+                                  const icon = isFolder ? "📁" : "📄";
+                                  return (
+                                    <button
+                                      title="Go to Files tab"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setTab("Files");
+                                        setPath([]);
+                                      }}
+                                      style={{
+                                        background: "none",
+                                        border: "none",
+                                        padding: "2px 6px",
                                         borderRadius: 6,
-                                        background: "var(--surface)",
-                                        color: "var(--ink-3)",
-                                        border: "1px solid var(--border)",
-                                        textTransform: "uppercase"
-                                      }}>
-                                        {k}: {String(v).slice(0, 15)}
+                                        cursor: "pointer",
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: 5,
+                                        color: "var(--accent)",
+                                        fontWeight: 600,
+                                        fontSize: 12,
+                                        textDecoration: "underline",
+                                        textUnderlineOffset: 2,
+                                        transition: "opacity 150ms"
+                                      }}
+                                      onMouseEnter={e => (e.currentTarget.style.opacity = "0.75")}
+                                      onMouseLeave={e => (e.currentTarget.style.opacity = "1")}
+                                    >
+                                      <span>{icon}</span>
+                                      <span>{fileName ?? `item #${String(log.target_id).slice(0, 8)}`}</span>
+                                    </button>
+                                  );
+                                })() : log.target_type ? (
+                                  <span>
+                                    <span style={{ fontWeight: 600, color: "var(--ink-3)" }}>{log.target_type}</span>
+                                    {log.target_id && (
+                                      <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, marginLeft: 6, color: "var(--ink-4)" }}>
+                                        #{String(log.target_id).slice(0, 8)}
+                                      </span>
+                                    )}
+                                  </span>
+                                ) : (
+                                  <span style={{ color: "var(--ink-4)" }}>—</span>
+                                )}
+                              </td>
+                              <td style={{ fontSize: 12, color: "var(--ink-4)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {hasMetadata ? summarizeAuditMetadata(log.metadata) : <span style={{ color: "var(--ink-4)" }}>—</span>}
+                              </td>
+                              <td style={{ textAlign: "center" }}>
+                                {hasMetadata && (
+                                  <span style={{ color: "var(--ink-4)", fontSize: 12, transition: "transform 200ms", display: "inline-block", transform: isExpanded ? "rotate(90deg)" : "none" }}>
+                                    <ChevronIcon size={14} />
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                            {isExpanded && hasMetadata && (
+                              <tr key={`${log.id}-detail`} style={{ background: "var(--bg)" }}>
+                                <td colSpan={6} style={{ padding: "0 16px 16px 56px" }}>
+                                  <div style={{
+                                    marginTop: 10,
+                                    background: "var(--sidebar-bg)",
+                                    border: "1px solid var(--border)",
+                                    borderRadius: 10,
+                                    padding: "14px 18px",
+                                    display: "grid",
+                                    gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+                                    gap: "10px 24px"
+                                  }}>
+                                    {Object.entries(log.metadata!).map(([key, val]) => (
+                                      <div key={key}>
+                                        <div style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.6px", marginBottom: 3 }}>
+                                          {formatActionLabel(key)}
+                                        </div>
+                                        <div style={{ fontSize: 13, color: "var(--ink-2)", fontFamily: typeof val === "string" || typeof val === "number" ? "inherit" : "ui-monospace, monospace", wordBreak: "break-word" }}>
+                                          {formatAuditMetadataValue(val)}
+                                        </div>
                                       </div>
                                     ))}
                                   </div>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ));
-                })()}
-              </div>
-            )}
-          </div>
-        )}
+                                </td>
+                              </tr>
+                            )}
+                          </>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Create User Modal */}
         {showCreateUser && (
@@ -2057,7 +3462,7 @@ export default function App() {
                 </select>
                 <div className="modal-actions">
                   <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowCreateUser(false)}>Cancel</button>
-                  <button type="submit" className="btn btn-primary btn-sm" disabled={!newUserEmail.trim() || newUserPassword.length < 8 || isBusy}>
+                  <button type="submit" className="btn btn-primary btn-sm" disabled={!newUserEmail.trim() || Boolean(newUserPasswordError) || isBusy}>
                     {isBusy ? "Creating..." : "Create User"}
                   </button>
                 </div>

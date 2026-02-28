@@ -1,4 +1,20 @@
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:3000";
+const parseSizeBytes = (value) => {
+    if (value === null || value === undefined)
+        return null;
+    if (typeof value === "number") {
+        return Number.isFinite(value) && value >= 0 ? value : null;
+    }
+    if (typeof value === "string") {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+    }
+    return null;
+};
+const normalizeItem = (value) => ({
+    ...value,
+    size_bytes: parseSizeBytes(value?.size_bytes)
+});
 const inferContentTypeFromFilename = (name) => {
     const ext = name.toLowerCase().split(".").pop() ?? "";
     const types = {
@@ -95,7 +111,16 @@ export const addUserRole = async (token, userId, roleId) => {
         body: JSON.stringify({ roleId })
     });
     if (!res.ok) {
-        throw new Error("Failed to add role");
+        const data = await res.json().catch(() => ({}));
+        if (data.error === "user_not_found")
+            throw new Error("User not found");
+        if (data.error === "role_not_found")
+            throw new Error("Role not found");
+        if (data.error === "role_not_assignable")
+            throw new Error("Only viewer/editor roles are assignable");
+        if (data.error === "role_id_required")
+            throw new Error("Role is required");
+        throw new Error(data.error ?? "Failed to add role");
     }
 };
 export const removeUserRole = async (token, userId, roleId) => {
@@ -108,7 +133,68 @@ export const removeUserRole = async (token, userId, roleId) => {
         body: JSON.stringify({ roleId })
     });
     if (!res.ok) {
-        throw new Error("Failed to remove role");
+        const data = await res.json().catch(() => ({}));
+        if (data.error === "user_not_found")
+            throw new Error("User not found");
+        if (data.error === "role_not_found")
+            throw new Error("Role not found");
+        if (data.error === "role_not_assignable")
+            throw new Error("Only viewer/editor roles are assignable");
+        if (data.error === "role_not_assigned")
+            throw new Error("Role is not assigned to this user");
+        if (data.error === "cannot_remove_own_admin_role")
+            throw new Error("You cannot remove your own admin role");
+        if (data.error === "cannot_remove_last_admin_role")
+            throw new Error("Cannot remove admin role from the last admin");
+        if (data.error === "role_id_required")
+            throw new Error("Role is required");
+        throw new Error(data.error ?? "Failed to remove role");
+    }
+};
+export const setUserRole = async (token, userId, roleId) => {
+    const res = await fetch(`${API_BASE}/admin/users/${userId}/role`, {
+        method: "PUT",
+        headers: {
+            "content-type": "application/json",
+            Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ roleId })
+    });
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (data.error === "user_not_found")
+            throw new Error("User not found");
+        if (data.error === "role_not_found")
+            throw new Error("Role not found");
+        if (data.error === "role_not_assignable")
+            throw new Error("Only viewer/editor roles are allowed");
+        if (data.error === "cannot_modify_admin_user_roles")
+            throw new Error("Admin user roles cannot be changed here");
+        if (data.error === "role_id_required")
+            throw new Error("Role is required");
+        throw new Error(data.error ?? "Failed to update user role");
+    }
+};
+export const updateRolePermissions = async (token, roleId, permissionIds) => {
+    const res = await fetch(`${API_BASE}/admin/roles/${roleId}/permissions`, {
+        method: "PATCH",
+        headers: {
+            "content-type": "application/json",
+            Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ permissionIds })
+    });
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (data.error === "role_not_found")
+            throw new Error("Role not found");
+        if (data.error === "role_not_assignable")
+            throw new Error("Only viewer/editor roles can be edited");
+        if (data.error === "permission_ids_required")
+            throw new Error("Permission list is required");
+        if (data.error === "invalid_permission_ids")
+            throw new Error("One or more permissions are invalid");
+        throw new Error(data.error ?? "Failed to update role permissions");
     }
 };
 export const updateUserStatus = async (token, userId, status) => {
@@ -122,6 +208,47 @@ export const updateUserStatus = async (token, userId, status) => {
     });
     if (!res.ok) {
         throw new Error("Failed to update status");
+    }
+};
+export const updateUserInfo = async (token, userId, payload) => {
+    const res = await fetch(`${API_BASE}/admin/users/${userId}`, {
+        method: "PATCH",
+        headers: {
+            "content-type": "application/json",
+            Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (data.error === "invalid_email")
+            throw new Error("Please enter a valid email address");
+        if (data.error === "email_already_exists")
+            throw new Error("A user with this email already exists");
+        if (data.error === "user_not_found")
+            throw new Error("User not found");
+        if (data.error === "no_fields_to_update")
+            throw new Error("No changes to save");
+        throw new Error(data.error ?? "Failed to update user");
+    }
+    return (await res.json());
+};
+export const removeUser = async (token, userId) => {
+    const res = await fetch(`${API_BASE}/admin/users/${userId}`, {
+        method: "DELETE",
+        headers: {
+            Authorization: `Bearer ${token}`
+        }
+    });
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (data.error === "user_not_found")
+            throw new Error("User not found");
+        if (data.error === "cannot_delete_self")
+            throw new Error("You cannot remove your own account");
+        if (data.error === "cannot_delete_last_admin")
+            throw new Error("Cannot remove the last admin user");
+        throw new Error(data.error ?? "Failed to remove user");
     }
 };
 export const resetUserRoles = async (token, userId) => {
@@ -138,7 +265,10 @@ export const resetUserRoles = async (token, userId) => {
 };
 export const listItems = async (token, parentId) => {
     const query = parentId ? `?parentId=${parentId}` : "";
-    return (await authFetch(token, `/items${query}`));
+    const data = await authFetch(token, `/items${query}`);
+    if (!Array.isArray(data))
+        return [];
+    return data.map((item) => normalizeItem(item));
 };
 export const createFolder = async (token, name, parentId) => {
     const res = await fetch(`${API_BASE}/items/folder`, {
@@ -190,7 +320,7 @@ export const createFile = async (token, file, parentId) => {
         throw new Error("File upload failed");
     }
     const uploaded = await uploadRes.json();
-    return uploaded.item;
+    return normalizeItem(uploaded.item);
 };
 export const updateItemName = async (token, itemId, name) => {
     const res = await fetch(`${API_BASE}/items/${itemId}`, {
@@ -208,7 +338,7 @@ export const updateItemName = async (token, itemId, name) => {
         }
         throw new Error("Failed to update item");
     }
-    return (await res.json());
+    return normalizeItem(await res.json());
 };
 export const replaceFile = async (token, itemId, file, nextName) => {
     const res = await fetch(`${API_BASE}/items/${itemId}/content`, {
@@ -228,7 +358,7 @@ export const replaceFile = async (token, itemId, file, nextName) => {
         throw new Error("File replacement upload failed");
     }
     const payload = await res.json();
-    return payload.item;
+    return normalizeItem(payload.item);
 };
 export const deleteItem = async (token, itemId) => {
     const res = await fetch(`${API_BASE}/items/${itemId}`, {
@@ -274,6 +404,19 @@ export const downloadItem = async (token, itemId, opts) => {
         contentType: res.headers.get("content-type") ?? blob.type
     };
 };
+const mapPasswordPolicyError = (code) => {
+    if (code === "password_min_8_chars")
+        return "Password must be at least 8 characters.";
+    if (code === "password_needs_uppercase")
+        return "Password must include at least one uppercase letter.";
+    if (code === "password_needs_lowercase")
+        return "Password must include at least one lowercase letter.";
+    if (code === "password_needs_number")
+        return "Password must include at least one number.";
+    if (code === "password_needs_special_char")
+        return "Password must include at least one special character.";
+    return null;
+};
 export const createUser = async (token, email, password, role, firstName, lastName) => {
     const res = await fetch(`${API_BASE}/admin/users`, {
         method: "POST",
@@ -287,6 +430,11 @@ export const createUser = async (token, email, password, role, firstName, lastNa
         const data = await res.json().catch(() => ({}));
         if (data.error === "email_already_exists")
             throw new Error("A user with this email already exists");
+        if (data.error === "invalid_email")
+            throw new Error("Please enter a valid email address");
+        const passwordError = mapPasswordPolicyError(data.error);
+        if (passwordError)
+            throw new Error(passwordError);
         throw new Error(data.error ?? "Failed to create user");
     }
     return res.json();
@@ -300,8 +448,13 @@ export const resetUserPassword = async (token, userId, password) => {
         },
         body: JSON.stringify({ password })
     });
-    if (!res.ok)
-        throw new Error("Failed to reset password");
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const passwordError = mapPasswordPolicyError(data.error);
+        if (passwordError)
+            throw new Error(passwordError);
+        throw new Error(data.error ?? "Failed to reset password");
+    }
 };
 export const listAuditLogs = async (token, opts) => {
     const params = new URLSearchParams();
@@ -311,6 +464,10 @@ export const listAuditLogs = async (token, opts) => {
         params.set("offset", String(opts.offset));
     if (opts?.action)
         params.set("action", opts.action);
+    if (opts?.userId)
+        params.set("userId", opts.userId);
     const qs = params.toString();
     return (await authFetch(token, `/admin/audit-logs${qs ? `?${qs}` : ""}`));
 };
+export const fetchDashboardSummary = (token) => authFetch(token, "/admin/dashboard");
+export const fetchUserDashboardSummary = (token) => authFetch(token, "/dashboard");

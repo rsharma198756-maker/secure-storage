@@ -70,13 +70,40 @@ const storageFetch = (path, init, context) => fetch(`${config.storageUrl}${path}
     }
 });
 app.register(cors, {
-    origin: true,
+    origin: (origin, cb) => {
+        // No origin = server-to-server or same-origin — always allow
+        if (!origin) {
+            cb(null, true);
+            return;
+        }
+        // If no allowlist configured, allow all (dev/local mode)
+        if (config.corsOrigins.length === 0) {
+            cb(null, true);
+            return;
+        }
+        // Check against explicit allowlist
+        cb(null, config.corsOrigins.includes(origin));
+    },
     allowedHeaders: ["Authorization", "Content-Type", "X-File-Name"],
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 });
 app.addContentTypeParser("*", { parseAs: "buffer" }, (_request, body, done) => {
     done(null, body);
 });
+// Password complexity validator
+const validatePassword = (password) => {
+    if (!password || password.length < 8)
+        return "password_min_8_chars";
+    if (!/[A-Z]/.test(password))
+        return "password_needs_uppercase";
+    if (!/[a-z]/.test(password))
+        return "password_needs_lowercase";
+    if (!/[0-9]/.test(password))
+        return "password_needs_number";
+    if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]/.test(password))
+        return "password_needs_special_char";
+    return null;
+};
 app.addHook("preHandler", async (request, reply) => {
     if (request.url.startsWith("/health") ||
         request.url.startsWith("/ready") ||
@@ -536,7 +563,13 @@ app.get("/admin/users", async (request, reply) => {
         return;
     const res = await pool.query(`SELECT u.id, u.email, u.first_name, u.last_name, u.status, u.created_at,
             COALESCE(
-              (SELECT json_agg(r.name) FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id),
+              (
+                SELECT json_agg(r.name)
+                FROM user_roles ur
+                JOIN roles r ON r.id = ur.role_id
+                WHERE ur.user_id = u.id
+                  AND r.name IN ('viewer', 'editor')
+              ),
               '[]'
             ) AS roles
      FROM users u ORDER BY u.created_at DESC`);
@@ -556,8 +589,9 @@ app.post("/admin/users", async (request, reply) => {
         reply.code(400).send({ error: "invalid_email" });
         return;
     }
-    if (body.password.length < 6) {
-        reply.code(400).send({ error: "password_too_short" });
+    const pwError = validatePassword(body.password);
+    if (pwError) {
+        reply.code(400).send({ error: pwError });
         return;
     }
     // Check email uniqueness
@@ -588,14 +622,152 @@ app.post("/admin/users", async (request, reply) => {
     });
     reply.send({ id: newUserId, email, status: "active", role: roleName });
 });
+// Update user profile fields (admin only)
+app.patch("/admin/users/:id", async (request, reply) => {
+    if (!(await requirePermission(request, reply, "users:manage")))
+        return;
+    const { id } = request.params;
+    const body = request.body;
+    const updates = [];
+    const params = [];
+    const metadata = {};
+    if (body?.email !== undefined) {
+        const normalizedEmail = normalizeEmail(body.email);
+        if (!isValidEmail(normalizedEmail)) {
+            reply.code(400).send({ error: "invalid_email" });
+            return;
+        }
+        const existing = await pool.query("SELECT id FROM users WHERE email = $1 AND id <> $2 LIMIT 1", [normalizedEmail, id]);
+        if ((existing.rowCount ?? 0) > 0) {
+            reply.code(409).send({ error: "email_already_exists" });
+            return;
+        }
+        params.push(normalizedEmail);
+        updates.push(`email = $${params.length}`);
+        metadata.email = normalizedEmail;
+    }
+    if (body?.firstName !== undefined) {
+        const firstName = body.firstName.trim();
+        params.push(firstName);
+        updates.push(`first_name = $${params.length}`);
+        metadata.firstName = firstName;
+    }
+    if (body?.lastName !== undefined) {
+        const lastName = body.lastName.trim();
+        params.push(lastName);
+        updates.push(`last_name = $${params.length}`);
+        metadata.lastName = lastName;
+    }
+    if (updates.length === 0) {
+        reply.code(400).send({ error: "no_fields_to_update" });
+        return;
+    }
+    params.push(id);
+    const res = await pool.query(`
+    UPDATE users
+    SET ${updates.join(", ")}, updated_at = now()
+    WHERE id = $${params.length}
+    RETURNING id, email, first_name, last_name, status, created_at
+    `, params);
+    if ((res.rowCount ?? 0) === 0) {
+        reply.code(404).send({ error: "user_not_found" });
+        return;
+    }
+    await writeAuditLog({
+        actorUserId: request.userId,
+        action: "user.profile.update",
+        targetType: "user",
+        targetId: id,
+        metadata
+    });
+    reply.send(res.rows[0]);
+});
+// Remove user account (admin only)
+app.delete("/admin/users/:id", async (request, reply) => {
+    if (!(await requirePermission(request, reply, "users:manage")))
+        return;
+    const { id } = request.params;
+    if (request.userId === id) {
+        reply.code(400).send({ error: "cannot_delete_self" });
+        return;
+    }
+    const client = await pool.connect();
+    let targetEmail = null;
+    try {
+        await client.query("BEGIN");
+        const targetRes = await client.query(`
+      SELECT
+        u.email,
+        EXISTS (
+          SELECT 1
+          FROM user_roles ur
+          JOIN roles r ON r.id = ur.role_id
+          WHERE ur.user_id = u.id
+            AND r.name = 'admin'
+        ) AS is_admin
+      FROM users u
+      WHERE u.id = $1
+      LIMIT 1
+      `, [id]);
+        if ((targetRes.rowCount ?? 0) === 0) {
+            await client.query("ROLLBACK");
+            reply.code(404).send({ error: "user_not_found" });
+            return;
+        }
+        const target = targetRes.rows[0];
+        targetEmail = target.email;
+        if (target.is_admin) {
+            const adminCountRes = await client.query(`
+        SELECT COUNT(DISTINCT ur.user_id)::int AS total
+        FROM user_roles ur
+        JOIN roles r ON r.id = ur.role_id
+        WHERE r.name = 'admin'
+        `);
+            const adminCount = Number(adminCountRes.rows[0]?.total ?? 0);
+            if (adminCount <= 1) {
+                await client.query("ROLLBACK");
+                reply.code(400).send({ error: "cannot_delete_last_admin" });
+                return;
+            }
+        }
+        // Remove grants explicitly assigned to this user on other users' items.
+        await client.query("DELETE FROM item_grants WHERE subject_type = 'user' AND subject_id = $1", [id]);
+        // Keep audit history while removing user by detaching actor references.
+        await client.query("UPDATE audit_logs SET actor_user_id = NULL WHERE actor_user_id = $1", [id]);
+        const deleteRes = await client.query("DELETE FROM users WHERE id = $1 RETURNING id", [id]);
+        if ((deleteRes.rowCount ?? 0) === 0) {
+            await client.query("ROLLBACK");
+            reply.code(404).send({ error: "user_not_found" });
+            return;
+        }
+        await client.query("COMMIT");
+    }
+    catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    }
+    finally {
+        client.release();
+    }
+    invalidateEnforcer();
+    await writeAuditLog({
+        actorUserId: request.userId,
+        action: "user.deleted",
+        targetType: "user",
+        targetId: id,
+        metadata: targetEmail ? { email: targetEmail } : undefined
+    });
+    reply.send({ status: "ok" });
+});
 // Reset user password (admin only)
 app.post("/admin/users/:id/reset-password", async (request, reply) => {
     if (!(await requirePermission(request, reply, "users:manage")))
         return;
     const { id } = request.params;
     const body = request.body;
-    if (!body?.password || body.password.length < 6) {
-        reply.code(400).send({ error: "password_required_min_6" });
+    const pwErr = validatePassword(body?.password ?? "");
+    if (pwErr) {
+        reply.code(400).send({ error: pwErr });
         return;
     }
     const passwordHash = await hashPassword(body.password);
@@ -645,6 +817,158 @@ app.get("/admin/audit-logs", async (request, reply) => {
     const res = await pool.query(sql, params);
     reply.send(res.rows);
 });
+app.get("/admin/dashboard", async (request, reply) => {
+    if (!(await requirePermission(request, reply, "audit:read")))
+        return;
+    const [usersRes, rolesRes, permissionsRes, itemsRes, grantsRes, last24hRes, topActionsRes, recentAuditRes] = await Promise.all([
+        pool.query(`
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE status = 'active')::int AS active,
+        COUNT(*) FILTER (WHERE status = 'disabled')::int AS disabled
+      FROM users
+      `),
+        pool.query("SELECT COUNT(*)::int AS total FROM roles"),
+        pool.query("SELECT COUNT(*)::int AS total FROM permissions"),
+        pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE status = 'active')::int AS total_active,
+        COUNT(*) FILTER (WHERE status = 'active' AND type = 'file')::int AS files,
+        COUNT(*) FILTER (WHERE status = 'active' AND type = 'folder')::int AS folders,
+        COUNT(*) FILTER (WHERE status = 'deleted')::int AS deleted
+      FROM items
+      `),
+        pool.query("SELECT COUNT(*)::int AS total FROM item_grants"),
+        pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE action = 'auth.login')::int AS logins,
+        COUNT(*) FILTER (WHERE action = 'auth.login_failed')::int AS login_failed,
+        COUNT(*) FILTER (WHERE action = 'item.upload')::int AS uploads,
+        COUNT(*) FILTER (WHERE action = 'item.download')::int AS downloads
+      FROM audit_logs
+      WHERE created_at >= now() - interval '24 hours'
+      `),
+        pool.query(`
+      SELECT action, COUNT(*)::int AS count
+      FROM audit_logs
+      WHERE created_at >= now() - interval '7 days'
+      GROUP BY action
+      ORDER BY count DESC, action ASC
+      LIMIT 8
+      `),
+        pool.query(`
+      SELECT
+        a.id,
+        a.action,
+        a.target_type,
+        a.target_id,
+        a.metadata,
+        a.created_at,
+        u.email AS actor_email
+      FROM audit_logs a
+      LEFT JOIN users u ON u.id = a.actor_user_id
+      ORDER BY a.created_at DESC
+      LIMIT 12
+      `)
+    ]);
+    reply.send({
+        users: usersRes.rows[0],
+        roles: rolesRes.rows[0],
+        permissions: permissionsRes.rows[0],
+        items: itemsRes.rows[0],
+        shares: grantsRes.rows[0],
+        activityLast24h: last24hRes.rows[0],
+        topActions7d: topActionsRes.rows,
+        recentAudit: recentAuditRes.rows
+    });
+});
+app.get("/dashboard", async (request, reply) => {
+    const userId = request.userId;
+    if (!userId) {
+        reply.code(401).send({ error: "unauthorized" });
+        return;
+    }
+    const profile = await getUserProfile(userId);
+    const primaryRole = profile.roles.includes("admin")
+        ? "admin"
+        : profile.roles.includes("editor")
+            ? "editor"
+            : profile.roles.includes("viewer")
+                ? "viewer"
+                : profile.roles[0] ?? "viewer";
+    const [itemsRes, activityRes, topActionsRes, recentActivityRes] = await Promise.all([
+        pool.query(`
+      WITH accessible AS (
+        SELECT DISTINCT i.id, i.type, i.owner_user_id
+        FROM items i
+        LEFT JOIN item_closure ic ON ic.descendant_id = i.id
+        LEFT JOIN item_grants ig ON ig.item_id = ic.ancestor_id
+          AND ig.permission = ANY($2)
+        LEFT JOIN user_roles ur
+          ON ur.user_id = $1
+          AND ig.subject_type = 'role'
+          AND ur.role_id = ig.subject_id
+        WHERE i.status = 'active'
+          AND (
+            i.owner_user_id = $1 OR
+            (ig.subject_type = 'user' AND ig.subject_id = $1) OR
+            (ig.subject_type = 'role' AND ur.user_id IS NOT NULL)
+          )
+      )
+      SELECT
+        COUNT(*)::int AS total_accessible,
+        COUNT(*) FILTER (WHERE type = 'file')::int AS files,
+        COUNT(*) FILTER (WHERE type = 'folder')::int AS folders,
+        COUNT(*) FILTER (WHERE owner_user_id = $1)::int AS owned,
+        COUNT(*) FILTER (WHERE owner_user_id <> $1)::int AS shared_with_me
+      FROM accessible
+      `, [userId, allowedPermissions("read")]),
+        pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE action = 'auth.login')::int AS logins,
+        COUNT(*) FILTER (WHERE action = 'item.upload')::int AS uploads,
+        COUNT(*) FILTER (WHERE action = 'item.download')::int AS downloads,
+        COUNT(*) FILTER (WHERE action = 'item.update')::int AS updates,
+        COUNT(*) FILTER (WHERE action = 'item.delete')::int AS deletes,
+        COUNT(*) FILTER (WHERE action LIKE 'item.share.%')::int AS shares
+      FROM audit_logs
+      WHERE actor_user_id = $1
+        AND created_at >= now() - interval '24 hours'
+      `, [userId]),
+        pool.query(`
+      SELECT action, COUNT(*)::int AS count
+      FROM audit_logs
+      WHERE actor_user_id = $1
+        AND created_at >= now() - interval '7 days'
+      GROUP BY action
+      ORDER BY count DESC, action ASC
+      LIMIT 8
+      `, [userId]),
+        pool.query(`
+      SELECT
+        a.id,
+        a.action,
+        a.target_type,
+        a.target_id,
+        a.metadata,
+        a.created_at,
+        u.email AS actor_email
+      FROM audit_logs a
+      LEFT JOIN users u ON u.id = a.actor_user_id
+      WHERE a.actor_user_id = $1
+      ORDER BY a.created_at DESC
+      LIMIT 12
+      `, [userId])
+    ]);
+    reply.send({
+        role: primaryRole,
+        permissions: profile.permissions,
+        items: itemsRes.rows[0],
+        activityLast24h: activityRes.rows[0],
+        topActions7d: topActionsRes.rows,
+        recentActivity: recentActivityRes.rows
+    });
+});
 app.patch("/admin/users/:id/status", async (request, reply) => {
     if (!(await requirePermission(request, reply, "users:manage")))
         return;
@@ -689,6 +1013,72 @@ app.post("/admin/users/:id/reset-roles", async (request, reply) => {
     });
     reply.send({ status: "ok" });
 });
+app.put("/admin/users/:id/role", async (request, reply) => {
+    if (!(await requirePermission(request, reply, "users:manage")))
+        return;
+    const { id } = request.params;
+    const body = request.body;
+    if (!body?.roleId) {
+        reply.code(400).send({ error: "role_id_required" });
+        return;
+    }
+    const userRes = await pool.query("SELECT id FROM users WHERE id = $1 LIMIT 1", [id]);
+    if ((userRes.rowCount ?? 0) === 0) {
+        reply.code(404).send({ error: "user_not_found" });
+        return;
+    }
+    const roleRes = await pool.query("SELECT id, name FROM roles WHERE id = $1 LIMIT 1", [body.roleId]);
+    if ((roleRes.rowCount ?? 0) === 0) {
+        reply.code(404).send({ error: "role_not_found" });
+        return;
+    }
+    const roleName = roleRes.rows[0].name;
+    if (!["viewer", "editor"].includes(roleName)) {
+        reply.code(400).send({ error: "role_not_assignable" });
+        return;
+    }
+    const isAdminRes = await pool.query(`
+    SELECT 1
+    FROM user_roles ur
+    JOIN roles r ON r.id = ur.role_id
+    WHERE ur.user_id = $1
+      AND r.name = 'admin'
+    LIMIT 1
+    `, [id]);
+    if ((isAdminRes.rowCount ?? 0) > 0) {
+        reply.code(400).send({ error: "cannot_modify_admin_user_roles" });
+        return;
+    }
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        await client.query(`
+      DELETE FROM user_roles
+      WHERE user_id = $1
+        AND role_id IN (
+          SELECT id FROM roles WHERE name IN ('viewer', 'editor', 'user')
+        )
+      `, [id]);
+        await client.query("INSERT INTO user_roles (user_id, role_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", [id, body.roleId]);
+        await client.query("COMMIT");
+    }
+    catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    }
+    finally {
+        client.release();
+    }
+    invalidateEnforcer();
+    await writeAuditLog({
+        actorUserId: request.userId,
+        action: "user.role.set",
+        targetType: "user",
+        targetId: id,
+        metadata: { roleId: body.roleId, roleName }
+    });
+    reply.send({ status: "ok", role: roleName });
+});
 app.get("/admin/roles", async (request, reply) => {
     if (!(await requirePermission(request, reply, "roles:manage")))
         return;
@@ -715,6 +1105,67 @@ app.get("/admin/role-permissions", async (request, reply) => {
   `);
     reply.send(res.rows);
 });
+app.patch("/admin/roles/:id/permissions", async (request, reply) => {
+    if (!(await requirePermission(request, reply, "roles:manage")))
+        return;
+    const { id } = request.params;
+    const body = request.body;
+    if (!Array.isArray(body?.permissionIds)) {
+        reply.code(400).send({ error: "permission_ids_required" });
+        return;
+    }
+    const permissionIds = Array.from(new Set(body.permissionIds.filter((value) => typeof value === "string" && value.trim().length > 0)));
+    const roleRes = await pool.query("SELECT id, name FROM roles WHERE id = $1 LIMIT 1", [id]);
+    if ((roleRes.rowCount ?? 0) === 0) {
+        reply.code(404).send({ error: "role_not_found" });
+        return;
+    }
+    const roleName = roleRes.rows[0].name;
+    if (!["viewer", "editor"].includes(roleName)) {
+        reply.code(400).send({ error: "role_not_assignable" });
+        return;
+    }
+    if (permissionIds.length > 0) {
+        const validPermsRes = await pool.query("SELECT id FROM permissions WHERE id = ANY($1::uuid[])", [permissionIds]);
+        if ((validPermsRes.rowCount ?? 0) !== permissionIds.length) {
+            reply.code(400).send({ error: "invalid_permission_ids" });
+            return;
+        }
+    }
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        await client.query("DELETE FROM role_permissions WHERE role_id = $1", [id]);
+        if (permissionIds.length > 0) {
+            await client.query(`
+        INSERT INTO role_permissions (role_id, permission_id)
+        SELECT $1, permission_id
+        FROM UNNEST($2::uuid[]) AS t(permission_id)
+        ON CONFLICT DO NOTHING
+        `, [id, permissionIds]);
+        }
+        await client.query("COMMIT");
+    }
+    catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    }
+    finally {
+        client.release();
+    }
+    invalidateEnforcer();
+    await writeAuditLog({
+        actorUserId: request.userId,
+        action: "role.permissions.update",
+        targetType: "role",
+        targetId: id,
+        metadata: {
+            roleName,
+            permissionCount: permissionIds.length
+        }
+    });
+    reply.send({ status: "ok" });
+});
 app.get("/admin/users/:id/roles", async (request, reply) => {
     if (!(await requirePermission(request, reply, "users:manage")))
         return;
@@ -724,6 +1175,7 @@ app.get("/admin/users/:id/roles", async (request, reply) => {
     FROM user_roles ur
     JOIN roles r ON r.id = ur.role_id
     WHERE ur.user_id = $1
+      AND r.name IN ('viewer', 'editor')
     `, [id]);
     reply.send(res.rows);
 });
@@ -734,6 +1186,21 @@ app.post("/admin/users/:id/roles", async (request, reply) => {
     const body = request.body;
     if (!body?.roleId) {
         reply.code(400).send({ error: "role_id_required" });
+        return;
+    }
+    const userRes = await pool.query("SELECT id FROM users WHERE id = $1 LIMIT 1", [id]);
+    if ((userRes.rowCount ?? 0) === 0) {
+        reply.code(404).send({ error: "user_not_found" });
+        return;
+    }
+    const roleRes = await pool.query("SELECT id, name FROM roles WHERE id = $1 LIMIT 1", [body.roleId]);
+    if ((roleRes.rowCount ?? 0) === 0) {
+        reply.code(404).send({ error: "role_not_found" });
+        return;
+    }
+    const roleName = roleRes.rows[0].name;
+    if (!["viewer", "editor"].includes(roleName)) {
+        reply.code(400).send({ error: "role_not_assignable" });
         return;
     }
     await pool.query(`
@@ -747,7 +1214,7 @@ app.post("/admin/users/:id/roles", async (request, reply) => {
         action: "user.role.add",
         targetType: "user",
         targetId: id,
-        metadata: { roleId: body.roleId }
+        metadata: { roleId: body.roleId, roleName }
     });
     reply.code(201).send({ status: "ok" });
 });
@@ -760,14 +1227,33 @@ app.delete("/admin/users/:id/roles", async (request, reply) => {
         reply.code(400).send({ error: "role_id_required" });
         return;
     }
-    await pool.query("DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2", [id, body.roleId]);
+    const userRes = await pool.query("SELECT id FROM users WHERE id = $1 LIMIT 1", [id]);
+    if ((userRes.rowCount ?? 0) === 0) {
+        reply.code(404).send({ error: "user_not_found" });
+        return;
+    }
+    const roleRes = await pool.query("SELECT id, name FROM roles WHERE id = $1 LIMIT 1", [body.roleId]);
+    if ((roleRes.rowCount ?? 0) === 0) {
+        reply.code(404).send({ error: "role_not_found" });
+        return;
+    }
+    const roleName = roleRes.rows[0].name;
+    if (!["viewer", "editor"].includes(roleName)) {
+        reply.code(400).send({ error: "role_not_assignable" });
+        return;
+    }
+    const deleteRes = await pool.query("DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2 RETURNING user_id", [id, body.roleId]);
+    if ((deleteRes.rowCount ?? 0) === 0) {
+        reply.code(400).send({ error: "role_not_assigned" });
+        return;
+    }
     invalidateEnforcer();
     await writeAuditLog({
         actorUserId: request.userId,
         action: "user.role.remove",
         targetType: "user",
         targetId: id,
-        metadata: { roleId: body.roleId }
+        metadata: { roleId: body.roleId, roleName }
     });
     reply.send({ status: "ok" });
 });
@@ -844,6 +1330,15 @@ const createItem = async (params) => {
         WHERE descendant_id = $2
         `, [id, params.parentId]);
         }
+        // Auto-share with all roles: editor gets 'write', viewer gets 'read'
+        await client.query(`
+      INSERT INTO item_grants (item_id, subject_type, subject_id, permission)
+      SELECT $1, 'role', r.id,
+        CASE r.name WHEN 'editor' THEN 'write' ELSE 'read' END
+      FROM roles r
+      WHERE r.name IN ('editor', 'viewer')
+      ON CONFLICT DO NOTHING
+      `, [id]);
         await client.query("COMMIT");
         return insertRes.rows[0];
     }

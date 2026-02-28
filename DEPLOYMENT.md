@@ -70,7 +70,10 @@ Admin UI: https://securestorage.netlify.app  (Netlify, static)
 ### Gateway Environment Variables
 ```env
 ALLOW_DEV_HEADER=false
+BREVO_API_KEY=<set-in-railway-dashboard>
 DATABASE_URL=${{Postgres.DATABASE_URL}}
+EMAIL_FROM_ADDRESS=guptapayal8820@gmail.com
+EMAIL_FROM_NAME=SecureVault
 INTERNAL_TOKEN=my-super-secret-token-123
 JWT_ACCESS_TTL_MINUTES=60
 JWT_SECRET=my-jwt-secret-456
@@ -85,19 +88,14 @@ PORT=3000
 REDIS_URL=redis://default:icexnKGbKaIgZFXpLUQZPaZBnPPrZsvp@redis.railway.internal:6379
 REFRESH_TOKEN_TTL_DAYS=30
 RETURN_OTP_IN_RESPONSE=false
-SMTP_FROM=guptapayal8820@gmail.com
-SMTP_HOST=smtp.gmail.com
-SMTP_PASS=xzjpaurnakujlcxz
-SMTP_PORT=587
-SMTP_REQUIRE_TLS=true
-SMTP_SECURE=false
-SMTP_USER=guptapayal8820@gmail.com
 STORAGE_URL=https://secure-storage-production.up.railway.app
 SERVICE_JWT_SECRET=gw-storage-super-secret-2024-xK9mP
 SERVICE_JWT_ISSUER=secure-gateway
 SERVICE_JWT_AUDIENCE=secure-storage
 SERVICE_JWT_TTL_SECONDS=30
 ```
+
+> 📧 **Email:** OTPs are sent via Brevo API. SMTP variables are no longer needed.
 
 ### PostgreSQL Connection
 - **Internal (Railway):** `${{Postgres.DATABASE_URL}}`

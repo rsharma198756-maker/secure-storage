@@ -151,6 +151,20 @@ app.addHook("onRequest", async (request, reply) => {
             issuer: config.serviceJwt.issuer,
             audience: config.serviceJwt.audience
         });
+        // Enforce scope — each endpoint only accepts its designated scope
+        const url = request.url.split("?")[0];
+        const SCOPE_MAP = {
+            "/internal/presign/upload": ["items.upload"],
+            "/internal/presign/download": ["items.download"],
+            "/internal/presign/download-internal": ["items.download"],
+            "/internal/object/download": ["items.download"],
+            "/internal/object/upload": ["items.upload"]
+        };
+        const allowedScopes = SCOPE_MAP[url];
+        if (allowedScopes && !allowedScopes.includes(claims.scope)) {
+            reply.code(403).send({ error: "service_token_scope_insufficient" });
+            return;
+        }
         request.serviceClaims = claims;
     }
     catch {
