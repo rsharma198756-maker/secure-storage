@@ -2595,26 +2595,74 @@ export default function App() {
         )}
 
         {/* ---- ROLES TAB ---- */}
-        {tab === "Roles" && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 20 }}>
-            {roles
-              .filter((role) => ["viewer", "editor"].includes(role.name))
-              .map((role) => (
-                <div key={role.id} className="panel" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 24px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                    <div style={{ width: 42, height: 42, borderRadius: 12, background: "var(--accent-light)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <ShieldIcon />
+        {tab === "Roles" && (() => {
+          const roleConfig: Record<string, { icon: string; description: string; color: string; bg: string; badge: string; badgeClass: string }> = {
+            admin: {
+              icon: "🛡️",
+              description: "Full system access — manages users, roles, permissions, files, and audit logs. Cannot be removed.",
+              color: "var(--amber, #f59e0b)",
+              bg: "rgba(245,158,11,0.1)",
+              badge: "Protected",
+              badgeClass: "badge"
+            },
+            editor: {
+              icon: "✏️",
+              description: "Can upload, edit, rename, and delete files and folders they have access to.",
+              color: "var(--accent)",
+              bg: "var(--accent-light)",
+              badge: "Active",
+              badgeClass: "badge badge-active"
+            },
+            viewer: {
+              icon: "👁️",
+              description: "Read-only access — can view and download files shared with them but cannot modify anything.",
+              color: "var(--green, #22c55e)",
+              bg: "rgba(34,197,94,0.1)",
+              badge: "Active",
+              badgeClass: "badge badge-active"
+            }
+          };
+
+          const order = ["admin", "editor", "viewer"];
+          const allRoles = [...roles].sort((a, b) => order.indexOf(a.name) - order.indexOf(b.name));
+
+          return (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 20 }}>
+              {allRoles.map((role) => {
+                const cfg = roleConfig[role.name] ?? {
+                  icon: "🔑", description: "Custom role.", color: "var(--accent)", bg: "var(--accent-light)", badge: "Active", badgeClass: "badge badge-active"
+                };
+                return (
+                  <div key={role.id} className="panel" style={{ display: "flex", flexDirection: "column", gap: 16, padding: "24px" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                        <div style={{ width: 46, height: 46, borderRadius: 14, background: cfg.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>
+                          {cfg.icon}
+                        </div>
+                        <div style={{ fontSize: 17, fontWeight: 700, color: "var(--ink-1)", textTransform: "capitalize" }}>
+                          {role.name}
+                        </div>
+                      </div>
+                      <span className={cfg.badgeClass} style={{
+                        fontSize: 11,
+                        fontWeight: 700,
+                        background: role.name === "admin" ? "rgba(245,158,11,0.15)" : undefined,
+                        color: role.name === "admin" ? "#f59e0b" : undefined,
+                        border: role.name === "admin" ? "1px solid rgba(245,158,11,0.3)" : undefined
+                      }}>
+                        {cfg.badge}
+                      </span>
                     </div>
-                    <div>
-                      <div style={{ fontSize: 16, fontWeight: 700, color: "var(--ink-1)", textTransform: "capitalize" }}>{role.name}</div>
-                      <div style={{ fontSize: 12, color: "var(--ink-4)", marginTop: 2, fontFamily: "monospace" }}>ID: {role.id.slice(0, 8)}...</div>
-                    </div>
+                    <p style={{ fontSize: 13, color: "var(--ink-3)", lineHeight: 1.6, margin: 0 }}>
+                      {cfg.description}
+                    </p>
                   </div>
-                  <div className="badge badge-active" style={{ fontSize: 11, fontWeight: 600 }}>Active</div>
-                </div>
-              ))}
-          </div>
-        )}
+                );
+              })}
+            </div>
+          );
+        })()}
+
 
         {/* ---- PERMISSIONS TAB ---- */}
         {tab === "Permissions" && (
