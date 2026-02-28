@@ -2596,65 +2596,76 @@ export default function App() {
 
         {/* ---- ROLES TAB ---- */}
         {tab === "Roles" && (() => {
-          const roleConfig: Record<string, { icon: string; description: string; color: string; bg: string; badge: string; badgeClass: string }> = {
+          const ROLE_META: Record<string, { label: string; description: string; iconBg: string; iconColor: string; icon: JSX.Element; badgeClass: string; badgeLabel: string }> = {
             admin: {
-              icon: "🛡️",
-              description: "Full system access — manages users, roles, permissions, files, and audit logs. Cannot be removed.",
-              color: "var(--amber, #f59e0b)",
-              bg: "rgba(245,158,11,0.1)",
-              badge: "Protected",
-              badgeClass: "badge"
+              label: "Admin",
+              description: "Full system access — manages users, roles, permissions, files, and audit logs. Cannot be removed or modified.",
+              iconBg: "var(--yellow-bg)",
+              iconColor: "var(--yellow)",
+              icon: <ShieldIcon size={20} />,
+              badgeClass: "badge",
+              badgeLabel: "Protected"
             },
             editor: {
-              icon: "✏️",
-              description: "Can upload, edit, rename, and delete files and folders they have access to.",
-              color: "var(--accent)",
-              bg: "var(--accent-light)",
-              badge: "Active",
-              badgeClass: "badge badge-active"
+              label: "Editor",
+              description: "Can upload, edit, rename, move, and delete files and folders they have access to.",
+              iconBg: "var(--accent-light)",
+              iconColor: "var(--accent)",
+              icon: <ShieldIcon size={20} />,
+              badgeClass: "badge badge-active",
+              badgeLabel: "Active"
             },
             viewer: {
-              icon: "👁️",
-              description: "Read-only access — can view and download files shared with them but cannot modify anything.",
-              color: "var(--green, #22c55e)",
-              bg: "rgba(34,197,94,0.1)",
-              badge: "Active",
-              badgeClass: "badge badge-active"
+              label: "Viewer",
+              description: "Read-only access — can view and download files that have been shared with them. Cannot modify anything.",
+              iconBg: "var(--green-bg)",
+              iconColor: "var(--green)",
+              icon: <ShieldIcon size={20} />,
+              badgeClass: "badge badge-active",
+              badgeLabel: "Active"
             }
           };
 
-          const order = ["admin", "editor", "viewer"];
-          const allRoles = [...roles].sort((a, b) => order.indexOf(a.name) - order.indexOf(b.name));
+          const visibleRoles = ["admin", "editor", "viewer"]
+            .map(name => roles.find(r => r.name === name))
+            .filter(Boolean) as Role[];
 
           return (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 20 }}>
-              {allRoles.map((role) => {
-                const cfg = roleConfig[role.name] ?? {
-                  icon: "🔑", description: "Custom role.", color: "var(--accent)", bg: "var(--accent-light)", badge: "Active", badgeClass: "badge badge-active"
-                };
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16 }}>
+              {visibleRoles.map((role) => {
+                const meta = ROLE_META[role.name];
                 return (
-                  <div key={role.id} className="panel" style={{ display: "flex", flexDirection: "column", gap: 16, padding: "24px" }}>
+                  <div key={role.id} className="panel" style={{ padding: "22px 24px", display: "flex", flexDirection: "column", gap: 14 }}>
+                    {/* Header row */}
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                        <div style={{ width: 46, height: 46, borderRadius: 14, background: cfg.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>
-                          {cfg.icon}
+                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <div style={{
+                          width: 42, height: 42, borderRadius: "var(--radius-sm)",
+                          background: meta.iconBg, color: meta.iconColor,
+                          display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0
+                        }}>
+                          {meta.icon}
                         </div>
-                        <div style={{ fontSize: 17, fontWeight: 700, color: "var(--ink-1)", textTransform: "capitalize" }}>
-                          {role.name}
-                        </div>
+                        <span style={{ fontSize: 16, fontWeight: 700, color: "var(--ink-1)" }}>
+                          {meta.label}
+                        </span>
                       </div>
-                      <span className={cfg.badgeClass} style={{
+                      <span className={meta.badgeClass} style={{
                         fontSize: 11,
-                        fontWeight: 700,
-                        background: role.name === "admin" ? "rgba(245,158,11,0.15)" : undefined,
-                        color: role.name === "admin" ? "#f59e0b" : undefined,
-                        border: role.name === "admin" ? "1px solid rgba(245,158,11,0.3)" : undefined
+                        ...(role.name === "admin" ? {
+                          background: "var(--yellow-bg)",
+                          color: "var(--yellow)",
+                          border: "1px solid color-mix(in srgb, var(--yellow) 30%, transparent)"
+                        } : {})
                       }}>
-                        {cfg.badge}
+                        {meta.badgeLabel}
                       </span>
                     </div>
-                    <p style={{ fontSize: 13, color: "var(--ink-3)", lineHeight: 1.6, margin: 0 }}>
-                      {cfg.description}
+                    {/* Divider */}
+                    <div style={{ height: 1, background: "var(--border)" }} />
+                    {/* Description */}
+                    <p style={{ fontSize: 13, color: "var(--ink-3)", lineHeight: 1.65, margin: 0 }}>
+                      {meta.description}
                     </p>
                   </div>
                 );
@@ -2662,6 +2673,7 @@ export default function App() {
             </div>
           );
         })()}
+
 
 
         {/* ---- PERMISSIONS TAB ---- */}
