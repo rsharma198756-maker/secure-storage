@@ -1,0 +1,888 @@
+════════════════════════════════════════════════════════════════════════
+  SecureVault Local Regression Suite
+  API: http://localhost:3000  |  Started: 2/27/2026, 3:37:45 PM
+════════════════════════════════════════════════════════════════════════
+
+════════════════════════════════════════════════════════════════════════
+[001] Health › GET /health → ok
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/health
+← 200 {"status":"ok"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[002] Health › GET /ready → reports service states
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/ready
+← 200 {"status":"ok","checks":{"db":true,"redis":true,"storage":true}}
+  Checks: {"db":true,"redis":true,"storage":true}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[003] Auth › Login with unknown email → 401 invalid_credentials
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/auth/login
+  Body: {"email":"ghost@x.com","password":"Any@Pass1"}
+← 401 {"error":"invalid_credentials"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[004] Auth › Login with wrong password → 401 invalid_credentials
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/auth/login
+  Body: {"email":"admin@securevault.local","password":"Wrong@Pass1"}
+← 401 {"error":"invalid_credentials"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[005] Auth › Login with missing body fields → 400
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/auth/login
+  Body: {"password":"Admin@123"}
+← 400 {"error":"email_and_password_required"}
+→ POST http://localhost:3000/auth/login
+  Body: {"email":"admin@securevault.local"}
+← 400 {"error":"email_and_password_required"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[006] Auth › Admin login (OTP bypassed) → full session
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/auth/login
+  Body: {"email":"admin@securevault.local","password":"Admin@123"}
+← 200 {"accessToken":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkYTE0ZjUyMy02NWVhLTRjM2UtYmM1MC04MGZhOWUzNzdhZjQiLCJlbWFpbCI6ImFkbWluQHNlY3VyZXZhdWx0LmxvY2FsIiwiaWF0IjoxNzcyMTg2ODk1LCJleHAiOjE3NzIxOTA0OTV9.YpdfQpE-0EgNqT3VEKRRUHVymNOUcglrYJEQkomP4RY","accessExpiresInMinutes":60,"refreshToken":"IXO0k...<truncated>
+  ℹ️  OTP bypassed — full session returned from /auth/login
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[007] Auth › GET /auth/me → admin profile with roles+permissions
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/auth/me
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 {"id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","email":"admin@securevault.local","firstName":"","lastName":"","roles":["admin"],"permissions":["roles:manage","items:delete","items:share","users:manage","items:read","audit:read","items:write"]}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[008] Auth › GET /auth/me with no token → 401
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/auth/me
+← 401 {"error":"unauthorized"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[009] Auth › GET /auth/me with malformed JWT → 401
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/auth/me
+  Auth: Bearer invalid-token...
+← 401 {"error":"unauthorized"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[010] Auth › Refresh token rotation → new tokens + old token rejected
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/auth/login
+  Body: {"email":"admin@securevault.local","password":"Admin@123"}
+← 200 {"accessToken":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkYTE0ZjUyMy02NWVhLTRjM2UtYmM1MC04MGZhOWUzNzdhZjQiLCJlbWFpbCI6ImFkbWluQHNlY3VyZXZhdWx0LmxvY2FsIiwiaWF0IjoxNzcyMTg2ODk4LCJleHAiOjE3NzIxOTA0OTh9.8QgIWLk2e8CVeUtUl5eKwC63v8XMJyAxhD9PzevQxSw","accessExpiresInMinutes":60,"refreshToken":"0k9kg...<truncated>
+  ℹ️  OTP bypassed — full session returned from /auth/login
+→ POST http://localhost:3000/auth/refresh
+  Body: {"refreshToken":"0k9kgqyA3ViDoicE2Ac2ilc1xwga4oLZcsZHeAimt7sB7kMmbnXHLbETu4QuM5YQ"}
+← 200 {"accessToken":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkYTE0ZjUyMy02NWVhLTRjM2UtYmM1MC04MGZhOWUzNzdhZjQiLCJlbWFpbCI6ImFkbWluQHNlY3VyZXZhdWx0LmxvY2FsIiwiaWF0IjoxNzcyMTg2ODk5LCJleHAiOjE3NzIxOTA0OTl9.EDbNozSOve_HMFLfzAZo-FMsGw0SvZoWi-7DNSwk6tc","accessExpiresInMinutes":60,"refreshToken":"IahPO...<truncated>
+→ POST http://localhost:3000/auth/refresh
+  Body: {"refreshToken":"0k9kgqyA3ViDoicE2Ac2ilc1xwga4oLZcsZHeAimt7sB7kMmbnXHLbETu4QuM5YQ"}
+← 401 {"error":"invalid_refresh_token"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[011] Auth › Logout → refresh token revoked
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/auth/login
+  Body: {"email":"admin@securevault.local","password":"Admin@123"}
+← 200 {"accessToken":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkYTE0ZjUyMy02NWVhLTRjM2UtYmM1MC04MGZhOWUzNzdhZjQiLCJlbWFpbCI6ImFkbWluQHNlY3VyZXZhdWx0LmxvY2FsIiwiaWF0IjoxNzcyMTg2OTAxLCJleHAiOjE3NzIxOTA1MDF9.8DcQlQT8P6B-c2l8GKN1gP9e0mu-igNsjgXm9kSFPiQ","accessExpiresInMinutes":60,"refreshToken":"CcyIK...<truncated>
+  ℹ️  OTP bypassed — full session returned from /auth/login
+→ POST http://localhost:3000/auth/logout
+  Body: {"refreshToken":"CcyIKFIKYBBA_hTzUu8RNgawvXXPlwYqPYP0XnEeTOl9zrHHCzbZ-sBNtmrUDVnI"}
+← 200 {"status":"ok"}
+→ POST http://localhost:3000/auth/refresh
+  Body: {"refreshToken":"CcyIKFIKYBBA_hTzUu8RNgawvXXPlwYqPYP0XnEeTOl9zrHHCzbZ-sBNtmrUDVnI"}
+← 401 {"error":"invalid_refresh_token"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[012] Auth › Refresh with fake token → 401
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/auth/refresh
+  Body: {"refreshToken":"fake-token-xyz"}
+← 401 {"error":"invalid_refresh_token"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[013] Users › Create editor user → 200 with id
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/admin/users
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"email":"editor.1772186902001.vg0n@example.com","password":"Editor@Pass9!","role":"editor","firstName":"Alice","lastName":"Edge"}
+← 200 {"id":"711c3536-2998-437d-ba3e-256d445c5a45","email":"editor.1772186902001.vg0n@example.com","status":"active","role":"editor"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[014] Users › Create viewer user → 200 with id
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/admin/users
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"email":"viewer.1772186902001.hfjf@example.com","password":"Viewer@Pass9!","role":"viewer","firstName":"Bob","lastName":"View"}
+← 200 {"id":"281c1206-2c51-492f-a444-d02f89a4700c","email":"viewer.1772186902001.hfjf@example.com","status":"active","role":"viewer"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[015] Users › Duplicate email → 409 email_already_exists
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/admin/users
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"email":"editor.1772186902001.vg0n@example.com","password":"Editor@Pass9!","role":"editor"}
+← 409 {"error":"email_already_exists"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[016] Users › Invalid email format → 400 invalid_email
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/admin/users
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"email":"not-an-email","password":"Valid@Pass1","role":"viewer"}
+← 400 {"error":"invalid_email"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[017] Users › Weak password: too short → 400 password_min_8_chars
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/admin/users
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"email":"x.1772186907252.qg2t@x.com","password":"Sh@1","role":"viewer"}
+← 400 {"error":"password_min_8_chars"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[018] Users › Weak password: no uppercase → 400 password_needs_uppercase
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/admin/users
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"email":"x.1772186907284.xoz1@x.com","password":"no_upper@1","role":"viewer"}
+← 400 {"error":"password_needs_uppercase"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[019] Users › Weak password: no number → 400 password_needs_number
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/admin/users
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"email":"x.1772186907401.c06e@x.com","password":"NoNumber@pass","role":"viewer"}
+← 400 {"error":"password_needs_number"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[020] Users › Weak password: no special char → 400 password_needs_special_char
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/admin/users
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"email":"x.1772186908976.b3vr@x.com","password":"NoSpecial1234","role":"viewer"}
+← 400 {"error":"password_needs_special_char"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[021] Users › Create user without token → 401
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/admin/users
+  Body: {"email":"x.1772186909975.e2b0@x.com","password":"Valid@Pass1"}
+← 401 {"error":"unauthorized"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[022] Users › List users (admin) → includes newly created users
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/admin/users
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"281c1206-2c51-492f-a444-d02f89a4700c","email":"viewer.1772186902001.hfjf@example.com","first_name":"Bob","last_name":"View","status":"active","created_at":"2026-02-27T10:08:26.946Z","roles":["viewer"]},{"id":"711c3536-2998-437d-ba3e-256d445c5a45","email":"editor.1772186902001.vg0n@example.co...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[023] Users › Editor login → session with editor role + permissions
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/auth/login
+  Body: {"email":"editor.1772186902001.vg0n@example.com","password":"Editor@Pass9!"}
+← 200 {"accessToken":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3MTFjMzUzNi0yOTk4LTQzN2QtYmEzZS0yNTZkNDQ1YzVhNDUiLCJlbWFpbCI6ImVkaXRvci4xNzcyMTg2OTAyMDAxLnZnMG5AZXhhbXBsZS5jb20iLCJpYXQiOjE3NzIxODY5MjEsImV4cCI6MTc3MjE5MDUyMX0.u9aMjy-Pac3iPy3fTgckEWXkhmgV8N1vWAgVr_W4h7g","accessExpiresInMinutes":60,"r...<truncated>
+  ℹ️  OTP bypassed — full session returned from /auth/login
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[024] Users › Viewer login → session with viewer role (read-only)
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/auth/login
+  Body: {"email":"viewer.1772186902001.hfjf@example.com","password":"Viewer@Pass9!"}
+← 200 {"accessToken":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIyODFjMTIwNi0yYzUxLTQ5MmYtYTQ0NC1kMDJmODlhNDcwMGMiLCJlbWFpbCI6InZpZXdlci4xNzcyMTg2OTAyMDAxLmhmamZAZXhhbXBsZS5jb20iLCJpYXQiOjE3NzIxODY5MjksImV4cCI6MTc3MjE5MDUyOX0.JXA8LAhSubOZKN8i2Ys31nLVb6MSPGj-3q3ZTN2x2GA","accessExpiresInMinutes":60,"r...<truncated>
+  ℹ️  OTP bypassed — full session returned from /auth/login
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[025] Users › Non-admin cannot list /admin/users → 403
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/admin/users
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 403 {"error":"forbidden"}
+→ GET http://localhost:3000/admin/users
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 403 {"error":"forbidden"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[026] Users › Non-admin cannot create users → 403
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/admin/users
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"email":"x.1772186930280.5vmo@x.com","password":"Valid@Pass1","role":"viewer"}
+← 403 {"error":"forbidden"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[027] Roles › List roles → admin / editor / viewer present
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/admin/roles
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"90998f18-40a8-4d0f-bc1a-6b901cb243f2","name":"admin","description":"Full access"},{"id":"9539b19d-e97d-41e2-8dd8-f009bc52a1d0","name":"editor","description":"Can read, create, update, and share files"},{"id":"ea6de950-28a5-4c84-a648-f6eb5e34f005","name":"user","description":"Standard user"},...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[028] Roles › List permissions → all 7 expected keys present
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/admin/permissions
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"853df9ea-2ce2-4d51-80fc-ed0d26c9014b","key":"audit:read","description":"View audit logs"},{"id":"bfe0336f-e19d-449a-8715-8732db8cb5c4","key":"items:delete","description":"Delete files and folders"},{"id":"7826697d-99af-4df5-bad4-31817c1b1b7a","key":"items:read","description":"Read files and ...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[029] Roles › Role-permission matrix → admin has all, viewer has items:read only
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/admin/role-permissions
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"role_name":"admin","permissions":["audit:read","items:delete","items:read","items:share","items:write","roles:manage","users:manage"]},{"role_name":"editor","permissions":["items:delete","items:read","items:share","items:write"]},{"role_name":"user","permissions":["items:delete","items:read","ite...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[030] Roles › Get editor's roles → has editor role
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/admin/users/711c3536-2998-437d-ba3e-256d445c5a45/roles
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"9539b19d-e97d-41e2-8dd8-f009bc52a1d0","name":"editor"}]
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[031] Roles › Add viewer role to editor → editor now has 2 roles
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/admin/users/711c3536-2998-437d-ba3e-256d445c5a45/roles
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"roleId":"9fdb7527-1fb4-4dd6-9e8f-6b04f3d5e53c"}
+← 201 {"status":"ok"}
+→ GET http://localhost:3000/admin/users/711c3536-2998-437d-ba3e-256d445c5a45/roles
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"9539b19d-e97d-41e2-8dd8-f009bc52a1d0","name":"editor"},{"id":"9fdb7527-1fb4-4dd6-9e8f-6b04f3d5e53c","name":"viewer"}]
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[032] Roles › Remove viewer role from editor → back to 1 role
+────────────────────────────────────────────────────────────────────────
+→ DELETE http://localhost:3000/admin/users/711c3536-2998-437d-ba3e-256d445c5a45/roles
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"roleId":"9fdb7527-1fb4-4dd6-9e8f-6b04f3d5e53c"}
+← 200 {"status":"ok"}
+→ GET http://localhost:3000/admin/users/711c3536-2998-437d-ba3e-256d445c5a45/roles
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"9539b19d-e97d-41e2-8dd8-f009bc52a1d0","name":"editor"}]
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[033] Roles › Reset viewer's roles → still viewer only
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/admin/users/281c1206-2c51-492f-a444-d02f89a4700c/reset-roles
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 {"status":"ok"}
+→ GET http://localhost:3000/admin/users/281c1206-2c51-492f-a444-d02f89a4700c/roles
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"9fdb7527-1fb4-4dd6-9e8f-6b04f3d5e53c","name":"viewer"}]
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[034] Roles › Non-admin cannot list roles/permissions → 403
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/admin/roles
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 403 {"error":"forbidden"}
+→ GET http://localhost:3000/admin/permissions
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 403 {"error":"forbidden"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[035] Items › Create root folder (admin) → 201
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/items/folder
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"Documents-1772186944792.t3vh"}
+← 201 {"id":"cde0e4d7-99a7-4b4f-a487-7150975bc115","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":null,"type":"folder","name":"Documents-1772186944792.t3vh","storage_key":null,"content_type":null,"size_bytes":null,"checksum_sha256":null,"status":"active","created_at":"2026-02-27T10:09:...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[036] Items › Create nested subfolder → 201
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/items/folder
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"Reports","parentId":"cde0e4d7-99a7-4b4f-a487-7150975bc115"}
+← 201 {"id":"2a7e9244-9115-449f-a1cb-3aed819c6035","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":"cde0e4d7-99a7-4b4f-a487-7150975bc115","type":"folder","name":"Reports","storage_key":null,"content_type":null,"size_bytes":null,"checksum_sha256":null,"status":"active","created_at":"2026...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[037] Items › Create private folder (admin) → 201
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/items/folder
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"PrivateAdmin-1772186945183.psj6"}
+← 201 {"id":"1a1448b2-ef95-405f-a408-30b199786bfd","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":null,"type":"folder","name":"PrivateAdmin-1772186945183.psj6","storage_key":null,"content_type":null,"size_bytes":null,"checksum_sha256":null,"status":"active","created_at":"2026-02-27T10:...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[038] Items › Create file + upload binary content → 201 + 200
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/items/file
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"readme.txt","parentId":"cde0e4d7-99a7-4b4f-a487-7150975bc115","contentType":"text/plain","sizeBytes":40}
+← 201 {"item":{"id":"18e422ef-1120-46cb-8452-de971e02d103","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":"cde0e4d7-99a7-4b4f-a487-7150975bc115","type":"file","name":"readme.txt","storage_key":"items/18e422ef-1120-46cb-8452-de971e02d103","content_type":"text/plain","size_bytes":"40","c...<truncated>
+→ PUT http://localhost:3000/items/18e422ef-1120-46cb-8452-de971e02d103/content
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 {"item":{"id":"18e422ef-1120-46cb-8452-de971e02d103","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":"cde0e4d7-99a7-4b4f-a487-7150975bc115","type":"file","name":"readme.txt","storage_key":"items/18e422ef-1120-46cb-8452-de971e02d103","content_type":"text/plain","size_bytes":"40","c...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[039] Items › Duplicate folder name in same parent → 409 or 400 duplicate_name
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/items/folder
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"Reports","parentId":"cde0e4d7-99a7-4b4f-a487-7150975bc115"}
+← 400 {"error":"duplicate key value violates unique constraint \"items_unique_name_per_parent\""}
+  ℹ️  Server returned 400 for duplicate name
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[040] Items › Name with '/' → 400 invalid_name
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/items/folder
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"bad/name"}
+← 400 {"error":"invalid_name"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[041] Items › Empty name → 400 name_required
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/items/folder
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":""}
+← 400 {"error":"name_required"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[042] Items › Name > 255 chars → 400 name_too_long
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/items/folder
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
+← 400 {"error":"name_too_long"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[043] Items › Negative sizeBytes on file → 400 invalid_size
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/items/file
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"bad.txt","sizeBytes":-1}
+← 400 {"error":"invalid_size"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[044] Items › List root items (admin) → contains created folder
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/items
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"bebbf4f1-f4c1-4ff4-bade-32f0135f4aea","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":null,"type":"folder","name":"Documents","storage_key":null,"content_type":null,"size_bytes":null,"checksum_sha256":null,"status":"active","created_at":"2026-02-27T09:56:42.780Z","updated_...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[045] Items › List items inside root folder → shows subfolder & file
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/items?parentId=cde0e4d7-99a7-4b4f-a487-7150975bc115
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"2a7e9244-9115-449f-a1cb-3aed819c6035","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":"cde0e4d7-99a7-4b4f-a487-7150975bc115","type":"folder","name":"Reports","storage_key":null,"content_type":null,"size_bytes":null,"checksum_sha256":null,"status":"active","created_at":"202...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[046] Items › GET /items/:id → correct metadata
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/items/18e422ef-1120-46cb-8452-de971e02d103
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 {"id":"18e422ef-1120-46cb-8452-de971e02d103","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":"cde0e4d7-99a7-4b4f-a487-7150975bc115","type":"file","name":"readme.txt","storage_key":"items/18e422ef-1120-46cb-8452-de971e02d103","content_type":"text/plain","size_bytes":"40","checksum_...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[047] Items › GET non-existent item → 403 or 404
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/items/00000000-0000-0000-0000-000000000000
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 403 {"error":"forbidden"}
+  ℹ️  Server returned 403 for non-existent item (hasItemPermission short-circuits)
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[048] Items › Rename file (admin) → 200 name updated
+────────────────────────────────────────────────────────────────────────
+→ PATCH http://localhost:3000/items/18e422ef-1120-46cb-8452-de971e02d103
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"readme-v2.txt"}
+← 200 {"id":"18e422ef-1120-46cb-8452-de971e02d103","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":"cde0e4d7-99a7-4b4f-a487-7150975bc115","type":"file","name":"readme-v2.txt","storage_key":"items/18e422ef-1120-46cb-8452-de971e02d103","content_type":"text/plain","size_bytes":"40","checks...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[049] Items › Rename to existing name → 409 duplicate_name
+────────────────────────────────────────────────────────────────────────
+→ PATCH http://localhost:3000/items/18e422ef-1120-46cb-8452-de971e02d103
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"Reports"}
+← 409 {"error":"duplicate_name"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[050] Items › Editor can rename (has items:write) → 200
+────────────────────────────────────────────────────────────────────────
+→ PATCH http://localhost:3000/items/18e422ef-1120-46cb-8452-de971e02d103
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"readme-by-editor.txt"}
+← 200 {"id":"18e422ef-1120-46cb-8452-de971e02d103","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":"cde0e4d7-99a7-4b4f-a487-7150975bc115","type":"file","name":"readme-by-editor.txt","storage_key":"items/18e422ef-1120-46cb-8452-de971e02d103","content_type":"text/plain","size_bytes":"40",...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[051] Items › Viewer cannot rename (no items:write) → 403
+────────────────────────────────────────────────────────────────────────
+→ PATCH http://localhost:3000/items/18e422ef-1120-46cb-8452-de971e02d103
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"renamed-by-viewer.txt"}
+← 403 {"error":"forbidden"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[052] Items › Create folder without token → 401
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/items/folder
+  Body: {"name":"unauth"}
+← 401 {"error":"unauthorized"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[053] Visibility › Editor sees admin's folders in root listing (auto-grant)
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/items
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"bebbf4f1-f4c1-4ff4-bade-32f0135f4aea","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":null,"type":"folder","name":"Documents","storage_key":null,"content_type":null,"size_bytes":null,"checksum_sha256":null,"status":"active","created_at":"2026-02-27T09:56:42.780Z","updated_...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[054] Visibility › Viewer sees admin's folders in root listing (auto-grant)
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/items
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"bebbf4f1-f4c1-4ff4-bade-32f0135f4aea","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":null,"type":"folder","name":"Documents","storage_key":null,"content_type":null,"size_bytes":null,"checksum_sha256":null,"status":"active","created_at":"2026-02-27T09:56:42.780Z","updated_...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[055] Visibility › Editor can list inside admin's folder → sees contents
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/items?parentId=cde0e4d7-99a7-4b4f-a487-7150975bc115
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"2a7e9244-9115-449f-a1cb-3aed819c6035","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":"cde0e4d7-99a7-4b4f-a487-7150975bc115","type":"folder","name":"Reports","storage_key":null,"content_type":null,"size_bytes":null,"checksum_sha256":null,"status":"active","created_at":"202...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[056] Visibility › Viewer can list inside admin's folder
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/items?parentId=cde0e4d7-99a7-4b4f-a487-7150975bc115
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"2a7e9244-9115-449f-a1cb-3aed819c6035","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":"cde0e4d7-99a7-4b4f-a487-7150975bc115","type":"folder","name":"Reports","storage_key":null,"content_type":null,"size_bytes":null,"checksum_sha256":null,"status":"active","created_at":"202...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[057] Visibility › Editor can create subfolder inside admin's folder (write via auto-grant)
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/items/folder
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"EditorSubfolder","parentId":"cde0e4d7-99a7-4b4f-a487-7150975bc115"}
+← 201 {"id":"7f1f2ce1-15ce-4592-acdb-334751116d99","owner_user_id":"711c3536-2998-437d-ba3e-256d445c5a45","parent_id":"cde0e4d7-99a7-4b4f-a487-7150975bc115","type":"folder","name":"EditorSubfolder","storage_key":null,"content_type":null,"size_bytes":null,"checksum_sha256":null,"status":"active","created_a...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[058] Visibility › Viewer cannot create folder (no items:write) → 403
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/items/folder
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"ViewerAttempt"}
+← 403 {"error":"forbidden"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[059] Visibility › Viewer cannot delete file → 403
+────────────────────────────────────────────────────────────────────────
+→ DELETE http://localhost:3000/items/18e422ef-1120-46cb-8452-de971e02d103
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 403 {"error":"forbidden"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[060] FileContent › Download file → content matches uploaded data
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/items/18e422ef-1120-46cb-8452-de971e02d103/download?disposition=inline
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 Hello SecureVault! This is test content.
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[061] FileContent › Download as attachment → 200 with correct content
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/items/18e422ef-1120-46cb-8452-de971e02d103/download?disposition=attachment
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 Hello SecureVault! This is test content.
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[062] FileContent › Viewer can download (has items:read) → 200
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/items/18e422ef-1120-46cb-8452-de971e02d103/download?disposition=inline
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 Hello SecureVault! This is test content.
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[063] FileContent › Replace file content → re-download shows new content
+────────────────────────────────────────────────────────────────────────
+→ PUT http://localhost:3000/items/18e422ef-1120-46cb-8452-de971e02d103/content
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 {"item":{"id":"18e422ef-1120-46cb-8452-de971e02d103","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":"cde0e4d7-99a7-4b4f-a487-7150975bc115","type":"file","name":"readme-by-editor.txt","storage_key":"items/18e422ef-1120-46cb-8452-de971e02d103","content_type":"text/plain","size_byte...<truncated>
+→ GET http://localhost:3000/items/18e422ef-1120-46cb-8452-de971e02d103/download?disposition=inline
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 Updated content after replace!
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[064] FileContent › Viewer cannot upload/replace file → 403
+────────────────────────────────────────────────────────────────────────
+→ PUT http://localhost:3000/items/18e422ef-1120-46cb-8452-de971e02d103/content
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 403 {"error":"forbidden"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[065] FileContent › Download folder as zip → binary response
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/items/cde0e4d7-99a7-4b4f-a487-7150975bc115/download-zip
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 404 {"message":"Route GET:/items/cde0e4d7-99a7-4b4f-a487-7150975bc115/download-zip not found","error":"Not Found","statusCode":404}
+  Zip download status: 404
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[066] Grants › Setup: create isolated folder+file (admin only, auto-shared to roles)
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/items/folder
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"GrantTestFolder"}
+← 201 {"id":"2098f518-8120-49d0-bf19-d41e49cec16f","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":null,"type":"folder","name":"GrantTestFolder","storage_key":null,"content_type":null,"size_bytes":null,"checksum_sha256":null,"status":"active","created_at":"2026-02-27T10:09:24.707Z","upd...<truncated>
+→ POST http://localhost:3000/items/file
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"grant-test.txt","parentId":"2098f518-8120-49d0-bf19-d41e49cec16f","contentType":"text/plain","sizeBytes":5}
+← 201 {"item":{"id":"ac89e02a-f09d-4f79-bf65-16672c6f5ac6","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":"2098f518-8120-49d0-bf19-d41e49cec16f","type":"file","name":"grant-test.txt","storage_key":"items/ac89e02a-f09d-4f79-bf65-16672c6f5ac6","content_type":"text/plain","size_bytes":"5"...<truncated>
+→ PUT http://localhost:3000/items/ac89e02a-f09d-4f79-bf65-16672c6f5ac6/content
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 {"item":{"id":"ac89e02a-f09d-4f79-bf65-16672c6f5ac6","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":"2098f518-8120-49d0-bf19-d41e49cec16f","type":"file","name":"grant-test.txt","storage_key":"items/ac89e02a-f09d-4f79-bf65-16672c6f5ac6","content_type":"text/plain","size_bytes":"5"...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[067] Grants › GET item grants → auto-generated editor+viewer grants exist
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/items/2098f518-8120-49d0-bf19-d41e49cec16f/shares
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"item_id":"2098f518-8120-49d0-bf19-d41e49cec16f","subject_type":"role","subject_id":"9539b19d-e97d-41e2-8dd8-f009bc52a1d0","permission":"write","granted_at":"2026-02-27T10:09:24.707Z"},{"item_id":"2098f518-8120-49d0-bf19-d41e49cec16f","subject_type":"role","subject_id":"9fdb7527-1fb4-4dd6-9e8f-6b0...<truncated>
+  Grants: [{"type":"role","perm":"write"},{"type":"role","perm":"read"}]
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[068] Grants › Add user-level write grant to viewer on file → viewer can rename
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/items/ac89e02a-f09d-4f79-bf65-16672c6f5ac6/share
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"subjectType":"user","subjectId":"281c1206-2c51-492f-a444-d02f89a4700c","permission":"write"}
+← 201 {"status":"ok"}
+→ PATCH http://localhost:3000/items/ac89e02a-f09d-4f79-bf65-16672c6f5ac6
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"renamed-by-viewer.txt"}
+← 403 {"error":"forbidden"}
+❌  FAIL — Expected HTTP 200, got 403. Body: {"error":"forbidden"}
+
+════════════════════════════════════════════════════════════════════════
+[069] Grants › Remove user-level grant from viewer → viewer can no longer write
+────────────────────────────────────────────────────────────────────────
+→ DELETE http://localhost:3000/items/ac89e02a-f09d-4f79-bf65-16672c6f5ac6/share
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"subjectType":"user","subjectId":"281c1206-2c51-492f-a444-d02f89a4700c","permission":"write"}
+← 200 {"status":"ok"}
+→ PATCH http://localhost:3000/items/ac89e02a-f09d-4f79-bf65-16672c6f5ac6
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"hack.txt"}
+← 403 {"error":"forbidden"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[070] Grants › Editor can delete file (has items:delete + write grant from auto-share)
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/items/file
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"disposable-1772186968982.6h9g.txt","parentId":"2098f518-8120-49d0-bf19-d41e49cec16f","contentType":"text/plain","sizeBytes":3}
+← 201 {"item":{"id":"f4bef4a7-25d5-4495-a004-f5d5505c0d03","owner_user_id":"711c3536-2998-437d-ba3e-256d445c5a45","parent_id":"2098f518-8120-49d0-bf19-d41e49cec16f","type":"file","name":"disposable-1772186968982.6h9g.txt","storage_key":"items/f4bef4a7-25d5-4495-a004-f5d5505c0d03","content_type":"text/plai...<truncated>
+→ PUT http://localhost:3000/items/f4bef4a7-25d5-4495-a004-f5d5505c0d03/content
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 {"item":{"id":"f4bef4a7-25d5-4495-a004-f5d5505c0d03","owner_user_id":"711c3536-2998-437d-ba3e-256d445c5a45","parent_id":"2098f518-8120-49d0-bf19-d41e49cec16f","type":"file","name":"disposable-1772186968982.6h9g.txt","storage_key":"items/f4bef4a7-25d5-4495-a004-f5d5505c0d03","content_type":"text/plai...<truncated>
+→ DELETE http://localhost:3000/items/f4bef4a7-25d5-4495-a004-f5d5505c0d03
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 {"status":"ok"}
+→ GET http://localhost:3000/items/f4bef4a7-25d5-4495-a004-f5d5505c0d03
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 403 {"error":"forbidden"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[071] Grants › Grant on parent folder propagates to child (list child)
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/items?parentId=2098f518-8120-49d0-bf19-d41e49cec16f
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"ac89e02a-f09d-4f79-bf65-16672c6f5ac6","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":"2098f518-8120-49d0-bf19-d41e49cec16f","type":"file","name":"grant-test.txt","storage_key":"items/ac89e02a-f09d-4f79-bf65-16672c6f5ac6","content_type":"text/plain","size_bytes":"5","check...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[072] Status › Admin disables editor → editor's token rejected with 403
+────────────────────────────────────────────────────────────────────────
+→ PATCH http://localhost:3000/admin/users/711c3536-2998-437d-ba3e-256d445c5a45/status
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"status":"disabled"}
+← 200 {"status":"ok"}
+→ GET http://localhost:3000/items
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 403 {"error":"user_disabled"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[073] Status › Re-enable editor → editor's token accepted again
+────────────────────────────────────────────────────────────────────────
+→ PATCH http://localhost:3000/admin/users/711c3536-2998-437d-ba3e-256d445c5a45/status
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"status":"active"}
+← 200 {"status":"ok"}
+→ GET http://localhost:3000/items
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"bebbf4f1-f4c1-4ff4-bade-32f0135f4aea","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":null,"type":"folder","name":"Documents","storage_key":null,"content_type":null,"size_bytes":null,"checksum_sha256":null,"status":"active","created_at":"2026-02-27T09:56:42.780Z","updated_...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[074] Status › Admin cannot disable themselves → 400 cannot_disable_self
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/auth/me
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 {"id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","email":"admin@securevault.local","firstName":"","lastName":"","roles":["admin"],"permissions":["roles:manage","items:delete","items:share","users:manage","items:read","audit:read","items:write"]}
+→ PATCH http://localhost:3000/admin/users/da14f523-65ea-4c3e-bc50-80fa9e377af4/status
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"status":"disabled"}
+← 400 {"error":"cannot_disable_self"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[075] Status › Invalid status value → 400 invalid_status
+────────────────────────────────────────────────────────────────────────
+→ PATCH http://localhost:3000/admin/users/281c1206-2c51-492f-a444-d02f89a4700c/status
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"status":"suspended"}
+← 400 {"error":"invalid_status"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[076] Password › Admin resets editor password → login works with new password
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/admin/users/711c3536-2998-437d-ba3e-256d445c5a45/reset-password
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"password":"NewPass@9999!"}
+← 200 {"status":"ok"}
+→ POST http://localhost:3000/auth/login
+  Body: {"email":"editor.1772186902001.vg0n@example.com","password":"NewPass@9999!"}
+← 200 {"accessToken":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3MTFjMzUzNi0yOTk4LTQzN2QtYmEzZS0yNTZkNDQ1YzVhNDUiLCJlbWFpbCI6ImVkaXRvci4xNzcyMTg2OTAyMDAxLnZnMG5AZXhhbXBsZS5jb20iLCJpYXQiOjE3NzIxODY5NzUsImV4cCI6MTc3MjE5MDU3NX0.GT72hinWxtq2AKbRXwAyT0eUqFNvPP9jpStxvPLhMLA","accessExpiresInMinutes":60,"r...<truncated>
+  ℹ️  OTP bypassed — full session returned from /auth/login
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[077] Password › Reset with weak password → 400 with specific error
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/admin/users/281c1206-2c51-492f-a444-d02f89a4700c/reset-password
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"password":"weak"}
+← 400 {"error":"password_min_8_chars"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[078] Password › Non-admin cannot reset passwords → 403
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/admin/users/281c1206-2c51-492f-a444-d02f89a4700c/reset-password
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"password":"NewPass@9999!"}
+← 403 {"error":"forbidden"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[079] Delete › Admin creates and deletes a file → 200 then inaccessible
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/items/file
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"delete-me-1772186975734.pz2r.txt","contentType":"text/plain","sizeBytes":3}
+← 201 {"item":{"id":"3b29e820-bb9d-46e7-a712-8f3aa94ff28d","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":null,"type":"file","name":"delete-me-1772186975734.pz2r.txt","storage_key":"items/3b29e820-bb9d-46e7-a712-8f3aa94ff28d","content_type":"text/plain","size_bytes":"3","checksum_sha25...<truncated>
+→ PUT http://localhost:3000/items/3b29e820-bb9d-46e7-a712-8f3aa94ff28d/content
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 {"item":{"id":"3b29e820-bb9d-46e7-a712-8f3aa94ff28d","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":null,"type":"file","name":"delete-me-1772186975734.pz2r.txt","storage_key":"items/3b29e820-bb9d-46e7-a712-8f3aa94ff28d","content_type":"text/plain","size_bytes":"3","checksum_sha25...<truncated>
+→ DELETE http://localhost:3000/items/3b29e820-bb9d-46e7-a712-8f3aa94ff28d
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 {"status":"ok"}
+→ GET http://localhost:3000/items/3b29e820-bb9d-46e7-a712-8f3aa94ff28d
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 403 {"error":"forbidden"}
+  ℹ️  Server returned 403 after delete (soft-delete via status='deleted')
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[080] Delete › Admin deletes a folder with children → folder inaccessible
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/items/folder
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"ToDeleteFolder-1772186978921.3abf"}
+← 201 {"id":"d2e6ef6f-0ad5-4e01-af87-6911181aefee","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":null,"type":"folder","name":"ToDeleteFolder-1772186978921.3abf","storage_key":null,"content_type":null,"size_bytes":null,"checksum_sha256":null,"status":"active","created_at":"2026-02-27T1...<truncated>
+→ POST http://localhost:3000/items/folder
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"Child","parentId":"d2e6ef6f-0ad5-4e01-af87-6911181aefee"}
+← 201 {"id":"fef2abd8-5332-41f1-8203-d0944ef892c2","owner_user_id":"da14f523-65ea-4c3e-bc50-80fa9e377af4","parent_id":"d2e6ef6f-0ad5-4e01-af87-6911181aefee","type":"folder","name":"Child","storage_key":null,"content_type":null,"size_bytes":null,"checksum_sha256":null,"status":"active","created_at":"2026-0...<truncated>
+→ DELETE http://localhost:3000/items/d2e6ef6f-0ad5-4e01-af87-6911181aefee
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 {"status":"ok"}
+→ GET http://localhost:3000/items/d2e6ef6f-0ad5-4e01-af87-6911181aefee
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 403 {"error":"forbidden"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[081] Delete › Editor can delete (has items:delete) → 200
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/items/file
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+  Body: {"name":"editor-delete-1772186980323.zlzx.txt","contentType":"text/plain","sizeBytes":5}
+← 201 {"item":{"id":"0e7ea9f5-f605-4306-8a7c-b1ee850879ed","owner_user_id":"711c3536-2998-437d-ba3e-256d445c5a45","parent_id":null,"type":"file","name":"editor-delete-1772186980323.zlzx.txt","storage_key":"items/0e7ea9f5-f605-4306-8a7c-b1ee850879ed","content_type":"text/plain","size_bytes":"5","checksum_s...<truncated>
+→ PUT http://localhost:3000/items/0e7ea9f5-f605-4306-8a7c-b1ee850879ed/content
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 {"item":{"id":"0e7ea9f5-f605-4306-8a7c-b1ee850879ed","owner_user_id":"711c3536-2998-437d-ba3e-256d445c5a45","parent_id":null,"type":"file","name":"editor-delete-1772186980323.zlzx.txt","storage_key":"items/0e7ea9f5-f605-4306-8a7c-b1ee850879ed","content_type":"text/plain","size_bytes":"5","checksum_s...<truncated>
+→ DELETE http://localhost:3000/items/0e7ea9f5-f605-4306-8a7c-b1ee850879ed
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 {"status":"ok"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[082] Delete › Viewer cannot delete → 403
+────────────────────────────────────────────────────────────────────────
+→ DELETE http://localhost:3000/items/2a7e9244-9115-449f-a1cb-3aed819c6035
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 403 {"error":"forbidden"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[083] Audit › Admin can list audit logs → non-empty array
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/admin/audit-logs?limit=20
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"d9d3bbf4-7247-4f47-929d-18cd0e5d3b6b","action":"item.delete","target_type":"item","target_id":"0e7ea9f5-f605-4306-8a7c-b1ee850879ed","metadata":null,"created_at":"2026-02-27T10:09:44.236Z","actor_email":"editor.1772186902001.vg0n@example.com"},{"id":"f1a81947-ee94-4126-8620-bb3aaab7db60","ac...<truncated>
+  Unique actions found: item.delete, item.upload, item.create, auth.login, user.password_reset, user.status.update, item.share.remove, item.share.add
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[084] Audit › Audit log contains auth.login entries
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/admin/audit-logs?action=auth.login&limit=50
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"8a08f8fb-4a45-44be-bce4-3c1f84c35e35","action":"auth.login","target_type":"user","target_id":"711c3536-2998-437d-ba3e-256d445c5a45","metadata":{"method":"bypass_otp"},"created_at":"2026-02-27T10:09:35.190Z","actor_email":"editor.1772186902001.vg0n@example.com"},{"id":"a424ee43-cf23-4375-9044...<truncated>
+  auth.login entries found: 46
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[085] Audit › Audit log contains item.create entries
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/admin/audit-logs?action=item.create&limit=50
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"5b5ef001-b810-4175-882c-4f1a839f1bea","action":"item.create","target_type":"item","target_id":"0e7ea9f5-f605-4306-8a7c-b1ee850879ed","metadata":{"name":"editor-delete-1772186980323.zlzx.txt","type":"file","parentId":null,"sizeBytes":"5","contentType":"text/plain"},"created_at":"2026-02-27T10...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[086] Audit › Non-admin cannot read audit logs → 403
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/admin/audit-logs
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 403 {"error":"forbidden"}
+→ GET http://localhost:3000/admin/audit-logs
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 403 {"error":"forbidden"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[087] Audit › Audit log filter by userId works
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/admin/audit-logs?limit=10
+  Auth: Bearer eyJhbGciOiJIUzI1NiIs...
+← 200 [{"id":"d9d3bbf4-7247-4f47-929d-18cd0e5d3b6b","action":"item.delete","target_type":"item","target_id":"0e7ea9f5-f605-4306-8a7c-b1ee850879ed","metadata":null,"created_at":"2026-02-27T10:09:44.236Z","actor_email":"editor.1772186902001.vg0n@example.com"},{"id":"f1a81947-ee94-4126-8620-bb3aaab7db60","ac...<truncated>
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[088] Security › Protected route with no token → 401
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/items
+← 401 {"error":"unauthorized"}
+→ POST http://localhost:3000/items/folder
+  Body: {"name":"test"}
+← 401 {"error":"unauthorized"}
+→ GET http://localhost:3000/admin/users
+← 401 {"error":"unauthorized"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[089] Security › Malformed Authorization header → 401
+────────────────────────────────────────────────────────────────────────
+→ GET http://localhost:3000/items
+← 401 {"error":"unauthorized"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[090] Security › Wrong password gives same error as unknown email (no user enumeration)
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/auth/login
+  Body: {"email":"ghost12345@z.com","password":"Pass@1234"}
+← 401 {"error":"invalid_credentials"}
+→ POST http://localhost:3000/auth/login
+  Body: {"email":"admin@securevault.local","password":"WrongPass@9"}
+← 401 {"error":"invalid_credentials"}
+✅  PASS
+
+════════════════════════════════════════════════════════════════════════
+[091] Security › Verify OTP with wrong code → 400 otp_invalid + attempts increment
+────────────────────────────────────────────────────────────────────────
+→ POST http://localhost:3000/auth/login
+  Body: {"email":"viewer.1772186902001.hfjf@example.com","password":"Viewer@Pass9!"}
+← 200 {"accessToken":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIyODFjMTIwNi0yYzUxLTQ5MmYtYTQ0NC1kMDJmODlhNDcwMGMiLCJlbWFpbCI6InZpZXdlci4xNzcyMTg2OTAyMDAxLmhmamZAZXhhbXBsZS5jb20iLCJpYXQiOjE3NzIxODY5OTQsImV4cCI6MTc3MjE5MDU5NH0._S_QMJy_JcI_zmys4KCfM45kPyA3z-9maTujW-GUxdo","accessExpiresInMinutes":60,"r...<truncated>
