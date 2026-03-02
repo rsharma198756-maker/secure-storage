@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /**
  * One-time migration runner for Railway PostgreSQL.
- * Usage: node run-migrations.mjs <DATABASE_URL>
+ * Usage:
+ *   node run-migrations.mjs <DATABASE_URL>
+ *   DATABASE_URL=... node run-migrations.mjs
  *
  * Example:
  *   node run-migrations.mjs "postgresql://postgres:password@host:5432/railway"
@@ -15,11 +17,12 @@ import { dirname, join } from 'path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 
-const databaseUrl = process.argv[2];
+const databaseUrl = process.argv[2] ?? process.env.DATABASE_URL;
 
 if (!databaseUrl) {
-    console.error('❌ Usage: node run-migrations.mjs <DATABASE_URL>');
-    console.error('   Example: node run-migrations.mjs "postgresql://postgres:pass@host:5432/railway"');
+    console.error('❌ DATABASE_URL is required.');
+    console.error('   Usage: node run-migrations.mjs <DATABASE_URL>');
+    console.error('   Or:    DATABASE_URL=postgresql://... node run-migrations.mjs');
     process.exit(1);
 }
 

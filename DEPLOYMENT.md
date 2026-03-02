@@ -190,7 +190,7 @@ CORS_ORIGINS=https://securestorage.netlify.app
 
 ### Run Migrations
 ```bash
-node run-migrations.mjs
+node run-migrations.mjs "$DATABASE_URL"
 ```
 > Uses the public Postgres URL. Safe to re-run (idempotent).
 
