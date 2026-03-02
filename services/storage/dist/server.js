@@ -13,6 +13,14 @@ app.addContentTypeParser("*", { parseAs: "buffer" }, (_req, body, done) => done(
 const INTERNAL_AUTH_HEADER = "x-internal-token";
 const SERVICE_AUTH_HEADER = "x-service-authorization";
 const FORWARDED_USER_AUTH_HEADER = "x-user-authorization";
+const MAINTENANCE_RETRY_AFTER_SECONDS = 90;
+const MAINTENANCE_PAYLOAD = {
+    error: "service_temporarily_unavailable",
+    message: "We're performing routine service maintenance. Please try again shortly."
+};
+const SECURITY_STATE_CACHE_MS = 1000;
+let tapOffCache;
+let warnedMissingSecurityControlsTable = false;
 const PERMISSION_MAP = {
     read: ["read", "write", "delete", "manage"],
     write: ["write", "delete", "manage"],
@@ -28,6 +36,37 @@ const parseBearerToken = (header) => {
     if (scheme?.toLowerCase() !== "bearer" || !token)
         return null;
     return token;
+};
+const sendMaintenanceResponse = (reply) => {
+    reply.header("retry-after", String(MAINTENANCE_RETRY_AFTER_SECONDS));
+    reply.code(503).send(MAINTENANCE_PAYLOAD);
+};
+const isTapOffActive = async () => {
+    if (!config.securityControlsEnabled)
+        return false;
+    const now = Date.now();
+    if (tapOffCache && now - tapOffCache.loadedAt < SECURITY_STATE_CACHE_MS) {
+        return tapOffCache.tapOffActive;
+    }
+    let tapOffActive = false;
+    try {
+        const res = await pool.query("SELECT tap_off_active FROM security_controls WHERE id = true LIMIT 1");
+        tapOffActive = Boolean(res.rows[0]?.tap_off_active);
+    }
+    catch (error) {
+        if (error?.code === "42P01") {
+            if (!warnedMissingSecurityControlsTable) {
+                warnedMissingSecurityControlsTable = true;
+                app.log.warn("security_controls table is missing; tap-off enforcement is temporarily disabled until migrations are applied");
+            }
+            tapOffActive = false;
+        }
+        else {
+            throw error;
+        }
+    }
+    tapOffCache = { tapOffActive, loadedAt: now };
+    return tapOffActive;
 };
 const ensureActiveUser = async (userId) => {
     const res = await pool.query("SELECT status FROM users WHERE id = $1", [userId]);
@@ -163,6 +202,10 @@ app.addHook("onRequest", async (request, reply) => {
         const allowedScopes = SCOPE_MAP[url];
         if (allowedScopes && !allowedScopes.includes(claims.scope)) {
             reply.code(403).send({ error: "service_token_scope_insufficient" });
+            return;
+        }
+        if (await isTapOffActive()) {
+            sendMaintenanceResponse(reply);
             return;
         }
         request.serviceClaims = claims;

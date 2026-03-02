@@ -1,4 +1,6 @@
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:3000";
+const MAINTENANCE_FALLBACK =
+  "We're performing routine service maintenance. Please try again shortly.";
 
 export type UserProfile = {
   id: string;
@@ -63,6 +65,13 @@ export type AdminUserRecord = {
   roles?: string[];
 };
 
+export type SecurityState = {
+  tapOffActive: boolean;
+  globalLogoutAfter: string | null;
+  tapOffStartedAt: string | null;
+  tapOffBy: string | null;
+};
+
 const inferContentTypeFromFilename = (name: string) => {
   const ext = name.toLowerCase().split(".").pop() ?? "";
   const types: Record<string, string> = {
@@ -88,6 +97,13 @@ const inferContentTypeFromFilename = (name: string) => {
 const resolveUploadContentType = (file: File) =>
   file.type || inferContentTypeFromFilename(file.name) || "application/octet-stream";
 
+const toApiErrorMessage = (data: any, fallback: string) => {
+  if (data?.error === "service_temporarily_unavailable") {
+    return data?.message ?? MAINTENANCE_FALLBACK;
+  }
+  return fallback;
+};
+
 export const login = async (email: string, password: string) => {
   const res = await fetch(`${API_BASE}/auth/login`, {
     method: "POST",
@@ -97,6 +113,10 @@ export const login = async (email: string, password: string) => {
 
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
+    const maintenance = toApiErrorMessage(data, "");
+    if (maintenance) {
+      throw new Error(maintenance);
+    }
     if (data.error === "invalid_credentials") throw new Error("Invalid email or password");
     if (data.error === "user_disabled") throw new Error("Your account has been disabled");
     if (data.error === "rate_limited") throw new Error("Too many attempts. Please wait.");
@@ -114,7 +134,8 @@ export const verifyOtp = async (email: string, otp: string) => {
   });
 
   if (!res.ok) {
-    throw new Error("Invalid OTP");
+    const data = await res.json().catch(() => ({}));
+    throw new Error(toApiErrorMessage(data, "Invalid OTP"));
   }
 
   return (await res.json()) as AuthSession;
@@ -128,7 +149,8 @@ export const refreshSession = async (refreshToken: string) => {
   });
 
   if (!res.ok) {
-    throw new Error("Refresh failed");
+    const data = await res.json().catch(() => ({}));
+    throw new Error(toApiErrorMessage(data, "Refresh failed"));
   }
 
   return (await res.json()) as AuthSession;
@@ -142,15 +164,24 @@ export const logout = async (refreshToken: string) => {
   });
 };
 
-const authFetch = async (token: string, path: string) => {
+const authFetch = async (
+  token: string,
+  path: string,
+  init?: RequestInit,
+  securityActionToken?: string
+) => {
   const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
     headers: {
-      Authorization: `Bearer ${token}`
+      ...(init?.headers ?? {}),
+      Authorization: `Bearer ${token}`,
+      ...(securityActionToken ? { "X-Security-Action-Token": securityActionToken } : {})
     }
   });
 
   if (!res.ok) {
-    throw new Error(`Request failed: ${path}`);
+    const data = await res.json().catch(() => ({}));
+    throw new Error(toApiErrorMessage(data, `Request failed: ${path}`));
   }
 
   return res.json();
@@ -166,6 +197,154 @@ export const fetchMyProfile = (token: string) =>
   authFetch(token, "/auth/me") as Promise<UserProfile>;
 export const listUserRoles = (token: string, userId: string) =>
   authFetch(token, `/admin/users/${userId}/roles`);
+
+export const requestSecurityStepUp = async (
+  token: string,
+  password: string
+) => {
+  const res = await fetch(`${API_BASE}/admin/security/step-up/request`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({ password })
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    if (data.error === "password_required") throw new Error("Password is required");
+    if (data.error === "invalid_credentials") throw new Error("Password is incorrect");
+    if (data.error === "rate_limited") throw new Error("Too many attempts. Please wait.");
+    throw new Error(toApiErrorMessage(data, "Could not request verification OTP"));
+  }
+};
+
+export const verifySecurityStepUp = async (token: string, otp: string) => {
+  const res = await fetch(`${API_BASE}/admin/security/step-up/verify`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({ otp })
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    if (data.error === "otp_required") throw new Error("OTP is required");
+    if (data.error === "otp_not_found") throw new Error("No active OTP found. Request a new code.");
+    if (data.error === "otp_expired") throw new Error("OTP expired. Request a new code.");
+    if (data.error === "otp_invalid") throw new Error("Invalid OTP");
+    if (data.error === "otp_attempts_exceeded") throw new Error("Too many invalid OTP attempts.");
+    if (data.error === "rate_limited") throw new Error("Too many attempts. Please wait.");
+    throw new Error(toApiErrorMessage(data, "Could not verify OTP"));
+  }
+  return (await res.json()) as {
+    securityActionToken: string;
+    expiresInSeconds: number;
+  };
+};
+
+export const getSecurityState = (
+  token: string,
+  securityActionToken: string
+) =>
+  authFetch(token, "/admin/security/state", undefined, securityActionToken) as Promise<SecurityState>;
+
+export const forceLogoutUser = async (
+  token: string,
+  securityActionToken: string,
+  userId: string,
+  reason?: string
+) => {
+  const res = await fetch(`${API_BASE}/admin/security/logout-user`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      Authorization: `Bearer ${token}`,
+      "X-Security-Action-Token": securityActionToken
+    },
+    body: JSON.stringify({ userId, reason })
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    if (data.error === "user_not_found") throw new Error("User not found");
+    if (data.error === "security_action_token_required") throw new Error("Verification token required");
+    if (data.error === "security_action_token_invalid") throw new Error("Verification expired. Verify again.");
+    throw new Error(toApiErrorMessage(data, "Failed to logout user"));
+  }
+  return res.json();
+};
+
+export const forceLogoutEveryone = async (
+  token: string,
+  securityActionToken: string,
+  reason?: string
+) => {
+  const res = await fetch(`${API_BASE}/admin/security/logout-all`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      Authorization: `Bearer ${token}`,
+      "X-Security-Action-Token": securityActionToken
+    },
+    body: JSON.stringify({ reason })
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    if (data.error === "security_action_token_required") throw new Error("Verification token required");
+    if (data.error === "security_action_token_invalid") throw new Error("Verification expired. Verify again.");
+    throw new Error(toApiErrorMessage(data, "Failed to logout everyone"));
+  }
+  return res.json();
+};
+
+export const tapOffService = async (
+  token: string,
+  securityActionToken: string,
+  reason: string
+) => {
+  const res = await fetch(`${API_BASE}/admin/security/tap-off`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      Authorization: `Bearer ${token}`,
+      "X-Security-Action-Token": securityActionToken
+    },
+    body: JSON.stringify({ reason })
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    if (data.error === "reason_required") throw new Error("Reason is required");
+    if (data.error === "security_action_token_required") throw new Error("Verification token required");
+    if (data.error === "security_action_token_invalid") throw new Error("Verification expired. Verify again.");
+    throw new Error(toApiErrorMessage(data, "Failed to activate emergency maintenance"));
+  }
+  return res.json();
+};
+
+export const tapOnService = async (
+  token: string,
+  securityActionToken: string,
+  reason: string
+) => {
+  const res = await fetch(`${API_BASE}/admin/security/tap-on`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      Authorization: `Bearer ${token}`,
+      "X-Security-Action-Token": securityActionToken
+    },
+    body: JSON.stringify({ reason })
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    if (data.error === "reason_required") throw new Error("Reason is required");
+    if (data.error === "security_action_token_required") throw new Error("Verification token required");
+    if (data.error === "security_action_token_invalid") throw new Error("Verification expired. Verify again.");
+    throw new Error(toApiErrorMessage(data, "Failed to restore service"));
+  }
+  return res.json();
+};
 
 export const addUserRole = async (
   token: string,

@@ -6,6 +6,7 @@ import crypto from "node:crypto";
 import archiver from "archiver";
 import { config } from "./config.js";
 import {
+  type AccessTokenClaims,
   generateOtp,
   hashOtp,
   hashPassword,
@@ -13,8 +14,10 @@ import {
   normalizeEmail,
   sendOtpEmail,
   signAccessToken,
+  signSecurityActionToken,
   signServiceToken,
   verifyAccessToken,
+  verifySecurityActionToken,
   verifyPassword
 } from "./auth.js";
 import { getRedis } from "./redis.js";
@@ -22,7 +25,10 @@ import {
   findRefreshToken,
   generateRefreshToken,
   hashRefreshToken,
+  revokeAllRefreshTokens,
   revokeRefreshToken,
+  revokeRefreshTokenWithMetadata,
+  revokeRefreshTokensForUser,
   storeRefreshToken
 } from "./refreshTokens.js";
 import { hasPermission, invalidateEnforcer } from "./rbac.js";
@@ -33,6 +39,38 @@ const pool = new Pool({ connectionString: config.databaseUrl });
 const INTERNAL_AUTH_HEADER = "x-internal-token";
 const SERVICE_AUTH_HEADER = "x-service-authorization";
 const FORWARDED_USER_AUTH_HEADER = "x-user-authorization";
+const SECURITY_ACTION_HEADER = "x-security-action-token";
+
+const MAINTENANCE_RETRY_AFTER_SECONDS = 90;
+const MAINTENANCE_PAYLOAD = {
+  error: "service_temporarily_unavailable",
+  message: "We're performing routine service maintenance. Please try again shortly."
+};
+
+type SecurityControls = {
+  globalLogoutAfter: Date | null;
+  tapOffActive: boolean;
+  tapOffStartedAt: Date | null;
+  tapOffEndedAt: Date | null;
+  tapOffByUserId: string | null;
+  tapOffReason: string | null;
+};
+
+type SecurityActionClaims = {
+  sub?: string;
+  scope?: string;
+  kind?: string;
+  exp?: number;
+};
+
+const SECURITY_STATE_CACHE_MS = 1000;
+let securityControlsCache:
+  | {
+      value: SecurityControls;
+      loadedAt: number;
+    }
+  | undefined;
+let warnedMissingSecurityControlsTable = false;
 
 type ItemPermission = "read" | "write" | "delete" | "manage";
 const PERMISSION_MAP: Record<ItemPermission, ItemPermission[]> = {
@@ -51,14 +89,15 @@ const getUserIdFromHeader = (request: { headers: Record<string, unknown> }) => {
   return header as string;
 };
 
-const getUserIdFromAuth = (request: { headers: Record<string, unknown> }) => {
+const getAccessClaimsFromAuth = (request: {
+  headers: Record<string, unknown>;
+}) => {
   const auth = request.headers["authorization"];
   if (!auth || Array.isArray(auth)) return undefined;
   const [scheme, token] = (auth as string).split(" ");
   if (scheme?.toLowerCase() !== "bearer" || !token) return undefined;
   try {
-    const payload = verifyAccessToken(token);
-    return payload.sub;
+    return verifyAccessToken(token);
   } catch {
     return undefined;
   }
@@ -70,6 +109,88 @@ const getAuthorizationHeader = (request: {
   const auth = request.headers["authorization"];
   if (!auth || Array.isArray(auth)) return undefined;
   return auth as string;
+};
+
+const getSecurityActionTokenHeader = (request: {
+  headers: Record<string, unknown>;
+}) => {
+  const header = request.headers[SECURITY_ACTION_HEADER];
+  if (!header || Array.isArray(header)) return undefined;
+  const value = header as string;
+  const [scheme, token] = value.split(" ");
+  if (scheme?.toLowerCase() === "bearer" && token) return token;
+  return value;
+};
+
+const sendMaintenanceResponse = (reply: any) => {
+  reply.header("retry-after", String(MAINTENANCE_RETRY_AFTER_SECONDS));
+  reply.code(503).send(MAINTENANCE_PAYLOAD);
+};
+
+const getSecurityControls = async (): Promise<SecurityControls> => {
+  if (!config.securityControlsEnabled) {
+    return {
+      globalLogoutAfter: null,
+      tapOffActive: false,
+      tapOffStartedAt: null,
+      tapOffEndedAt: null,
+      tapOffByUserId: null,
+      tapOffReason: null
+    };
+  }
+
+  const now = Date.now();
+  if (securityControlsCache && now - securityControlsCache.loadedAt < SECURITY_STATE_CACHE_MS) {
+    return securityControlsCache.value;
+  }
+
+  let value: SecurityControls;
+  try {
+    const res = await pool.query(
+      `
+      SELECT global_logout_after, tap_off_active, tap_off_started_at, tap_off_ended_at,
+             tap_off_by_user_id, tap_off_reason
+      FROM security_controls
+      WHERE id = true
+      LIMIT 1
+      `
+    );
+    const row = res.rows[0] ?? {};
+    value = {
+      globalLogoutAfter: row.global_logout_after ? new Date(row.global_logout_after) : null,
+      tapOffActive: Boolean(row.tap_off_active),
+      tapOffStartedAt: row.tap_off_started_at ? new Date(row.tap_off_started_at) : null,
+      tapOffEndedAt: row.tap_off_ended_at ? new Date(row.tap_off_ended_at) : null,
+      tapOffByUserId: row.tap_off_by_user_id ?? null,
+      tapOffReason: row.tap_off_reason ?? null
+    };
+  } catch (error: any) {
+    if (error?.code === "42P01") {
+      if (!warnedMissingSecurityControlsTable) {
+        warnedMissingSecurityControlsTable = true;
+        app.log.warn(
+          "security_controls table is missing; security controls are temporarily disabled until migrations are applied"
+        );
+      }
+      value = {
+        globalLogoutAfter: null,
+        tapOffActive: false,
+        tapOffStartedAt: null,
+        tapOffEndedAt: null,
+        tapOffByUserId: null,
+        tapOffReason: null
+      };
+    } else {
+      throw error;
+    }
+  }
+
+  securityControlsCache = { value, loadedAt: now };
+  return value;
+};
+
+const invalidateSecurityControlsCache = () => {
+  securityControlsCache = undefined;
 };
 
 const makeStorageHeaders = (params: {
@@ -119,7 +240,7 @@ app.register(cors, {
     // Check against explicit allowlist
     cb(null, config.corsOrigins.includes(origin));
   },
-  allowedHeaders: ["Authorization", "Content-Type", "X-File-Name"],
+  allowedHeaders: ["Authorization", "Content-Type", "X-File-Name", "X-Security-Action-Token"],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 });
 
@@ -148,18 +269,45 @@ app.addHook("preHandler", async (request, reply) => {
     return;
   }
 
-  const userId = getUserIdFromAuth(request) ??
+  const accessClaims = getAccessClaimsFromAuth(request);
+  const userId = accessClaims?.sub ??
     (config.allowDevHeader ? getUserIdFromHeader(request) : undefined);
 
   if (!userId) {
     reply.code(401).send({ error: "unauthorized" });
     return;
   }
-  const active = await ensureActiveUser(userId);
-  if (!active) {
+
+  const [userState, controls] = await Promise.all([
+    getUserAuthState(userId),
+    getSecurityControls()
+  ]);
+
+  if (!userState) {
+    reply.code(401).send({ error: "invalid_user" });
+    return;
+  }
+
+  if (userState.status !== "active") {
     reply.code(403).send({ error: "user_disabled" });
     return;
   }
+
+  const isSecurityControlRoute = request.url.startsWith("/admin/security/");
+  if (
+    accessClaims &&
+    !isSecurityControlRoute &&
+    isAccessTokenRevokedByCutoff(accessClaims, userState.forceLogoutAfter, controls.globalLogoutAfter)
+  ) {
+    reply.code(401).send({ error: "session_revoked" });
+    return;
+  }
+
+  if (controls.tapOffActive && !request.url.startsWith("/admin/")) {
+    sendMaintenanceResponse(reply);
+    return;
+  }
+
   request.userId = userId;
 });
 
@@ -181,10 +329,89 @@ const requirePermission = async (
   return true;
 };
 
-const ensureActiveUser = async (userId: string) => {
-  const res = await pool.query("SELECT status FROM users WHERE id = $1", [userId]);
-  if (!res.rowCount || res.rowCount === 0) return false;
-  return res.rows[0].status === "active";
+const requireSecurityControlAccess = async (
+  request: { userId?: string; headers: Record<string, unknown> },
+  reply: any,
+  options?: { requireStepUp?: boolean }
+) => {
+  if (!ensureSecurityControlsEnabled(reply)) return false;
+  if (!(await requirePermission(request, reply, "security:control"))) return false;
+  if (options?.requireStepUp === false) return true;
+  if (!requireSecurityActionToken(request, reply)) return false;
+  return true;
+};
+
+const ensureSecurityControlsEnabled = (reply: any) => {
+  if (config.securityControlsEnabled) return true;
+  reply.code(404).send({ error: "not_found" });
+  return false;
+};
+
+const getUserAuthState = async (userId: string) => {
+  const res = await pool.query(
+    "SELECT id, status, force_logout_after FROM users WHERE id = $1 LIMIT 1",
+    [userId]
+  );
+  if (!res.rowCount) return null;
+  return {
+    id: res.rows[0].id as string,
+    status: res.rows[0].status as string,
+    forceLogoutAfter: res.rows[0].force_logout_after
+      ? new Date(res.rows[0].force_logout_after)
+      : null
+  };
+};
+
+const isAccessTokenRevokedByCutoff = (
+  claims: AccessTokenClaims,
+  userCutoff: Date | null,
+  globalCutoff: Date | null
+) => {
+  if (typeof claims.iat !== "number") return false;
+  const tokenIat = claims.iat;
+  const toEpochSeconds = (value: Date | null) =>
+    value ? Math.floor(value.getTime() / 1000) : null;
+  const userCutoffEpoch = toEpochSeconds(userCutoff);
+  const globalCutoffEpoch = toEpochSeconds(globalCutoff);
+  if (userCutoffEpoch !== null && tokenIat <= userCutoffEpoch) return true;
+  if (globalCutoffEpoch !== null && tokenIat <= globalCutoffEpoch) return true;
+  return false;
+};
+
+const requireSecurityActionToken = (
+  request: { userId?: string; headers: Record<string, unknown> },
+  reply: any
+) => {
+  const userId = request.userId;
+  if (!userId) {
+    reply.code(401).send({ error: "unauthorized" });
+    return null;
+  }
+
+  const token = getSecurityActionTokenHeader(request);
+  if (!token) {
+    reply.code(401).send({ error: "security_action_token_required" });
+    return null;
+  }
+
+  let claims: SecurityActionClaims;
+  try {
+    claims = verifySecurityActionToken(token) as SecurityActionClaims;
+  } catch {
+    reply.code(401).send({ error: "security_action_token_invalid" });
+    return null;
+  }
+
+  if (
+    claims.kind !== "security_action" ||
+    claims.scope !== "security:control" ||
+    claims.sub !== userId
+  ) {
+    reply.code(401).send({ error: "security_action_token_invalid" });
+    return null;
+  }
+
+  return claims;
 };
 
 const writeAuditLog = async (params: {
@@ -361,6 +588,50 @@ const otpVerifyLimiter = async (email: string, ip?: string) => {
   return false;
 };
 
+const securityStepUpRequestLimiter = async (email: string, ip?: string) => {
+  const limitEmail = await shouldLimit(
+    `otp:stepup:req:email:${email}`,
+    config.otpRequestMax,
+    config.otpRequestWindowSeconds
+  );
+  if (limitEmail) return true;
+
+  if (ip) {
+    return shouldLimit(
+      `otp:stepup:req:ip:${ip}`,
+      config.otpRequestMax,
+      config.otpRequestWindowSeconds
+    );
+  }
+  return false;
+};
+
+const securityStepUpVerifyLimiter = async (email: string, ip?: string) => {
+  const limitEmail = await shouldLimit(
+    `otp:stepup:verify:email:${email}`,
+    config.otpVerifyMax,
+    config.otpVerifyWindowSeconds
+  );
+  if (limitEmail) return true;
+
+  if (ip) {
+    return shouldLimit(
+      `otp:stepup:verify:ip:${ip}`,
+      config.otpVerifyMax,
+      config.otpVerifyWindowSeconds
+    );
+  }
+  return false;
+};
+
+const ensureAuthFlowAvailable = async (reply: any) => {
+  if (!config.securityControlsEnabled) return true;
+  const controls = await getSecurityControls();
+  if (!controls.tapOffActive) return true;
+  sendMaintenanceResponse(reply);
+  return false;
+};
+
 const getUserProfile = async (userId: string) => {
   const userRes = await pool.query(
     "SELECT first_name, last_name FROM users WHERE id = $1",
@@ -429,6 +700,8 @@ const issueTokens = async (params: {
 };
 
 app.post("/auth/login", async (request, reply) => {
+  if (!(await ensureAuthFlowAvailable(reply))) return;
+
   const body = request.body as { email?: string; password?: string };
   if (!body?.email || !body?.password) {
     reply.code(400).send({ error: "email_and_password_required" });
@@ -502,12 +775,12 @@ app.post("/auth/login", async (request, reply) => {
   const expiresAt = new Date(Date.now() + config.otpTtlMinutes * 60 * 1000);
 
   await pool.query(
-    "UPDATE otp_tokens SET consumed_at = now() WHERE email = $1 AND consumed_at IS NULL",
+    "UPDATE otp_tokens SET consumed_at = now() WHERE email = $1 AND consumed_at IS NULL AND purpose = 'login'",
     [email]
   );
 
   await pool.query(
-    `INSERT INTO otp_tokens (email, otp_hash, expires_at) VALUES ($1,$2,$3)`,
+    `INSERT INTO otp_tokens (email, otp_hash, expires_at, purpose) VALUES ($1,$2,$3,'login')`,
     [email, otpHash, expiresAt]
   );
 
@@ -533,6 +806,8 @@ app.post("/auth/login", async (request, reply) => {
 });
 
 app.post("/auth/verify-otp", async (request, reply) => {
+  if (!(await ensureAuthFlowAvailable(reply))) return;
+
   const body = request.body as { email?: string; otp?: string };
   if (!body?.email || !body?.otp) {
     reply.code(400).send({ error: "invalid_payload" });
@@ -555,7 +830,7 @@ app.post("/auth/verify-otp", async (request, reply) => {
     `
     SELECT id, otp_hash, expires_at, attempts
     FROM otp_tokens
-    WHERE email = $1 AND consumed_at IS NULL
+    WHERE email = $1 AND consumed_at IS NULL AND purpose = 'login'
     ORDER BY created_at DESC
     LIMIT 1
     `,
@@ -635,6 +910,8 @@ app.post("/auth/verify-otp", async (request, reply) => {
 });
 
 app.post("/auth/refresh", async (request, reply) => {
+  if (!(await ensureAuthFlowAvailable(reply))) return;
+
   const body = request.body as { refreshToken?: string };
   if (!body?.refreshToken) {
     reply.code(400).send({ error: "refresh_token_required" });
@@ -654,10 +931,14 @@ app.post("/auth/refresh", async (request, reply) => {
     return;
   }
 
-  await revokeRefreshToken(pool, refreshHash);
+  await revokeRefreshTokenWithMetadata(pool, {
+    tokenHash: refreshHash,
+    reason: "refresh_rotation",
+    revokedByUserId: record.user_id
+  });
 
   const userRes = await pool.query(
-    "SELECT email, status FROM users WHERE id = $1",
+    "SELECT email, status, force_logout_after FROM users WHERE id = $1",
     [record.user_id]
   );
   if (userRes.rowCount === 0) {
@@ -666,6 +947,21 @@ app.post("/auth/refresh", async (request, reply) => {
   }
   if (userRes.rows[0].status !== "active") {
     reply.code(403).send({ error: "user_disabled" });
+    return;
+  }
+
+  const controls = await getSecurityControls();
+  const issuedAtSeconds = Math.floor(new Date(record.created_at).getTime() / 1000);
+  if (
+    isAccessTokenRevokedByCutoff(
+      { sub: record.user_id, email: userRes.rows[0].email, iat: issuedAtSeconds },
+      userRes.rows[0].force_logout_after
+        ? new Date(userRes.rows[0].force_logout_after)
+        : null,
+      controls.globalLogoutAfter
+    )
+  ) {
+    reply.code(401).send({ error: "session_revoked" });
     return;
   }
 
@@ -694,7 +990,11 @@ app.post("/auth/logout", async (request, reply) => {
   }
   const refreshHash = hashRefreshToken(body.refreshToken);
   const record = await findRefreshToken(pool, refreshHash);
-  await revokeRefreshToken(pool, refreshHash);
+  await revokeRefreshTokenWithMetadata(pool, {
+    tokenHash: refreshHash,
+    reason: "logout",
+    revokedByUserId: record?.user_id ?? null
+  });
   if (record) {
     await writeAuditLog({
       actorUserId: record.user_id,
@@ -708,15 +1008,22 @@ app.post("/auth/logout", async (request, reply) => {
 
 // Get current user profile
 app.get("/auth/me", async (request, reply) => {
-  const userId = getUserIdFromAuth(request) ??
+  const accessClaims = getAccessClaimsFromAuth(request);
+  const userId = accessClaims?.sub ??
     (config.allowDevHeader ? getUserIdFromHeader(request) : undefined);
   if (!userId) {
     reply.code(401).send({ error: "unauthorized" });
     return;
   }
 
+  const controls = await getSecurityControls();
+  if (controls.tapOffActive) {
+    sendMaintenanceResponse(reply);
+    return;
+  }
+
   const userRes = await pool.query(
-    "SELECT id, email, status FROM users WHERE id = $1",
+    "SELECT id, email, status, force_logout_after FROM users WHERE id = $1",
     [userId]
   );
   if (userRes.rowCount === 0) {
@@ -728,6 +1035,20 @@ app.get("/auth/me", async (request, reply) => {
     return;
   }
 
+  if (
+    accessClaims &&
+    isAccessTokenRevokedByCutoff(
+      accessClaims,
+      userRes.rows[0].force_logout_after
+        ? new Date(userRes.rows[0].force_logout_after)
+        : null,
+      controls.globalLogoutAfter
+    )
+  ) {
+    reply.code(401).send({ error: "session_revoked" });
+    return;
+  }
+
   const profile = await getUserProfile(userId);
   reply.send({
     id: userId,
@@ -736,6 +1057,399 @@ app.get("/auth/me", async (request, reply) => {
     lastName: profile.lastName,
     roles: profile.roles,
     permissions: profile.permissions
+  });
+});
+
+app.post("/admin/security/step-up/request", async (request, reply) => {
+  if (!(await requireSecurityControlAccess(request, reply, { requireStepUp: false }))) return;
+
+  const body = request.body as { password?: string };
+  if (!body?.password) {
+    reply.code(400).send({ error: "password_required" });
+    return;
+  }
+
+  const userId = request.userId!;
+  const userRes = await pool.query(
+    "SELECT id, email, status, password_hash FROM users WHERE id = $1 LIMIT 1",
+    [userId]
+  );
+  if ((userRes.rowCount ?? 0) === 0) {
+    reply.code(401).send({ error: "invalid_user" });
+    return;
+  }
+
+  const user = userRes.rows[0];
+  if (user.status !== "active") {
+    reply.code(403).send({ error: "user_disabled" });
+    return;
+  }
+  if (!user.password_hash) {
+    reply.code(401).send({ error: "password_not_set" });
+    return;
+  }
+
+  const passwordValid = await verifyPassword(body.password, user.password_hash);
+  if (!passwordValid) {
+    await writeAuditLog({
+      actorUserId: userId,
+      action: "security.stepup.request_failed",
+      targetType: "security_control",
+      metadata: { reason: "wrong_password" }
+    });
+    reply.code(401).send({ error: "invalid_credentials" });
+    return;
+  }
+
+  const email = normalizeEmail(user.email as string);
+  const isLimited = await securityStepUpRequestLimiter(email, request.ip);
+  if (isLimited) {
+    reply.code(429).send({ error: "rate_limited" });
+    return;
+  }
+
+  const otp = generateOtp();
+  const otpHash = hashOtp(otp);
+  const expiresAt = new Date(Date.now() + config.otpTtlMinutes * 60 * 1000);
+
+  await pool.query(
+    "UPDATE otp_tokens SET consumed_at = now() WHERE email = $1 AND consumed_at IS NULL AND purpose = 'security_stepup'",
+    [email]
+  );
+  await pool.query(
+    "INSERT INTO otp_tokens (email, otp_hash, expires_at, purpose) VALUES ($1,$2,$3,'security_stepup')",
+    [email, otpHash, expiresAt]
+  );
+
+  try {
+    await sendOtpEmail(email, otp);
+  } catch (error: any) {
+    await writeAuditLog({
+      actorUserId: userId,
+      action: "security.stepup.request_failed",
+      targetType: "security_control",
+      metadata: { reason: "otp_email_send_failed", error: error?.message ?? "unknown" }
+    });
+    reply.code(502).send({ error: "otp_email_send_failed" });
+    return;
+  }
+
+  await writeAuditLog({
+    actorUserId: userId,
+    action: "security.stepup.request",
+    targetType: "security_control",
+    metadata: {
+      ip: request.ip,
+      userAgent: request.headers["user-agent"] ?? null
+    }
+  });
+
+  reply.send({ status: "otp_sent" });
+});
+
+app.post("/admin/security/step-up/verify", async (request, reply) => {
+  if (!(await requireSecurityControlAccess(request, reply, { requireStepUp: false }))) return;
+
+  const body = request.body as { otp?: string };
+  if (!body?.otp) {
+    reply.code(400).send({ error: "otp_required" });
+    return;
+  }
+
+  const userId = request.userId!;
+  const userRes = await pool.query(
+    "SELECT id, email, status FROM users WHERE id = $1 LIMIT 1",
+    [userId]
+  );
+  if ((userRes.rowCount ?? 0) === 0) {
+    reply.code(401).send({ error: "invalid_user" });
+    return;
+  }
+  const user = userRes.rows[0];
+  if (user.status !== "active") {
+    reply.code(403).send({ error: "user_disabled" });
+    return;
+  }
+
+  const email = normalizeEmail(user.email as string);
+  const isLimited = await securityStepUpVerifyLimiter(email, request.ip);
+  if (isLimited) {
+    reply.code(429).send({ error: "rate_limited" });
+    return;
+  }
+
+  const tokenRes = await pool.query(
+    `
+    SELECT id, otp_hash, expires_at, attempts
+    FROM otp_tokens
+    WHERE email = $1 AND consumed_at IS NULL AND purpose = 'security_stepup'
+    ORDER BY created_at DESC
+    LIMIT 1
+    `,
+    [email]
+  );
+  if ((tokenRes.rowCount ?? 0) === 0) {
+    reply.code(400).send({ error: "otp_not_found" });
+    return;
+  }
+
+  const tokenRow = tokenRes.rows[0];
+  if (tokenRow.attempts >= config.otpMaxAttempts) {
+    reply.code(400).send({ error: "otp_attempts_exceeded" });
+    return;
+  }
+  if (new Date(tokenRow.expires_at).getTime() < Date.now()) {
+    reply.code(400).send({ error: "otp_expired" });
+    return;
+  }
+
+  const otpHash = hashOtp(body.otp);
+  if (otpHash !== tokenRow.otp_hash) {
+    await pool.query(
+      "UPDATE otp_tokens SET attempts = attempts + 1 WHERE id = $1",
+      [tokenRow.id]
+    );
+    reply.code(400).send({ error: "otp_invalid" });
+    return;
+  }
+
+  await pool.query("UPDATE otp_tokens SET consumed_at = now() WHERE id = $1", [
+    tokenRow.id
+  ]);
+
+  const securityActionToken = signSecurityActionToken(userId);
+  await writeAuditLog({
+    actorUserId: userId,
+    action: "security.stepup.verify",
+    targetType: "security_control",
+    metadata: {
+      ip: request.ip,
+      userAgent: request.headers["user-agent"] ?? null
+    }
+  });
+
+  reply.send({
+    securityActionToken,
+    expiresInSeconds: config.securityStepUpTtlSeconds
+  });
+});
+
+app.get("/admin/security/state", async (request, reply) => {
+  if (!(await requireSecurityControlAccess(request, reply))) return;
+
+  const controls = await getSecurityControls();
+  let tapOffBy: string | null = null;
+  if (controls.tapOffByUserId) {
+    const actorRes = await pool.query("SELECT email FROM users WHERE id = $1 LIMIT 1", [
+      controls.tapOffByUserId
+    ]);
+    tapOffBy = actorRes.rows[0]?.email ?? null;
+  }
+
+  reply.send({
+    tapOffActive: controls.tapOffActive,
+    globalLogoutAfter: controls.globalLogoutAfter
+      ? controls.globalLogoutAfter.toISOString()
+      : null,
+    tapOffStartedAt: controls.tapOffStartedAt
+      ? controls.tapOffStartedAt.toISOString()
+      : null,
+    tapOffBy
+  });
+});
+
+app.post("/admin/security/logout-user", async (request, reply) => {
+  if (!(await requireSecurityControlAccess(request, reply))) return;
+
+  const body = request.body as { userId?: string; reason?: string };
+  if (!body?.userId) {
+    reply.code(400).send({ error: "user_id_required" });
+    return;
+  }
+
+  const cutoffRes = await pool.query(
+    `
+    UPDATE users
+    SET force_logout_after = now(), updated_at = now()
+    WHERE id = $1
+    RETURNING force_logout_after
+    `,
+    [body.userId]
+  );
+  if ((cutoffRes.rowCount ?? 0) === 0) {
+    reply.code(404).send({ error: "user_not_found" });
+    return;
+  }
+
+  const revokedRefreshCount = await revokeRefreshTokensForUser(pool, {
+    userId: body.userId,
+    reason: "admin_forced_logout_user",
+    revokedByUserId: request.userId ?? null
+  });
+
+  await writeAuditLog({
+    actorUserId: request.userId,
+    action: "security.logout_user",
+    targetType: "user",
+    targetId: body.userId,
+    metadata: {
+      reason: body.reason?.trim() || null,
+      revokedRefreshCount,
+      ip: request.ip,
+      userAgent: request.headers["user-agent"] ?? null
+    }
+  });
+
+  reply.send({
+    status: "ok",
+    userId: body.userId,
+    forcedLogoutAfter: new Date(cutoffRes.rows[0].force_logout_after).toISOString(),
+    revokedRefreshCount
+  });
+});
+
+app.post("/admin/security/logout-all", async (request, reply) => {
+  if (!(await requireSecurityControlAccess(request, reply))) return;
+
+  const body = request.body as { reason?: string };
+  const cutoffRes = await pool.query(
+    `
+    INSERT INTO security_controls (id, global_logout_after, updated_at)
+    VALUES (true, now(), now())
+    ON CONFLICT (id) DO UPDATE
+    SET global_logout_after = EXCLUDED.global_logout_after,
+        updated_at = EXCLUDED.updated_at
+    RETURNING global_logout_after
+    `
+  );
+
+  const revokedRefreshCount = await revokeAllRefreshTokens(pool, {
+    reason: "admin_forced_logout_all",
+    revokedByUserId: request.userId ?? null
+  });
+
+  invalidateSecurityControlsCache();
+
+  await writeAuditLog({
+    actorUserId: request.userId,
+    action: "security.logout_all",
+    targetType: "security_control",
+    metadata: {
+      reason: body.reason?.trim() || null,
+      revokedRefreshCount,
+      ip: request.ip,
+      userAgent: request.headers["user-agent"] ?? null
+    }
+  });
+
+  reply.send({
+    status: "ok",
+    globalLogoutAfter: new Date(cutoffRes.rows[0].global_logout_after).toISOString(),
+    revokedRefreshCount
+  });
+});
+
+app.post("/admin/security/tap-off", async (request, reply) => {
+  if (!(await requireSecurityControlAccess(request, reply))) return;
+
+  const body = request.body as { reason?: string };
+  const reason = body.reason?.trim();
+  if (!reason) {
+    reply.code(400).send({ error: "reason_required" });
+    return;
+  }
+
+  const controlsRes = await pool.query(
+    `
+    INSERT INTO security_controls (
+      id, tap_off_active, tap_off_started_at, tap_off_ended_at,
+      tap_off_reason, tap_off_by_user_id, global_logout_after, updated_at
+    )
+    VALUES (true, true, now(), NULL, $1, $2, now(), now())
+    ON CONFLICT (id) DO UPDATE
+    SET tap_off_active = true,
+        tap_off_started_at = now(),
+        tap_off_ended_at = NULL,
+        tap_off_reason = EXCLUDED.tap_off_reason,
+        tap_off_by_user_id = EXCLUDED.tap_off_by_user_id,
+        global_logout_after = now(),
+        updated_at = now()
+    RETURNING tap_off_active, tap_off_started_at
+    `,
+    [reason, request.userId ?? null]
+  );
+
+  const revokedRefreshCount = await revokeAllRefreshTokens(pool, {
+    reason: "emergency_tap_off",
+    revokedByUserId: request.userId ?? null
+  });
+
+  invalidateSecurityControlsCache();
+
+  await writeAuditLog({
+    actorUserId: request.userId,
+    action: "security.tap_off",
+    targetType: "security_control",
+    metadata: {
+      reason,
+      revokedRefreshCount,
+      ip: request.ip,
+      userAgent: request.headers["user-agent"] ?? null
+    }
+  });
+
+  reply.send({
+    status: "ok",
+    tapOffActive: controlsRes.rows[0].tap_off_active,
+    startedAt: new Date(controlsRes.rows[0].tap_off_started_at).toISOString()
+  });
+});
+
+app.post("/admin/security/tap-on", async (request, reply) => {
+  if (!(await requireSecurityControlAccess(request, reply))) return;
+
+  const body = request.body as { reason?: string };
+  const reason = body.reason?.trim();
+  if (!reason) {
+    reply.code(400).send({ error: "reason_required" });
+    return;
+  }
+
+  const controlsRes = await pool.query(
+    `
+    INSERT INTO security_controls (
+      id, tap_off_active, tap_off_started_at, tap_off_ended_at,
+      tap_off_reason, tap_off_by_user_id, updated_at
+    )
+    VALUES (true, false, NULL, now(), $1, $2, now())
+    ON CONFLICT (id) DO UPDATE
+    SET tap_off_active = false,
+        tap_off_ended_at = now(),
+        tap_off_reason = EXCLUDED.tap_off_reason,
+        tap_off_by_user_id = EXCLUDED.tap_off_by_user_id,
+        updated_at = now()
+    RETURNING tap_off_active, tap_off_ended_at
+    `,
+    [reason, request.userId ?? null]
+  );
+
+  invalidateSecurityControlsCache();
+
+  await writeAuditLog({
+    actorUserId: request.userId,
+    action: "security.tap_on",
+    targetType: "security_control",
+    metadata: {
+      reason,
+      ip: request.ip,
+      userAgent: request.headers["user-agent"] ?? null
+    }
+  });
+
+  reply.send({
+    status: "ok",
+    tapOffActive: controlsRes.rows[0].tap_off_active,
+    endedAt: new Date(controlsRes.rows[0].tap_off_ended_at).toISOString()
   });
 });
 

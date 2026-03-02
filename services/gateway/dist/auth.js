@@ -22,6 +22,12 @@ export const signServiceToken = (claims) => jwt.sign(claims, config.serviceJwt.s
     audience: config.serviceJwt.audience,
     expiresIn: `${config.serviceJwt.ttlSeconds}s`
 });
+export const signSecurityActionToken = (userId) => jwt.sign({
+    sub: userId,
+    scope: "security:control",
+    kind: "security_action"
+}, config.jwtSecret, { expiresIn: `${config.securityStepUpTtlSeconds}s` });
+export const verifySecurityActionToken = (token) => jwt.verify(token, config.jwtSecret);
 export const sendOtpEmail = async (email, otp) => {
     const subject = "Your Secure Storage OTP";
     const text = `Your OTP code is: ${otp}. It expires in ${config.otpTtlMinutes} minutes.`;

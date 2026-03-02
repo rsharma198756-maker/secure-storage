@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import {
   authFetch,
   clearMailpit,
+  fetchLatestOtp,
   loginWithPasswordOtp,
   randomEmail,
   requestLoginOtp,
@@ -24,6 +25,32 @@ describe("Regression suite", () => {
   let otherId = "";
   let folderId = "";
   let fileId = "";
+
+  const issueSecurityActionToken = async () => {
+    await clearMailpit();
+    const reqRes = await fetch(`${API_BASE}/admin/security/step-up/request`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({ password: ADMIN_PASSWORD })
+    });
+    expect(reqRes.ok).toBe(true);
+    const otp = await fetchLatestOtp(ADMIN_EMAIL);
+    const verifyRes = await fetch(`${API_BASE}/admin/security/step-up/verify`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({ otp })
+    });
+    expect(verifyRes.ok).toBe(true);
+    const payload = await verifyRes.json();
+    expect(payload.securityActionToken).toBeTruthy();
+    return payload.securityActionToken as string;
+  };
 
   beforeAll(async () => {
     await waitForReady();
@@ -248,5 +275,95 @@ describe("Regression suite", () => {
   it("auth: login endpoint returns OTP for test mode", async () => {
     const otp = await requestLoginOtp(ADMIN_EMAIL, ADMIN_PASSWORD);
     expect(typeof otp === "string" || otp === null).toBe(true);
+  });
+
+  it("security: targeted logout invalidates active user token", async () => {
+    const securityActionToken = await issueSecurityActionToken();
+    const res = await fetch(`${API_BASE}/admin/security/logout-user`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+        "x-security-action-token": securityActionToken
+      },
+      body: JSON.stringify({ userId: otherId, reason: "Regression targeted logout check" })
+    });
+    expect(res.ok).toBe(true);
+
+    const userAccess = await fetch(`${API_BASE}/items`, {
+      headers: { Authorization: `Bearer ${otherToken}` }
+    });
+    expect(userAccess.status).toBe(401);
+  });
+
+  it("security: global logout + tap-off blocks auth flow and tap-on restores", async () => {
+    let securityActionToken = await issueSecurityActionToken();
+
+    const logoutAllRes = await fetch(`${API_BASE}/admin/security/logout-all`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+        "x-security-action-token": securityActionToken
+      },
+      body: JSON.stringify({ reason: "Regression global logout check" })
+    });
+    expect(logoutAllRes.ok).toBe(true);
+
+    const tapOffRes = await fetch(`${API_BASE}/admin/security/tap-off`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+        "x-security-action-token": securityActionToken
+      },
+      body: JSON.stringify({ reason: "Regression tap-off check" })
+    });
+    expect(tapOffRes.ok).toBe(true);
+
+    const blockedLogin = await fetch(`${API_BASE}/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD })
+    });
+    expect(blockedLogin.status).toBe(503);
+    const blockedLoginBody = await blockedLogin.json().catch(() => ({}));
+    expect(blockedLoginBody.error).toBe("service_temporarily_unavailable");
+
+    const stepUpWithRevokedSession = await fetch(`${API_BASE}/admin/security/step-up/request`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({ password: ADMIN_PASSWORD })
+    });
+    expect(stepUpWithRevokedSession.ok).toBe(true);
+    const otp = await fetchLatestOtp(ADMIN_EMAIL);
+    const verifyRes = await fetch(`${API_BASE}/admin/security/step-up/verify`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({ otp })
+    });
+    expect(verifyRes.ok).toBe(true);
+    securityActionToken = (await verifyRes.json()).securityActionToken;
+
+    const tapOnRes = await fetch(`${API_BASE}/admin/security/tap-on`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Authorization: `Bearer ${adminToken}`,
+        "x-security-action-token": securityActionToken
+      },
+      body: JSON.stringify({ reason: "Regression tap-on check" })
+    });
+    expect(tapOnRes.ok).toBe(true);
+
+    const newAdminSession = await loginWithPasswordOtp(ADMIN_EMAIL, ADMIN_PASSWORD);
+    expect(newAdminSession.accessToken).toBeTruthy();
+    adminToken = newAdminSession.accessToken;
   });
 });

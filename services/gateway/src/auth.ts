@@ -27,8 +27,15 @@ export const signAccessToken = (userId: string, email: string) => {
   return { token, expiresInMinutes: config.jwtAccessTtlMinutes };
 };
 
+export type AccessTokenClaims = {
+  sub: string;
+  email: string;
+  iat?: number;
+  exp?: number;
+};
+
 export const verifyAccessToken = (token: string) =>
-  jwt.verify(token, config.jwtSecret) as { sub: string; email: string };
+  jwt.verify(token, config.jwtSecret) as AccessTokenClaims;
 
 type ServiceTokenClaims = {
   kind: "system" | "user";
@@ -42,6 +49,28 @@ export const signServiceToken = (claims: ServiceTokenClaims) =>
     audience: config.serviceJwt.audience,
     expiresIn: `${config.serviceJwt.ttlSeconds}s`
   });
+
+type SecurityActionTokenClaims = {
+  sub: string;
+  scope: "security:control";
+  kind: "security_action";
+  iat?: number;
+  exp?: number;
+};
+
+export const signSecurityActionToken = (userId: string) =>
+  jwt.sign(
+    {
+      sub: userId,
+      scope: "security:control",
+      kind: "security_action"
+    },
+    config.jwtSecret,
+    { expiresIn: `${config.securityStepUpTtlSeconds}s` }
+  );
+
+export const verifySecurityActionToken = (token: string) =>
+  jwt.verify(token, config.jwtSecret) as SecurityActionTokenClaims;
 
 export const sendOtpEmail = async (email: string, otp: string) => {
   const subject = "Your Secure Storage OTP";

@@ -8,7 +8,10 @@ import {
   createUser,
   deleteItem,
   downloadItem,
+  forceLogoutEveryone,
+  forceLogoutUser,
   fetchDashboardSummary,
+  getSecurityState,
   fetchUserDashboardSummary,
   listAuditLogs,
   listItems,
@@ -19,15 +22,26 @@ import {
   listUsers,
   login,
   logout,
+  requestSecurityStepUp,
   removeUser,
   resetUserPassword,
   setUserRole,
+  tapOffService,
+  tapOnService,
   updateItemName,
   updateUserInfo,
   updateRolePermissions,
+  verifySecurityStepUp,
   verifyOtp
 } from "./api";
-import type { AuditLog, DashboardSummary, Item, UserDashboardSummary, UserProfile } from "./api";
+import type {
+  AuditLog,
+  DashboardSummary,
+  Item,
+  SecurityState,
+  UserDashboardSummary,
+  UserProfile
+} from "./api";
 import "./styles.css";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -244,7 +258,7 @@ const CalendarIcon = ({ size = 14, ...props }: IconProps) => (
    Types
    ============================================= */
 
-const ALL_TABS = ["Dashboard", "Users", "Roles", "Permissions", "Files", "Audit Logs"] as const;
+const ALL_TABS = ["Dashboard", "Users", "Roles", "Permissions", "Files", "Audit Logs", "Security"] as const;
 type Tab = (typeof ALL_TABS)[number];
 
 type User = {
@@ -385,6 +399,7 @@ const tabIcons: Record<Tab, (props: IconProps) => JSX.Element> = {
   Permissions: KeyIcon,
   Files: FolderIcon,
   "Audit Logs": ActivityIcon,
+  Security: ShieldAlertIcon,
 };
 
 const tabDescriptions: Record<Tab, string> = {
@@ -394,14 +409,18 @@ const tabDescriptions: Record<Tab, string> = {
   Permissions: "See which permissions are assigned to each role.",
   Files: "Browse, upload, and manage stored documents and folders.",
   "Audit Logs": "View a chronological log of all system activity.",
+  Security: "Run emergency controls, force logout sessions, and monitor tap-off state.",
 };
 
-const getTabsForRole = (roles: string[]): Tab[] => {
-  if (roles.includes("admin")) return [...ALL_TABS];
-  if (roles.some((role) => ["viewer", "editor"].includes(role))) {
-    return ["Dashboard", "Files"];
+const getTabsForRole = (roles: string[], permissions: string[]): Tab[] => {
+  const canControlSecurity = permissions.includes("security:control");
+  if (roles.includes("admin")) {
+    return canControlSecurity ? [...ALL_TABS] : ALL_TABS.filter((tab) => tab !== "Security");
   }
-  return ["Files"];
+  if (roles.some((role) => ["viewer", "editor"].includes(role))) {
+    return canControlSecurity ? ["Dashboard", "Files", "Security"] : ["Dashboard", "Files"];
+  }
+  return canControlSecurity ? ["Files", "Security"] : ["Files"];
 };
 
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
@@ -600,6 +619,17 @@ export default function App() {
   const [userDashboard, setUserDashboard] = useState<UserDashboardSummary | null>(null);
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [securityState, setSecurityState] = useState<SecurityState | null>(null);
+  const [securityLoading, setSecurityLoading] = useState(false);
+  const [securityError, setSecurityError] = useState<string | null>(null);
+  const [securityActionToken, setSecurityActionToken] = useState<string | null>(null);
+  const [securityActionExpiresAt, setSecurityActionExpiresAt] = useState<number | null>(null);
+  const [showSecurityStepUpModal, setShowSecurityStepUpModal] = useState(false);
+  const [stepUpPassword, setStepUpPassword] = useState("");
+  const [stepUpOtp, setStepUpOtp] = useState("");
+  const [stepUpOtpRequested, setStepUpOtpRequested] = useState(false);
+  const [stepUpBusy, setStepUpBusy] = useState(false);
+  const [securityReason, setSecurityReason] = useState("Routine maintenance activity.");
   const [showCreateUser, setShowCreateUser] = useState(false);
   const [newUserEmail, setNewUserEmail] = useState("");
   const [newUserPassword, setNewUserPassword] = useState("");
@@ -660,6 +690,21 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("securevault_remember", String(rememberMe));
   }, [rememberMe]);
+
+  useEffect(() => {
+    if (!securityActionExpiresAt) return;
+    const msRemaining = securityActionExpiresAt - Date.now();
+    if (msRemaining <= 0) {
+      setSecurityActionToken(null);
+      setSecurityActionExpiresAt(null);
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      setSecurityActionToken(null);
+      setSecurityActionExpiresAt(null);
+    }, msRemaining);
+    return () => window.clearTimeout(timeoutId);
+  }, [securityActionExpiresAt]);
 
   useEffect(() => {
     viewerUrlRef.current = viewerUrl;
@@ -818,9 +863,26 @@ export default function App() {
   const userRolesList = session?.user?.roles ?? [];
   const userPerms = session?.user?.permissions ?? [];
   const isAdmin = userRolesList.includes("admin");
+  const canControlSecurity = userPerms.includes("security:control");
   const canWrite = isAdmin || userPerms.includes("items:write");
   const canDelete = isAdmin || userPerms.includes("items:delete");
-  const visibleTabs = useMemo(() => getTabsForRole(userRolesList), [userRolesList]);
+  const isSecurityTokenValid =
+    Boolean(securityActionToken) &&
+    typeof securityActionExpiresAt === "number" &&
+    Date.now() < securityActionExpiresAt;
+  const securityTokenRemainingSeconds =
+    typeof securityActionExpiresAt === "number"
+      ? Math.max(0, Math.floor((securityActionExpiresAt - Date.now()) / 1000))
+      : 0;
+  useEffect(() => {
+    if (!isSecurityTokenValid) {
+      setSecurityState(null);
+    }
+  }, [isSecurityTokenValid]);
+  const visibleTabs = useMemo(
+    () => getTabsForRole(userRolesList, userPerms),
+    [userRolesList, userPerms]
+  );
   const auditActionOptions = useMemo(
     () => Array.from(new Set(auditLogs.map((log) => log.action))).sort(),
     [auditLogs]
@@ -908,6 +970,10 @@ export default function App() {
 
   const completeSessionLogin = (data: Session) => {
     setSession(data);
+    setSecurityActionToken(null);
+    setSecurityActionExpiresAt(null);
+    setSecurityState(null);
+    setSecurityError(null);
     if (rememberMe) {
       localStorage.setItem("securevault_session", JSON.stringify(data));
       localStorage.setItem("securevault_last_email", email);
@@ -922,7 +988,10 @@ export default function App() {
     setLoginStep(1);
     setOtp("");
     setPassword("");
-    const userTabs = getTabsForRole(data.user?.roles ?? []);
+    const userTabs = getTabsForRole(
+      data.user?.roles ?? [],
+      data.user?.permissions ?? []
+    );
     setTab(userTabs.includes("Dashboard") ? "Dashboard" : "Files");
   };
 
@@ -989,6 +1058,16 @@ export default function App() {
     setUserDashboard(null);
     setDashboardError(null);
     setDashboardLoading(false);
+    setSecurityState(null);
+    setSecurityLoading(false);
+    setSecurityError(null);
+    setSecurityActionToken(null);
+    setSecurityActionExpiresAt(null);
+    setShowSecurityStepUpModal(false);
+    setStepUpPassword("");
+    setStepUpOtp("");
+    setStepUpOtpRequested(false);
+    setStepUpBusy(false);
     setAuditLogs([]);
     setAuditFilterUserId("");
     setAuditFilterAction("");
@@ -1575,6 +1654,181 @@ export default function App() {
     }
   };
 
+  const openSecurityStepUpModal = () => {
+    setShowSecurityStepUpModal(true);
+    setStepUpPassword("");
+    setStepUpOtp("");
+    setStepUpOtpRequested(false);
+  };
+
+  const onRequestSecurityStepUpOtp = async () => {
+    if (!accessToken || stepUpBusy) return;
+    if (!stepUpPassword) {
+      showToast("error", "Password required", "Enter your current password to continue.");
+      return;
+    }
+
+    setStepUpBusy(true);
+    try {
+      await requestSecurityStepUp(accessToken, stepUpPassword);
+      setStepUpOtpRequested(true);
+      showToast("success", "Code sent", "Verification code sent to your email.");
+    } catch (error: any) {
+      showToast("error", "Verification failed", error?.message ?? "Could not request verification code.");
+    } finally {
+      setStepUpBusy(false);
+    }
+  };
+
+  const onVerifySecurityStepUpOtp = async () => {
+    if (!accessToken || stepUpBusy) return;
+    if (!stepUpOtp) {
+      showToast("error", "OTP required", "Enter the 6-digit OTP.");
+      return;
+    }
+
+    setStepUpBusy(true);
+    try {
+      const result = await verifySecurityStepUp(accessToken, stepUpOtp);
+      setSecurityActionToken(result.securityActionToken);
+      setSecurityActionExpiresAt(Date.now() + result.expiresInSeconds * 1000);
+      setShowSecurityStepUpModal(false);
+      setStepUpPassword("");
+      setStepUpOtp("");
+      setStepUpOtpRequested(false);
+      showToast("success", "Security controls unlocked", "Privileged actions are enabled for 5 minutes.");
+    } catch (error: any) {
+      showToast("error", "Verification failed", error?.message ?? "Could not verify OTP.");
+    } finally {
+      setStepUpBusy(false);
+    }
+  };
+
+  const getSecurityTokenOrPrompt = () => {
+    if (!isSecurityTokenValid || !securityActionToken) {
+      openSecurityStepUpModal();
+      showToast("error", "Verification required", "Unlock security controls before running this action.");
+      return null;
+    }
+    return securityActionToken;
+  };
+
+  const refreshSecurityControlState = async () => {
+    if (!accessToken || !canControlSecurity) return;
+    const token = getSecurityTokenOrPrompt();
+    if (!token) return;
+    setSecurityLoading(true);
+    setSecurityError(null);
+    try {
+      const nextState = await getSecurityState(accessToken, token);
+      setSecurityState(nextState);
+    } catch (error: any) {
+      setSecurityState(null);
+      setSecurityError(error?.message ?? "Could not fetch security state.");
+      if ((error?.message ?? "").toLowerCase().includes("verification")) {
+        setSecurityActionToken(null);
+        setSecurityActionExpiresAt(null);
+      }
+    } finally {
+      setSecurityLoading(false);
+    }
+  };
+
+  const onForceLogoutUser = async (user: User) => {
+    if (!accessToken) return;
+    if (session?.user?.id === user.id) {
+      showToast("error", "Action blocked", "Use 'Logout everyone' if you need to clear all sessions.");
+      return;
+    }
+    const token = getSecurityTokenOrPrompt();
+    if (!token) return;
+
+    setIsBusy(true);
+    try {
+      await forceLogoutUser(accessToken, token, user.id, "Admin initiated targeted logout.");
+      showToast("success", "User logged out", `${user.email} has been logged out from all active sessions.`);
+    } catch (error: any) {
+      showToast("error", "Logout failed", error?.message ?? "Could not logout user.");
+      if ((error?.message ?? "").toLowerCase().includes("verification")) {
+        setSecurityActionToken(null);
+        setSecurityActionExpiresAt(null);
+      }
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onForceLogoutEveryone = async () => {
+    if (!accessToken) return;
+    const token = getSecurityTokenOrPrompt();
+    if (!token) return;
+
+    setIsBusy(true);
+    try {
+      await forceLogoutEveryone(accessToken, token, "Emergency global logout from Security Center.");
+      showToast("success", "Global logout complete", "All active sessions were revoked.");
+      await refreshSecurityControlState();
+    } catch (error: any) {
+      showToast("error", "Global logout failed", error?.message ?? "Could not logout everyone.");
+      if ((error?.message ?? "").toLowerCase().includes("verification")) {
+        setSecurityActionToken(null);
+        setSecurityActionExpiresAt(null);
+      }
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onTapOff = async () => {
+    if (!accessToken) return;
+    const token = getSecurityTokenOrPrompt();
+    if (!token) return;
+    if (!securityReason.trim()) {
+      showToast("error", "Reason required", "Provide a reason before activating emergency maintenance.");
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      await tapOffService(accessToken, token, securityReason.trim());
+      showToast("success", "Emergency maintenance active", "Traffic has been temporarily restricted.");
+      await refreshSecurityControlState();
+    } catch (error: any) {
+      showToast("error", "Tap-off failed", error?.message ?? "Could not activate maintenance.");
+      if ((error?.message ?? "").toLowerCase().includes("verification")) {
+        setSecurityActionToken(null);
+        setSecurityActionExpiresAt(null);
+      }
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const onTapOn = async () => {
+    if (!accessToken) return;
+    const token = getSecurityTokenOrPrompt();
+    if (!token) return;
+    if (!securityReason.trim()) {
+      showToast("error", "Reason required", "Provide a reason before restoring service.");
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      await tapOnService(accessToken, token, securityReason.trim());
+      showToast("success", "Service restored", "Emergency maintenance has been disabled.");
+      await refreshSecurityControlState();
+    } catch (error: any) {
+      showToast("error", "Restore failed", error?.message ?? "Could not restore service.");
+      if ((error?.message ?? "").toLowerCase().includes("verification")) {
+        setSecurityActionToken(null);
+        setSecurityActionExpiresAt(null);
+      }
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   const refreshAuditLogs = async (filters?: { action?: string; userId?: string }) => {
     if (!accessToken) return;
     setAuditLoading(true);
@@ -1607,6 +1861,24 @@ export default function App() {
       refreshDashboard();
     }
   }, [tab, accessToken, isAdmin]);
+
+  useEffect(() => {
+    if (
+      tab === "Security" &&
+      accessToken &&
+      canControlSecurity &&
+      isSecurityTokenValid &&
+      securityActionToken
+    ) {
+      void refreshSecurityControlState();
+    }
+  }, [
+    tab,
+    accessToken,
+    canControlSecurity,
+    isSecurityTokenValid,
+    securityActionToken
+  ]);
 
   if (isSessionChecking) {
     return (
@@ -2287,6 +2559,7 @@ export default function App() {
                   <th>Roles</th>
                   <th>Status</th>
                   <th>Created</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -2340,13 +2613,34 @@ export default function App() {
                           </span>
                         </td>
                         <td className="cell-muted">{formatDate(user.created_at)}</td>
+                        <td>
+                          {!isAdminUser && canControlSecurity ? (
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void onForceLogoutUser(user);
+                              }}
+                              disabled={isBusy || session?.user?.id === user.id}
+                              title={
+                                session?.user?.id === user.id
+                                  ? "Cannot force-logout your active security session here"
+                                  : "Logout this user from all active sessions"
+                              }
+                            >
+                              Logout user
+                            </button>
+                          ) : (
+                            <span className="cell-muted">-</span>
+                          )}
+                        </td>
                       </tr>
                     );
                   };
 
                   const sectionLabel = (label: string) => (
                     <tr key={`section-${label}`} style={{ pointerEvents: "none" }}>
-                      <td colSpan={4} style={{ padding: "8px 16px 4px", background: "var(--bg)" }}>
+                      <td colSpan={5} style={{ padding: "8px 16px 4px", background: "var(--bg)" }}>
                         <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-4)", letterSpacing: "0.6px", textTransform: "uppercase" }}>
                           {label}
                         </span>
@@ -3186,6 +3480,123 @@ export default function App() {
           </>
         )}
 
+        {/* ---- SECURITY TAB ---- */}
+        {tab === "Security" && (
+          <div className="panel" style={{ padding: 20 }}>
+            {!canControlSecurity ? (
+              <div style={{ color: "var(--ink-3)", padding: "8px 0" }}>
+                You do not have permission to use security controls.
+              </div>
+            ) : (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
+                  <div>
+                    <h2 style={{ margin: 0, fontSize: 20, color: "var(--ink-1)" }}>Security Control Center</h2>
+                    <p style={{ margin: "6px 0 0", color: "var(--ink-3)", fontSize: 14 }}>
+                      Targeted/global logout and emergency tap-off controls.
+                    </p>
+                  </div>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => void refreshSecurityControlState()}
+                    disabled={securityLoading || isBusy}
+                  >
+                    <RefreshCwIcon size={14} style={{ marginRight: 4 }} />
+                    {securityLoading ? "Refreshing..." : "Refresh State"}
+                  </button>
+                </div>
+
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
+                  <span className={`badge ${isSecurityTokenValid ? "badge-active" : "badge-disabled"}`}>
+                    {isSecurityTokenValid ? "Security controls unlocked" : "Verification required"}
+                  </span>
+                  {isSecurityTokenValid && (
+                    <span style={{ color: "var(--ink-4)", fontSize: 12 }}>
+                      Token expires in {securityTokenRemainingSeconds}s
+                    </span>
+                  )}
+                  <button className="btn btn-primary btn-sm" onClick={openSecurityStepUpModal} disabled={stepUpBusy}>
+                    {isSecurityTokenValid ? "Re-verify identity" : "Verify identity"}
+                  </button>
+                </div>
+
+                {securityError && (
+                  <div style={{ marginBottom: 12, color: "var(--red)", fontSize: 13 }}>
+                    {securityError}
+                  </div>
+                )}
+
+                <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", marginBottom: 18 }}>
+                  <div className="panel" style={{ margin: 0 }}>
+                    <div style={{ fontSize: 12, color: "var(--ink-4)", marginBottom: 6 }}>Tap-off status</div>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: securityState?.tapOffActive ? "var(--red)" : "var(--green)" }}>
+                      {securityState?.tapOffActive ? "ACTIVE" : "INACTIVE"}
+                    </div>
+                    <div style={{ marginTop: 6, fontSize: 12, color: "var(--ink-4)" }}>
+                      Started: {securityState?.tapOffStartedAt ? formatDate(securityState.tapOffStartedAt) : "-"}
+                    </div>
+                  </div>
+                  <div className="panel" style={{ margin: 0 }}>
+                    <div style={{ fontSize: 12, color: "var(--ink-4)", marginBottom: 6 }}>Global logout cutoff</div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-2)" }}>
+                      {securityState?.globalLogoutAfter ? formatDate(securityState.globalLogoutAfter) : "Not set"}
+                    </div>
+                    <div style={{ marginTop: 6, fontSize: 12, color: "var(--ink-4)" }}>
+                      Last tap-off by: {securityState?.tapOffBy ?? "-"}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: "grid", gap: 12, marginBottom: 16 }}>
+                  <label style={{ fontSize: 12, color: "var(--ink-4)", fontWeight: 600 }}>Reason for security action</label>
+                  <textarea
+                    value={securityReason}
+                    onChange={(event) => setSecurityReason(event.target.value)}
+                    placeholder="Reason for audit trail..."
+                    style={{
+                      minHeight: 80,
+                      resize: "vertical",
+                      borderRadius: 10,
+                      border: "1px solid var(--border)",
+                      background: "var(--surface)",
+                      color: "var(--ink-1)",
+                      padding: "10px 12px"
+                    }}
+                  />
+                </div>
+
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => void onForceLogoutEveryone()}
+                    disabled={isBusy}
+                  >
+                    Logout Everyone
+                  </button>
+                  <button
+                    className="btn btn-danger btn-sm"
+                    onClick={() => void onTapOff()}
+                    disabled={isBusy || Boolean(securityState?.tapOffActive)}
+                  >
+                    Activate Tap-Off
+                  </button>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={() => void onTapOn()}
+                    disabled={isBusy || !securityState?.tapOffActive}
+                  >
+                    Restore Service
+                  </button>
+                </div>
+
+                <div style={{ marginTop: 16, fontSize: 12, color: "var(--ink-4)" }}>
+                  Tip: Use the <strong>Logout user</strong> action in the Users tab for targeted session revocation.
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
         {/* ---- AUDIT LOGS TAB ---- */}
         {tab === "Audit Logs" && (() => {
           const filteredLogs = auditLogs;
@@ -3452,6 +3863,69 @@ export default function App() {
             </div>
           );
         })()}
+
+        {showSecurityStepUpModal && (
+          <div className="modal-overlay" onClick={() => (!stepUpBusy ? setShowSecurityStepUpModal(false) : undefined)}>
+            <div className="modal" onClick={(event) => event.stopPropagation()} style={{ maxWidth: 420 }}>
+              <div className="modal-title">Verify identity</div>
+              <div className="modal-desc">
+                Confirm your password and OTP to unlock security controls.
+              </div>
+
+              <div className="input-group" style={{ marginBottom: 12 }}>
+                <span className="input-icon"><LockIcon /></span>
+                <input
+                  type="password"
+                  placeholder="Current password"
+                  value={stepUpPassword}
+                  onChange={(event) => setStepUpPassword(event.target.value)}
+                  disabled={stepUpBusy}
+                />
+              </div>
+
+              {!stepUpOtpRequested ? (
+                <button
+                  className="btn btn-primary"
+                  onClick={() => void onRequestSecurityStepUpOtp()}
+                  disabled={stepUpBusy || !stepUpPassword}
+                  style={{ width: "100%", marginBottom: 12 }}
+                >
+                  {stepUpBusy ? "Requesting..." : "Send OTP"}
+                </button>
+              ) : (
+                <>
+                  <div className="input-group" style={{ marginBottom: 12 }}>
+                    <span className="input-icon"><MailIcon /></span>
+                    <input
+                      type="text"
+                      placeholder="Enter 6-digit OTP"
+                      value={stepUpOtp}
+                      onChange={(event) => setStepUpOtp(event.target.value)}
+                      disabled={stepUpBusy}
+                      maxLength={6}
+                    />
+                  </div>
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => void onVerifySecurityStepUpOtp()}
+                    disabled={stepUpBusy || !stepUpOtp}
+                    style={{ width: "100%", marginBottom: 10 }}
+                  >
+                    {stepUpBusy ? "Verifying..." : "Verify & Unlock"}
+                  </button>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => void onRequestSecurityStepUpOtp()}
+                    disabled={stepUpBusy}
+                    style={{ width: "100%" }}
+                  >
+                    Resend OTP
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Create User Modal */}
         {showCreateUser && (

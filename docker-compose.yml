@@ -76,6 +76,7 @@ services:
       S3_SECRET_KEY: minio123
       S3_BUCKET: secure-storage
       S3_AUTO_CREATE_BUCKET: "true"
+      SECURITY_CONTROLS_ENABLED: "true"
     depends_on:
       - postgres
       - minio
@@ -119,6 +120,8 @@ services:
       OTP_REQUEST_WINDOW_SECONDS: 60
       OTP_VERIFY_MAX: 20
       OTP_VERIFY_WINDOW_SECONDS: 60
+      SECURITY_CONTROLS_ENABLED: "true"
+      SECURITY_STEPUP_TTL_SECONDS: 300
     ports:
       - "3000:3000"
     depends_on:

@@ -19,7 +19,8 @@ export const config = {
   s3AccessKey: process.env.S3_ACCESS_KEY ?? "",
   s3SecretKey: process.env.S3_SECRET_KEY ?? "",
   s3Bucket: process.env.S3_BUCKET ?? "secure-storage",
-  s3AutoCreateBucket: process.env.S3_AUTO_CREATE_BUCKET === "true"
+  s3AutoCreateBucket: process.env.S3_AUTO_CREATE_BUCKET === "true",
+  securityControlsEnabled: process.env.SECURITY_CONTROLS_ENABLED === "true"
 };
 
 if (process.env.NODE_ENV === "production") {

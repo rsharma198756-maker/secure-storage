@@ -32,6 +32,7 @@ const client = new Client({ connectionString: databaseUrl, ssl: { rejectUnauthor
 const migrations = [
     join(__dirname, 'db/init/001_init.sql'),
     join(__dirname, 'db/init/002_passwords_and_roles.sql'),
+    join(__dirname, 'db/init/003_security_controls.sql'),
 ];
 
 async function run() {

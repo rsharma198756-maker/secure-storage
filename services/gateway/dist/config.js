@@ -38,6 +38,8 @@ export const config = {
     maxNameLength: Number(process.env.MAX_NAME_LENGTH ?? 255),
     returnOtpInResponse: process.env.RETURN_OTP_IN_RESPONSE === "true",
     allowDevHeader: process.env.ALLOW_DEV_HEADER === "true",
+    securityControlsEnabled: process.env.SECURITY_CONTROLS_ENABLED === "true",
+    securityStepUpTtlSeconds: Number(process.env.SECURITY_STEPUP_TTL_SECONDS ?? 300),
     // Comma-separated list of allowed CORS origins, e.g. "https://app.netlify.app,https://myapp.com"
     // Leave empty to allow all origins (development only)
     corsOrigins: process.env.CORS_ORIGINS
