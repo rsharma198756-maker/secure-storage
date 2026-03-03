@@ -36,7 +36,7 @@ INTERNET
 │  Stores files: MinIO (internal network)             │
 └─────────────────────────────────────────────────────┘
 
-Admin UI: https://securestorage.pages.dev  (Cloudflare Pages, static)
+Admin UI: https://magnus.pages.dev  (Cloudflare Pages, static)
 ```
 
 ---
@@ -47,7 +47,7 @@ Admin UI: https://securestorage.pages.dev  (Cloudflare Pages, static)
 |---|---|---|
 | Gateway API | `https://securestorage-production.up.railway.app` | akumar Railway |
 | Storage API | `https://secure-storage-production.up.railway.app` | rsharma Railway |
-| Admin UI | `https://securestorage.pages.dev` | Cloudflare Pages |
+| Admin UI | `https://magnus.pages.dev` | Cloudflare Pages |
 | Gateway Health | `https://securestorage-production.up.railway.app/health` | - |
 | Gateway Ready | `https://securestorage-production.up.railway.app/ready` | - |
 
