@@ -2614,7 +2614,7 @@ export default function App() {
                         </td>
                         <td className="cell-muted">{formatDate(user.created_at)}</td>
                         <td>
-                          {!isAdminUser && canControlSecurity ? (
+                          {canControlSecurity ? (
                             <button
                               className="btn btn-ghost btn-sm"
                               onClick={(event) => {
@@ -2744,6 +2744,22 @@ export default function App() {
                   <div className="user-detail-actions" style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12, marginTop: 24 }}>
                     <button className="btn btn-secondary btn-sm" onClick={() => onResetPassword(selectedUser.id)}>
                       Reset Password
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => {
+                        void onForceLogoutUser(selectedUser);
+                      }}
+                      disabled={isBusy || selectedUser.id === session?.user?.id || !canControlSecurity}
+                      title={
+                        !canControlSecurity
+                          ? "Requires security control permission"
+                          : selectedUser.id === session?.user?.id
+                            ? "Use 'Logout everyone' if you need to clear your own session"
+                            : "Logout this user from all active sessions"
+                      }
+                    >
+                      Logout User
                     </button>
                     {(() => {
                       const isAdminUser = !selectedUser.roles || selectedUser.roles.length === 0;
