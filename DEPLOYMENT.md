@@ -1,7 +1,7 @@
 # Magnus — Complete Deployment Reference
 
-> Last updated: 2026-02-26  
-> Architecture: Double-protection model across 2 Railway accounts + Netlify
+> Last updated: 2026-03-03  
+> Architecture: Double-protection model across 2 Railway accounts + Cloudflare Pages
 
 ---
 
@@ -36,7 +36,7 @@ INTERNET
 │  Stores files: MinIO (internal network)             │
 └─────────────────────────────────────────────────────┘
 
-Admin UI: https://securestorage.netlify.app  (Netlify, static)
+Admin UI: https://securestorage.pages.dev  (Cloudflare Pages, static)
 ```
 
 ---
@@ -47,7 +47,7 @@ Admin UI: https://securestorage.netlify.app  (Netlify, static)
 |---|---|---|
 | Gateway API | `https://securestorage-production.up.railway.app` | akumar Railway |
 | Storage API | `https://secure-storage-production.up.railway.app` | rsharma Railway |
-| Admin UI | `https://securestorage.netlify.app` | Netlify |
+| Admin UI | `https://securestorage.pages.dev` | Cloudflare Pages |
 | Gateway Health | `https://securestorage-production.up.railway.app/health` | - |
 | Gateway Ready | `https://securestorage-production.up.railway.app/ready` | - |
 
