@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * SecureVault Local Regression Suite
+ * Magnus Local Regression Suite
  * -----------------------------------
  * Runs real HTTP calls against a live local stack.
  * Logs every request + response to tests/test-results/run-<timestamp>.txt
@@ -11,7 +11,7 @@
  *
  * Env overrides:
  *   API_BASE=http://localhost:3000
- *   ADMIN_EMAIL=admin@securevault.local
+ *   ADMIN_EMAIL=admin@magnus.local
  *   ADMIN_PASSWORD=Admin@123
  */
 
@@ -21,7 +21,7 @@ import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const API = process.env.API_BASE ?? "http://localhost:3000";
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "admin@securevault.local";
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "admin@magnus.local";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "Admin@123";
 
 // ─── Output setup ─────────────────────────────────────────────────────────────
@@ -45,7 +45,7 @@ const S = {
     rootFolderId: "", rootFolderName: "",
     subFolderId: "", subFolderName: "",
     privateFolderId: "",
-    fileId: "", fileContent: "Hello SecureVault! This is test content.",
+    fileId: "", fileContent: "Hello Magnus! This is test content.",
     grantedFolderId: "",
 };
 let passed = 0, failed = 0, total = 0;
@@ -867,7 +867,7 @@ function printSummary() {
 // ══════════════════════════════════════════════════════════════════════════════
 async function main() {
     out(div("═"));
-    out(`${C.cyan}  SecureVault Local Regression Suite${C.reset}`);
+    out(`${C.cyan}  Magnus Local Regression Suite${C.reset}`);
     out(`  API: ${API}  |  Started: ${new Date().toLocaleString()}`);
     out(div("═"));
 

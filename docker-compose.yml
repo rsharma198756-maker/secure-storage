@@ -114,7 +114,7 @@ services:
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-no-reply@secure-storage.local}
       BREVO_API_KEY: ${BREVO_API_KEY:-}
-      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-SecureVault}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-Magnus}
       EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-}
       OTP_REQUEST_MAX: 20
       OTP_REQUEST_WINDOW_SECONDS: 60

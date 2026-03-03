@@ -275,7 +275,7 @@ function ToastContainer({ toasts, onDismiss }) {
    App Component
    ============================================= */
 export default function App() {
-    const [email, setEmail] = useState(() => localStorage.getItem("securevault_last_email") ?? "");
+    const [email, setEmail] = useState(() => localStorage.getItem("magnus_last_email") ?? "");
     const [password, setPassword] = useState("");
     const [otp, setOtp] = useState("");
     const [loginStep, setLoginStep] = useState(1);
@@ -346,7 +346,7 @@ export default function App() {
     const [newUserRole, setNewUserRole] = useState("viewer");
     const [newUserFirstName, setNewUserFirstName] = useState("");
     const [newUserLastName, setNewUserLastName] = useState("");
-    const [rememberMe, setRememberMe] = useState(() => localStorage.getItem("securevault_remember") === "true");
+    const [rememberMe, setRememberMe] = useState(() => localStorage.getItem("magnus_remember") === "true");
     const [showPassword, setShowPassword] = useState(false);
     const [isLoginSubmitting, setIsLoginSubmitting] = useState(false);
     const [isOtpSubmitting, setIsOtpSubmitting] = useState(false);
@@ -360,7 +360,7 @@ export default function App() {
     const [isSessionChecking, setIsSessionChecking] = useState(true);
     const [savedEmails, setSavedEmails] = useState(() => {
         try {
-            const raw = localStorage.getItem("securevault_saved_emails");
+            const raw = localStorage.getItem("magnus_saved_emails");
             return raw ? JSON.parse(raw) : [];
         }
         catch {
@@ -381,20 +381,20 @@ export default function App() {
     const resetPasswordError = getPasswordValidationError(resetNewPassword);
     // Restore session from localStorage on mount
     useEffect(() => {
-        const saved = localStorage.getItem("securevault_session");
+        const saved = localStorage.getItem("magnus_session");
         if (saved) {
             try {
                 setSession(JSON.parse(saved));
             }
             catch (e) {
-                localStorage.removeItem("securevault_session");
+                localStorage.removeItem("magnus_session");
             }
         }
         setIsSessionChecking(false);
     }, []);
     // Persist rememberMe preference
     useEffect(() => {
-        localStorage.setItem("securevault_remember", String(rememberMe));
+        localStorage.setItem("magnus_remember", String(rememberMe));
     }, [rememberMe]);
     useEffect(() => {
         if (!securityActionExpiresAt)
@@ -657,16 +657,16 @@ export default function App() {
         setSecurityState(null);
         setSecurityError(null);
         if (rememberMe) {
-            localStorage.setItem("securevault_session", JSON.stringify(data));
-            localStorage.setItem("securevault_last_email", email);
+            localStorage.setItem("magnus_session", JSON.stringify(data));
+            localStorage.setItem("magnus_last_email", email);
             setSavedEmails((prev) => {
                 const next = [email, ...prev.filter((value) => value !== email)].slice(0, 10);
-                localStorage.setItem("securevault_saved_emails", JSON.stringify(next));
+                localStorage.setItem("magnus_saved_emails", JSON.stringify(next));
                 return next;
             });
         }
         else {
-            localStorage.removeItem("securevault_session");
+            localStorage.removeItem("magnus_session");
         }
         setLoginStep(1);
         setOtp("");
@@ -722,7 +722,7 @@ export default function App() {
         }
     }, [session?.accessToken]);
     const clearClientSession = useCallback(() => {
-        localStorage.removeItem("securevault_session");
+        localStorage.removeItem("magnus_session");
         if (viewerUrl)
             URL.revokeObjectURL(viewerUrl);
         if (pdfRenderTaskRef.current) {
@@ -870,7 +870,7 @@ export default function App() {
                 };
                 setSession(nextSession);
                 if (rememberMe) {
-                    localStorage.setItem("securevault_session", JSON.stringify(nextSession));
+                    localStorage.setItem("magnus_session", JSON.stringify(nextSession));
                 }
             }
             showToast("success", "User updated", "User profile information has been saved.");
@@ -1546,7 +1546,7 @@ export default function App() {
     }
     /* ---- LOGIN PAGE ---- */
     if (!session) {
-        return (_jsxs("div", { className: "login-page", children: [_jsx(ToastContainer, { toasts: toasts, onDismiss: dismissToast }), loginStep === 1 && (_jsxs("div", { className: "login-card", children: [_jsxs("div", { className: "login-brand", children: [_jsx("div", { className: "login-brand-icon", children: _jsx(VaultIcon, { size: 24 }) }), _jsx("div", { className: "login-brand-text", children: "SecureVault" })] }), _jsxs("div", { className: "login-step-indicator", children: [_jsx("div", { className: "login-step-dot active" }), _jsx("div", { className: "login-step-dot" }), _jsx("div", { className: "login-step-dot" })] }), _jsx("h1", { className: "login-title", children: "Welcome back" }), _jsx("p", { className: "login-subtitle", children: "Enter your email address to continue." }), _jsxs("form", { className: "login-form", autoComplete: "on", onSubmit: (e) => { e.preventDefault(); if (email.trim())
+        return (_jsxs("div", { className: "login-page", children: [_jsx(ToastContainer, { toasts: toasts, onDismiss: dismissToast }), loginStep === 1 && (_jsxs("div", { className: "login-card", children: [_jsxs("div", { className: "login-brand", children: [_jsx("div", { className: "login-brand-icon", children: _jsx(VaultIcon, { size: 24 }) }), _jsx("div", { className: "login-brand-text", children: "Magnus" })] }), _jsxs("div", { className: "login-step-indicator", children: [_jsx("div", { className: "login-step-dot active" }), _jsx("div", { className: "login-step-dot" }), _jsx("div", { className: "login-step-dot" })] }), _jsx("h1", { className: "login-title", children: "Welcome back" }), _jsx("p", { className: "login-subtitle", children: "Enter your email address to continue." }), _jsxs("form", { className: "login-form", autoComplete: "on", onSubmit: (e) => { e.preventDefault(); if (email.trim())
                                 setLoginStep(2); }, children: [_jsxs("div", { className: "input-group", children: [_jsx("span", { className: "input-icon", children: _jsx(MailIcon, {}) }), _jsx("input", { type: "email", name: "email", autoComplete: "email", list: "remembered-emails", placeholder: "Enter your email", value: email, onChange: (e) => setEmail(e.target.value), required: true, autoFocus: true }), _jsx("datalist", { id: "remembered-emails", children: savedEmails.map((savedEmail) => (_jsx("option", { value: savedEmail }, savedEmail))) })] }), _jsxs("div", { style: { display: "flex", alignItems: "center", gap: 10, margin: "16px 0", cursor: "pointer", width: "fit-content" }, onClick: () => setRememberMe(!rememberMe), children: [_jsx("div", { style: {
                                                 width: 18,
                                                 height: 18,
@@ -1558,7 +1558,7 @@ export default function App() {
                                                 alignItems: "center",
                                                 justifyContent: "center",
                                                 transition: "all 0.2s"
-                                            }, children: rememberMe && _jsx(CheckSmall, { size: 14, color: "white" }) }), _jsx("span", { style: { fontSize: 13, color: "var(--ink-3)", fontWeight: 500, userSelect: "none" }, children: "Remember me" })] }), _jsx("button", { className: "btn btn-primary", type: "submit", children: "Continue" })] })] }, "step-email")), loginStep === 2 && (_jsxs("div", { className: "login-card", children: [_jsxs("div", { className: "login-brand", children: [_jsx("div", { className: "login-brand-icon", children: _jsx(VaultIcon, { size: 24 }) }), _jsx("div", { className: "login-brand-text", children: "SecureVault" })] }), _jsxs("div", { className: "login-step-indicator", children: [_jsx("div", { className: "login-step-dot" }), _jsx("div", { className: "login-step-dot active" }), _jsx("div", { className: "login-step-dot" })] }), _jsx("h1", { className: "login-title", children: "Enter your password" }), _jsxs("p", { className: "login-subtitle", children: ["Signing in as ", _jsx("strong", { children: email })] }), _jsxs("form", { className: "login-form", autoComplete: "on", onSubmit: (e) => { e.preventDefault(); onLogin(); }, children: [_jsx("input", { type: "email", name: "username", autoComplete: "username", value: email, readOnly: true, style: { display: "none" } }), _jsxs("div", { className: "input-group", children: [_jsx("span", { className: "input-icon", children: _jsx(LockIcon, {}) }), _jsx("input", { type: showPassword ? "text" : "password", name: "password", autoComplete: "current-password", placeholder: "Enter your password", value: password, onChange: (e) => setPassword(e.target.value), disabled: isLoginSubmitting, required: true, autoFocus: true }), _jsx("button", { type: "button", className: "input-action-btn", onClick: () => setShowPassword(!showPassword), disabled: isLoginSubmitting, children: showPassword ? _jsx(EyeOffIcon, { size: 18 }) : _jsx(EyeIcon, { size: 18 }) })] }), loginError && (_jsxs("div", { style: {
+                                            }, children: rememberMe && _jsx(CheckSmall, { size: 14, color: "white" }) }), _jsx("span", { style: { fontSize: 13, color: "var(--ink-3)", fontWeight: 500, userSelect: "none" }, children: "Remember me" })] }), _jsx("button", { className: "btn btn-primary", type: "submit", children: "Continue" })] })] }, "step-email")), loginStep === 2 && (_jsxs("div", { className: "login-card", children: [_jsxs("div", { className: "login-brand", children: [_jsx("div", { className: "login-brand-icon", children: _jsx(VaultIcon, { size: 24 }) }), _jsx("div", { className: "login-brand-text", children: "Magnus" })] }), _jsxs("div", { className: "login-step-indicator", children: [_jsx("div", { className: "login-step-dot" }), _jsx("div", { className: "login-step-dot active" }), _jsx("div", { className: "login-step-dot" })] }), _jsx("h1", { className: "login-title", children: "Enter your password" }), _jsxs("p", { className: "login-subtitle", children: ["Signing in as ", _jsx("strong", { children: email })] }), _jsxs("form", { className: "login-form", autoComplete: "on", onSubmit: (e) => { e.preventDefault(); onLogin(); }, children: [_jsx("input", { type: "email", name: "username", autoComplete: "username", value: email, readOnly: true, style: { display: "none" } }), _jsxs("div", { className: "input-group", children: [_jsx("span", { className: "input-icon", children: _jsx(LockIcon, {}) }), _jsx("input", { type: showPassword ? "text" : "password", name: "password", autoComplete: "current-password", placeholder: "Enter your password", value: password, onChange: (e) => setPassword(e.target.value), disabled: isLoginSubmitting, required: true, autoFocus: true }), _jsx("button", { type: "button", className: "input-action-btn", onClick: () => setShowPassword(!showPassword), disabled: isLoginSubmitting, children: showPassword ? _jsx(EyeOffIcon, { size: 18 }) : _jsx(EyeIcon, { size: 18 }) })] }), loginError && (_jsxs("div", { style: {
                                         display: "flex",
                                         alignItems: "center",
                                         gap: 8,
@@ -1570,10 +1570,10 @@ export default function App() {
                                         fontSize: 13,
                                         fontWeight: 500,
                                         marginBottom: 4
-                                    }, children: [_jsx("span", { children: "\u26A0" }), " ", loginError] })), _jsx("button", { className: "btn btn-primary", type: "submit", disabled: isLoginSubmitting, children: isLoginSubmitting ? "Signing in..." : "Continue" })] }), _jsx("div", { className: "login-footer", children: _jsx("button", { className: "btn btn-ghost btn-sm", onClick: () => { setLoginStep(1); setPassword(""); setLoginError(null); }, disabled: isLoginSubmitting, style: { width: "100%", marginTop: 8 }, children: "\u2190 Use a different email" }) })] }, "step-password")), loginStep === 3 && (_jsxs("div", { className: "login-card", children: [_jsxs("div", { className: "login-brand", children: [_jsx("div", { className: "login-brand-icon", children: _jsx(VaultIcon, { size: 24 }) }), _jsx("div", { className: "login-brand-text", children: "SecureVault" })] }), _jsxs("div", { className: "login-step-indicator", children: [_jsx("div", { className: "login-step-dot" }), _jsx("div", { className: "login-step-dot" }), _jsx("div", { className: "login-step-dot active" })] }), _jsx("h1", { className: "login-title", children: "Check your email" }), _jsxs("p", { className: "login-subtitle", children: ["We sent a 6-digit code to ", _jsx("strong", { children: email })] }), _jsxs("form", { className: "login-form", onSubmit: (e) => { e.preventDefault(); onVerifyOtp(); }, children: [_jsxs("div", { className: "input-group", children: [_jsx("span", { className: "input-icon", children: _jsx(LockIcon, {}) }), _jsx("input", { type: "text", placeholder: "Enter 6-digit OTP", value: otp, onChange: (e) => setOtp(e.target.value), disabled: isOtpSubmitting, required: true, maxLength: 6, autoFocus: true })] }), _jsx("button", { className: "btn btn-primary", type: "submit", disabled: isOtpSubmitting, children: isOtpSubmitting ? "Verifying..." : "Verify & Sign In" })] }), _jsx("div", { className: "login-footer", children: _jsx("button", { className: "btn btn-ghost btn-sm", onClick: () => { setLoginStep(1); setOtp(""); setPassword(""); setStatus(null); }, disabled: isOtpSubmitting, style: { width: "100%", marginTop: 8 }, children: "\u2190 Start over" }) }), status && _jsx("p", { className: "login-status", style: { marginTop: 12 }, children: status })] }, "step-otp"))] }));
+                                    }, children: [_jsx("span", { children: "\u26A0" }), " ", loginError] })), _jsx("button", { className: "btn btn-primary", type: "submit", disabled: isLoginSubmitting, children: isLoginSubmitting ? "Signing in..." : "Continue" })] }), _jsx("div", { className: "login-footer", children: _jsx("button", { className: "btn btn-ghost btn-sm", onClick: () => { setLoginStep(1); setPassword(""); setLoginError(null); }, disabled: isLoginSubmitting, style: { width: "100%", marginTop: 8 }, children: "\u2190 Use a different email" }) })] }, "step-password")), loginStep === 3 && (_jsxs("div", { className: "login-card", children: [_jsxs("div", { className: "login-brand", children: [_jsx("div", { className: "login-brand-icon", children: _jsx(VaultIcon, { size: 24 }) }), _jsx("div", { className: "login-brand-text", children: "Magnus" })] }), _jsxs("div", { className: "login-step-indicator", children: [_jsx("div", { className: "login-step-dot" }), _jsx("div", { className: "login-step-dot" }), _jsx("div", { className: "login-step-dot active" })] }), _jsx("h1", { className: "login-title", children: "Check your email" }), _jsxs("p", { className: "login-subtitle", children: ["We sent a 6-digit code to ", _jsx("strong", { children: email })] }), _jsxs("form", { className: "login-form", onSubmit: (e) => { e.preventDefault(); onVerifyOtp(); }, children: [_jsxs("div", { className: "input-group", children: [_jsx("span", { className: "input-icon", children: _jsx(LockIcon, {}) }), _jsx("input", { type: "text", placeholder: "Enter 6-digit OTP", value: otp, onChange: (e) => setOtp(e.target.value), disabled: isOtpSubmitting, required: true, maxLength: 6, autoFocus: true })] }), _jsx("button", { className: "btn btn-primary", type: "submit", disabled: isOtpSubmitting, children: isOtpSubmitting ? "Verifying..." : "Verify & Sign In" })] }), _jsx("div", { className: "login-footer", children: _jsx("button", { className: "btn btn-ghost btn-sm", onClick: () => { setLoginStep(1); setOtp(""); setPassword(""); setStatus(null); }, disabled: isOtpSubmitting, style: { width: "100%", marginTop: 8 }, children: "\u2190 Start over" }) }), status && _jsx("p", { className: "login-status", style: { marginTop: 12 }, children: status })] }, "step-otp"))] }));
     }
     /* ---- MAIN DASHBOARD ---- */
-    return (_jsxs("div", { className: "app", children: [_jsx(ToastContainer, { toasts: toasts, onDismiss: dismissToast }), _jsxs("aside", { className: "sidebar", children: [_jsxs("div", { className: "sidebar-brand", children: [_jsx("div", { className: "sidebar-brand-icon", children: _jsx(VaultIcon, { size: 22 }) }), _jsx("span", { className: "sidebar-brand-text", children: "SecureVault" })] }), _jsxs("div", { className: "sidebar-section", children: [_jsx("div", { className: "sidebar-label", children: "Main menu" }), _jsx("nav", { className: "sidebar-nav", children: visibleTabs.map((t) => {
+    return (_jsxs("div", { className: "app", children: [_jsx(ToastContainer, { toasts: toasts, onDismiss: dismissToast }), _jsxs("aside", { className: "sidebar", children: [_jsxs("div", { className: "sidebar-brand", children: [_jsx("div", { className: "sidebar-brand-icon", children: _jsx(VaultIcon, { size: 22 }) }), _jsx("span", { className: "sidebar-brand-text", children: "Magnus" })] }), _jsxs("div", { className: "sidebar-section", children: [_jsx("div", { className: "sidebar-label", children: "Main menu" }), _jsx("nav", { className: "sidebar-nav", children: visibleTabs.map((t) => {
                                     const Icon = tabIcons[t];
                                     return (_jsxs("button", { className: `sidebar-nav-item ${tab === t ? "active" : ""}`, onClick: () => setTab(t), children: [_jsx("span", { className: "nav-icon", children: _jsx(Icon, {}) }), t] }, t));
                                 }) })] }), _jsx("div", { className: "sidebar-spacer" }), _jsxs("div", { className: "sidebar-profile", children: [_jsx("div", { className: "sidebar-avatar", children: getInitials({ firstName: session.user.firstName, lastName: session.user.lastName, email: session.user.email }) }), _jsxs("div", { className: "sidebar-profile-info", children: [_jsx("div", { className: "sidebar-profile-name", children: session.user.firstName ? `${session.user.firstName} ${session.user.lastName}` : session.user.email.split('@')[0] }), _jsx("div", { className: "sidebar-profile-role", style: { textTransform: "capitalize" }, children: session.user.roles.join(", ") })] }), _jsx("button", { className: "btn-logout", onClick: onLogout, title: "Sign out", style: { marginLeft: "auto", background: "none", border: "none", padding: 8, cursor: "pointer", color: "var(--ink-4)", display: "flex", alignItems: "center", justifyContent: "center" }, children: _jsx(LogoutIcon, {}) })] })] }), _jsxs("main", { className: "content", children: [_jsxs("div", { style: {

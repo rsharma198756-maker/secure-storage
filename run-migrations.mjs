@@ -59,7 +59,7 @@ async function run() {
     }
 
     console.log('🎉 All migrations ran successfully!');
-    console.log('👤 Admin user: admin@securevault.local / Admin@123');
+    console.log('👤 Admin user: admin@magnus.local / Admin@123');
     await client.end();
 }
 

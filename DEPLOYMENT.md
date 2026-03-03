@@ -1,4 +1,4 @@
-# SecureVault — Complete Deployment Reference
+# Magnus — Complete Deployment Reference
 
 > Last updated: 2026-02-26  
 > Architecture: Double-protection model across 2 Railway accounts + Netlify
@@ -73,7 +73,7 @@ ALLOW_DEV_HEADER=false
 BREVO_API_KEY=<set-in-railway-dashboard>
 DATABASE_URL=${{Postgres.DATABASE_URL}}
 EMAIL_FROM_ADDRESS=guptapayal8820@gmail.com
-EMAIL_FROM_NAME=SecureVault
+EMAIL_FROM_NAME=Magnus
 INTERNAL_TOKEN=my-super-secret-token-123
 JWT_ACCESS_TTL_MINUTES=60
 JWT_SECRET=my-jwt-secret-456

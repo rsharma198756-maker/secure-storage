@@ -627,7 +627,7 @@ const CheckSmall = ({ size = 14, color = "currentColor" }: { size?: number; colo
 
 export default function App() {
   const [email, setEmail] = useState(
-    () => localStorage.getItem("securevault_last_email") ?? ""
+    () => localStorage.getItem("magnus_last_email") ?? ""
   );
   const [password, setPassword] = useState("");
   const [otp, setOtp] = useState("");
@@ -699,7 +699,7 @@ export default function App() {
   const [newUserRole, setNewUserRole] = useState("viewer");
   const [newUserFirstName, setNewUserFirstName] = useState("");
   const [newUserLastName, setNewUserLastName] = useState("");
-  const [rememberMe, setRememberMe] = useState(() => localStorage.getItem("securevault_remember") === "true");
+  const [rememberMe, setRememberMe] = useState(() => localStorage.getItem("magnus_remember") === "true");
   const [showPassword, setShowPassword] = useState(false);
   const [isLoginSubmitting, setIsLoginSubmitting] = useState(false);
   const [isOtpSubmitting, setIsOtpSubmitting] = useState(false);
@@ -717,7 +717,7 @@ export default function App() {
   const [isSessionChecking, setIsSessionChecking] = useState(true);
   const [savedEmails, setSavedEmails] = useState<string[]>(() => {
     try {
-      const raw = localStorage.getItem("securevault_saved_emails");
+      const raw = localStorage.getItem("magnus_saved_emails");
       return raw ? (JSON.parse(raw) as string[]) : [];
     } catch {
       return [];
@@ -738,12 +738,12 @@ export default function App() {
 
   // Restore session from localStorage on mount
   useEffect(() => {
-    const saved = localStorage.getItem("securevault_session");
+    const saved = localStorage.getItem("magnus_session");
     if (saved) {
       try {
         setSession(JSON.parse(saved));
       } catch (e) {
-        localStorage.removeItem("securevault_session");
+        localStorage.removeItem("magnus_session");
       }
     }
     setIsSessionChecking(false);
@@ -751,7 +751,7 @@ export default function App() {
 
   // Persist rememberMe preference
   useEffect(() => {
-    localStorage.setItem("securevault_remember", String(rememberMe));
+    localStorage.setItem("magnus_remember", String(rememberMe));
   }, [rememberMe]);
 
   useEffect(() => {
@@ -1037,15 +1037,15 @@ export default function App() {
     setSecurityState(null);
     setSecurityError(null);
     if (rememberMe) {
-      localStorage.setItem("securevault_session", JSON.stringify(data));
-      localStorage.setItem("securevault_last_email", email);
+      localStorage.setItem("magnus_session", JSON.stringify(data));
+      localStorage.setItem("magnus_last_email", email);
       setSavedEmails((prev) => {
         const next = [email, ...prev.filter((value) => value !== email)].slice(0, 10);
-        localStorage.setItem("securevault_saved_emails", JSON.stringify(next));
+        localStorage.setItem("magnus_saved_emails", JSON.stringify(next));
         return next;
       });
     } else {
-      localStorage.removeItem("securevault_session");
+      localStorage.removeItem("magnus_session");
     }
     setLoginStep(1);
     setOtp("");
@@ -1102,7 +1102,7 @@ export default function App() {
   }, [session?.accessToken]);
 
   const clearClientSession = useCallback(() => {
-    localStorage.removeItem("securevault_session");
+    localStorage.removeItem("magnus_session");
     if (viewerUrl) URL.revokeObjectURL(viewerUrl);
     if (pdfRenderTaskRef.current) {
       pdfRenderTaskRef.current.cancel();
@@ -1264,7 +1264,7 @@ export default function App() {
         };
         setSession(nextSession);
         if (rememberMe) {
-          localStorage.setItem("securevault_session", JSON.stringify(nextSession));
+          localStorage.setItem("magnus_session", JSON.stringify(nextSession));
         }
       }
 
@@ -1977,7 +1977,7 @@ export default function App() {
           <div className="login-card" key="step-email">
             <div className="login-brand">
               <div className="login-brand-icon"><VaultIcon size={24} /></div>
-              <div className="login-brand-text">SecureVault</div>
+              <div className="login-brand-text">Magnus</div>
             </div>
             <div className="login-step-indicator">
               <div className="login-step-dot active" />
@@ -2032,7 +2032,7 @@ export default function App() {
           <div className="login-card" key="step-password">
             <div className="login-brand">
               <div className="login-brand-icon"><VaultIcon size={24} /></div>
-              <div className="login-brand-text">SecureVault</div>
+              <div className="login-brand-text">Magnus</div>
             </div>
             <div className="login-step-indicator">
               <div className="login-step-dot" />
@@ -2103,7 +2103,7 @@ export default function App() {
           <div className="login-card" key="step-otp">
             <div className="login-brand">
               <div className="login-brand-icon"><VaultIcon size={24} /></div>
-              <div className="login-brand-text">SecureVault</div>
+              <div className="login-brand-text">Magnus</div>
             </div>
             <div className="login-step-indicator">
               <div className="login-step-dot" />
@@ -2158,7 +2158,7 @@ export default function App() {
           <div className="sidebar-brand-icon">
             <VaultIcon size={22} />
           </div>
-          <span className="sidebar-brand-text">SecureVault</span>
+          <span className="sidebar-brand-text">Magnus</span>
         </div>
 
         <div className="sidebar-section">

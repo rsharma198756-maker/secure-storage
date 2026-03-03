@@ -10,7 +10,7 @@ import {
 } from "../helpers";
 
 const API_BASE = process.env.API_BASE ?? "http://localhost:3000";
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "admin@securevault.local";
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "admin@magnus.local";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "Admin@123";
 
 describe("Regression suite", () => {

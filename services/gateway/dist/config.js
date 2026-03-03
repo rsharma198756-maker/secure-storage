@@ -4,8 +4,8 @@ export const config = {
     internalToken: process.env.INTERNAL_TOKEN ?? "dev-internal-token",
     resendApiKey: process.env.RESEND_API_KEY ?? "",
     brevoApiKey: process.env.BREVO_API_KEY ?? "",
-    emailFrom: process.env.EMAIL_FROM ?? "SecureVault <noreply@securestorage.app>",
-    emailFromName: process.env.EMAIL_FROM_NAME ?? "SecureVault",
+    emailFrom: process.env.EMAIL_FROM ?? "Magnus <noreply@securestorage.app>",
+    emailFromName: process.env.EMAIL_FROM_NAME ?? "Magnus",
     emailFromAddress: process.env.EMAIL_FROM_ADDRESS ?? "guptapayal8820@gmail.com",
     smtp: {
         host: process.env.SMTP_HOST ?? "smtp.gmail.com",
