@@ -507,56 +507,112 @@ const getPasswordValidationError = (password: string): string | null => {
 };
 
 /* =============================================
-   Toast System
+   Premium Stacked Toast System
    ============================================= */
 
 type Toast = {
   id: number;
-  type: "error" | "success";
+  type: "error" | "success" | "warning" | "loading" | "info";
   title: string;
   message: string;
-  leaving?: boolean;
 };
 
-const XSmall = ({ size = 14, ...props }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" {...props}>
-    <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-  </svg>
-);
+type ToastEntry = Toast & { el: HTMLDivElement; height: number; timeoutId: ReturnType<typeof setTimeout> | null };
 
-const CheckSmall = ({ size = 14, ...props }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" {...props}>
-    <polyline points="20 6 9 17 4 12" />
-  </svg>
-);
+const TOAST_ICONS: Record<Toast["type"], string> = {
+  success: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`,
+  error: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`,
+  warning: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
+  loading: `<svg class="p-toast-spinner" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`,
+  info: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="8"/><line x1="12" y1="12" x2="12" y2="16"/></svg>`,
+};
 
-const AlertSmall = ({ size = 14, ...props }: IconProps) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" {...props}>
-    <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
-  </svg>
-);
+const toastEntries: ToastEntry[] = [];
+let toastIsHovered = false;
+let toastContainerEl: HTMLDivElement | null = null;
 
-function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
-  if (toasts.length === 0) return null;
-  return (
-    <div className="toast-container">
-      {toasts.map((t) => (
-        <div key={t.id} className={`toast toast-${t.type} ${t.leaving ? "leaving" : ""}`}>
-          <div className="toast-icon">
-            {t.type === "error" ? <AlertSmall /> : <CheckSmall />}
-          </div>
-          <div className="toast-body">
-            <div className="toast-title">{t.title}</div>
-            <div className="toast-message">{t.message}</div>
-          </div>
-          <button className="toast-close" onClick={() => onDismiss(t.id)}>
-            <XSmall />
-          </button>
-          <div className="toast-progress" />
-        </div>
-      ))}
-    </div>
-  );
+function getOrCreateToastContainer(): HTMLDivElement {
+  if (toastContainerEl) return toastContainerEl;
+  const el = document.createElement("div");
+  el.id = "premium-toaster";
+  document.body.appendChild(el);
+  el.addEventListener("mouseenter", () => {
+    toastIsHovered = true;
+    renderToasts();
+    toastEntries.forEach(t => { if (t.timeoutId) clearTimeout(t.timeoutId); });
+  });
+  el.addEventListener("mouseleave", () => {
+    toastIsHovered = false;
+    renderToasts();
+    toastEntries.forEach(t => startToastTimer(t));
+  });
+  toastContainerEl = el;
+  return el;
+}
+
+function renderToasts() {
+  let hoverOffset = 0;
+  toastEntries.forEach((t, index) => {
+    t.el.style.zIndex = String(100 - index);
+    if (toastIsHovered) {
+      t.el.style.transform = `translateY(-${hoverOffset}px) scale(1)`;
+      t.el.style.opacity = "1";
+      t.el.style.pointerEvents = "auto";
+      hoverOffset += t.height + 12;
+    } else {
+      if (index > 2) {
+        t.el.style.opacity = "0";
+        t.el.style.pointerEvents = "none";
+        t.el.style.transform = `translateY(0px) scale(0.8)`;
+      } else {
+        t.el.style.transform = `translateY(${index * -16}px) scale(${1 - index * 0.05})`;
+        t.el.style.pointerEvents = index === 0 ? "auto" : "none";
+        t.el.style.opacity = index === 0 ? "1" : index === 1 ? "0.6" : "0.3";
+      }
+    }
+  });
+}
+
+function startToastTimer(entry: ToastEntry, duration = 4500) {
+  entry.timeoutId = setTimeout(() => dismissToastById(entry.id), duration);
+}
+
+function dismissToastById(id: number) {
+  const idx = toastEntries.findIndex(t => t.id === id);
+  if (idx === -1) return;
+  const entry = toastEntries[idx];
+  if (entry.timeoutId) clearTimeout(entry.timeoutId);
+  entry.el.classList.add("p-toast-out");
+  toastEntries.splice(idx, 1);
+  renderToasts();
+  setTimeout(() => entry.el.remove(), 400);
+}
+
+function pushToast(toast: Toast) {
+  const container = getOrCreateToastContainer();
+  const el = document.createElement("div");
+  el.className = "p-toast";
+  el.setAttribute("data-type", toast.type);
+  el.innerHTML = `
+    <div class="p-toast-icon">${TOAST_ICONS[toast.type]}</div>
+    <div class="p-toast-content">
+      <div class="p-toast-title">${toast.title}</div>
+      ${toast.message ? `<div class="p-toast-desc">${toast.message}</div>` : ""}
+    </div>`;
+  el.addEventListener("click", () => dismissToastById(toast.id));
+  container.prepend(el);
+  const entry: ToastEntry = { ...toast, el, height: 0, timeoutId: null };
+  toastEntries.unshift(entry);
+  requestAnimationFrame(() => {
+    entry.height = el.offsetHeight;
+    renderToasts();
+    startToastTimer(entry);
+  });
+}
+
+// Dummy component — actual toasts are DOM-injected imperatively
+function ToastContainer(_: { toasts: Toast[]; onDismiss: (id: number) => void }) {
+  return null;
 }
 
 /* =============================================
@@ -891,16 +947,15 @@ export default function App() {
 
   const showToast = useCallback((type: Toast["type"], title: string, message: string) => {
     const id = ++toastId.current;
+    pushToast({ id, type, title, message });
+    // Keep React state in sync so existing code referencing `toasts` doesn't break
     setToasts((prev) => [...prev, { id, type, title, message }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.map((t) => t.id === id ? { ...t, leaving: true } : t));
-      setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 300);
-    }, 5000);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 5000);
   }, []);
 
   const dismissToast = useCallback((id: number) => {
-    setToasts((prev) => prev.map((t) => t.id === id ? { ...t, leaving: true } : t));
-    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 300);
+    dismissToastById(id);
+    setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
   const accessToken = session?.accessToken;
