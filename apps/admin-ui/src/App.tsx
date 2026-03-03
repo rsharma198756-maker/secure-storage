@@ -615,6 +615,12 @@ function ToastContainer(_: { toasts: Toast[]; onDismiss: (id: number) => void })
   return null;
 }
 
+const CheckSmall = ({ size = 14, color = "currentColor" }: { size?: number; color?: string }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="20 6 9 17 4 12" />
+  </svg>
+);
+
 /* =============================================
    App Component
    ============================================= */
@@ -2185,7 +2191,13 @@ export default function App() {
               {session.user.firstName ? `${session.user.firstName} ${session.user.lastName}` : session.user.email.split('@')[0]}
             </div>
             <div className="sidebar-profile-role" style={{ textTransform: "capitalize" }}>
-              {session.user.roles.join(", ")}
+              {session.user.roles.includes("super_admin")
+                ? "Super Admin"
+                : session.user.roles
+                  .filter(r => r !== "super_admin")
+                  .map(r => r.replace(/_/g, " "))
+                  .join(", ")
+              }
             </div>
           </div>
           <button className="btn-logout" onClick={onLogout} title="Sign out" style={{ marginLeft: "auto", background: "none", border: "none", padding: 8, cursor: "pointer", color: "var(--ink-4)", display: "flex", alignItems: "center", justifyContent: "center" }}>
