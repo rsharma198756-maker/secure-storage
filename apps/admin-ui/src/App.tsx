@@ -2333,66 +2333,8 @@ export default function App() {
                   </div>
                 </section>
 
-                <section className="bento-v2-grid">
-                  <div className="panel-v2">
-                    <div className="panel-v2-header">
-                      <h2>Top Actions (7 Days)</h2>
-                      <button className="btn-ghost" style={{ padding: 4 }}><ActivityIcon size={16} /></button>
-                    </div>
 
-                    <div className="action-v2-list">
-                      {dashboard.topActions7d.length === 0 ? (
-                        <div style={{ color: "var(--ink-4)", fontSize: 14, padding: "20px 0", textAlign: "center" }}>No recent activity.</div>
-                      ) : (
-                        dashboard.topActions7d.map((row) => {
-                          const max = Math.max(...dashboard.topActions7d.map((a) => a.count), 1);
-                          const width = Math.max(8, Math.round((row.count / max) * 100));
-                          const isAlert = row.action.includes("failed") || row.action.includes("delete");
-                          return (
-                            <div className="action-v2-item" key={row.action}>
-                              <div className="a-v2-info">
-                                <span className={`a-v2-name ${isAlert ? "text-alert" : ""}`}>{formatActionLabel(row.action)}</span>
-                                <span className="a-v2-count">{row.count}</span>
-                              </div>
-                              <div className="progress-v2-track">
-                                <div
-                                  className={`progress-v2-fill ${isAlert ? "fill-red" : row.action.includes("create") || row.action.includes("upload") ? "fill-accent" : "fill-muted"}`}
-                                  style={{ width: `${width}%` }}
-                                />
-                              </div>
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                  </div>
 
-                  <div className="panel-v2">
-                    <div className="panel-v2-header">
-                      <h2>Activity Snapshot</h2>
-                      <span className="badge badge-neutral" style={{ fontSize: 11 }}>24h</span>
-                    </div>
-
-                    <div className="snapshot-v2-grid">
-                      <div className="snap-v2-box">
-                        <span className="s-v2-label">Logins</span>
-                        <span className="s-v2-val">{dashboard.activityLast24h.logins}</span>
-                      </div>
-                      <div className="snap-v2-box bg-alert-subtle">
-                        <span className="s-v2-label text-alert">Login Failed</span>
-                        <span className="s-v2-val text-alert">{dashboard.activityLast24h.login_failed}</span>
-                      </div>
-                      <div className="snap-v2-box">
-                        <span className="s-v2-label">Uploads</span>
-                        <span className="s-v2-val">{dashboard.activityLast24h.uploads}</span>
-                      </div>
-                      <div className="snap-v2-box">
-                        <span className="s-v2-label">Downloads</span>
-                        <span className="s-v2-val">{dashboard.activityLast24h.downloads}</span>
-                      </div>
-                    </div>
-                  </div>
-                </section>
 
                 <div className="panel-v2 table-panel-v2">
                   <div className="panel-v2-header">
