@@ -624,6 +624,7 @@ export default function App() {
   const [securityError, setSecurityError] = useState<string | null>(null);
   const [securityActionToken, setSecurityActionToken] = useState<string | null>(null);
   const [securityActionExpiresAt, setSecurityActionExpiresAt] = useState<number | null>(null);
+  const [securityTargetUserId, setSecurityTargetUserId] = useState("");
   const [showSecurityStepUpModal, setShowSecurityStepUpModal] = useState(false);
   const [stepUpPassword, setStepUpPassword] = useState("");
   const [stepUpOtp, setStepUpOtp] = useState("");
@@ -1758,6 +1759,19 @@ export default function App() {
     }
   };
 
+  const onForceLogoutSelectedUser = async () => {
+    if (!securityTargetUserId) {
+      showToast("error", "Select a user", "Choose a user before running targeted logout.");
+      return;
+    }
+    const target = users.find((user) => user.id === securityTargetUserId);
+    if (!target) {
+      showToast("error", "User not found", "Refresh users and try again.");
+      return;
+    }
+    await onForceLogoutUser(target);
+  };
+
   const onForceLogoutEveryone = async () => {
     if (!accessToken) return;
     const token = getSecurityTokenOrPrompt();
@@ -2662,152 +2676,180 @@ export default function App() {
 
             {selectedUser && (
               <div className="modal-overlay" onClick={() => setSelectedUser(null)}>
-                <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440 }}>
-                  <div className="user-detail-header">
-                    <div className="user-detail-avatar">
-                      {getInitials({ firstName: selectedUser.first_name, lastName: selectedUser.last_name, email: selectedUser.email })}
-                    </div>
-                    <div>
-                      <div className="user-detail-name">
-                        {selectedUser.first_name ? `${selectedUser.first_name} ${selectedUser.last_name}` : "System User"}
-                      </div>
-                      <div className="user-detail-sub">
-                        <span>{selectedUser.email}</span>
-                        <span className={`badge ${selectedUser.status === "active" ? "badge-active" : "badge-disabled"}`} style={{ marginLeft: 8 }}>
-                          {selectedUser.status}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
+                <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 480, padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
 
-                  <div className="user-detail-section-title">Edit User Details</div>
-                  <div style={{ display: "grid", gap: 10 }}>
-                    <input
-                      className="modal-input"
-                      type="text"
-                      placeholder="First Name"
-                      value={editUserFirstName}
-                      onChange={(e) => setEditUserFirstName(e.target.value)}
-                      style={{ margin: 0 }}
-                    />
-                    <input
-                      className="modal-input"
-                      type="text"
-                      placeholder="Last Name"
-                      value={editUserLastName}
-                      onChange={(e) => setEditUserLastName(e.target.value)}
-                      style={{ margin: 0 }}
-                    />
-                    <input
-                      className="modal-input"
-                      type="email"
-                      placeholder="Email address"
-                      value={editUserEmail}
-                      onChange={(e) => setEditUserEmail(e.target.value)}
-                      style={{ margin: 0 }}
-                    />
-                  </div>
-                  <div style={{ display: "flex", marginTop: 12, marginBottom: 12 }}>
-                    <button
-                      className="btn btn-primary btn-sm"
-                      onClick={onSaveUserProfile}
-                      disabled={isBusy || !editUserEmail.trim()}
-                      style={{ width: "100%" }}
-                    >
-                      {isBusy ? "Saving..." : "Save Details"}
-                    </button>
-                  </div>
-
-                  <div className="user-detail-section-title">Manage Access Roles</div>
-                  <div className="role-grid">
-                    {roles
-                      .filter((role) => ["viewer", "editor"].includes(role.name))
-                      .map((role) => (
-                        <div
-                          key={role.id}
-                          className={`role-chip ${selectedRoleIds.has(role.id) ? "assigned" : ""}`}
-                          style={{ padding: "12px 16px", borderRadius: 12, border: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center", background: selectedRoleIds.has(role.id) ? "var(--accent-light)" : "transparent" }}
-                        >
-                          <span style={{ fontWeight: 600, color: "var(--ink-1)", textTransform: "capitalize" }}>{role.name}</span>
-                          <button
-                            onClick={() => onRequestUserAccessRoleChange(role.id)}
-                            disabled={isBusy || selectedRoleIds.has(role.id)}
-                            title={selectedRoleIds.has(role.id) ? "Current role" : "Set role"}
-                            style={{ background: selectedRoleIds.has(role.id) ? "var(--green)" : "var(--accent)", color: "white", border: "none", width: 20, height: 20, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 16, opacity: isBusy ? 0.6 : 1 }}
-                          >
-                            {selectedRoleIds.has(role.id) ? "✓" : "+"}
-                          </button>
+                  {/* ── HEADER ── */}
+                  <header style={{ padding: "24px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                      <div style={{
+                        width: 56, height: 56, borderRadius: "50%",
+                        background: "linear-gradient(135deg, #4f46e5, #818cf8)",
+                        color: "white", display: "flex", alignItems: "center", justifyContent: "center",
+                        fontSize: 20, fontWeight: 700, flexShrink: 0,
+                        boxShadow: "0 4px 10px rgba(99,102,241,0.3)"
+                      }}>
+                        {getInitials({ firstName: selectedUser.first_name, lastName: selectedUser.last_name, email: selectedUser.email })}
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 18, fontWeight: 600, color: "var(--ink-1)", display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                          {selectedUser.first_name ? `${selectedUser.first_name} ${selectedUser.last_name}` : "System User"}
+                          <span className={`badge ${selectedUser.status === "active" ? "badge-active" : "badge-disabled"}`} style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                            {selectedUser.status}
+                          </span>
                         </div>
-                      ))}
-                  </div>
+                        <div style={{ fontSize: 14, color: "var(--ink-3)" }}>{selectedUser.email}</div>
+                      </div>
+                    </div>
+                    <button onClick={() => setSelectedUser(null)} style={{ background: "transparent", border: "none", color: "var(--ink-3)", cursor: "pointer", padding: 4, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "var(--surface)"; (e.currentTarget as HTMLButtonElement).style.color = "var(--ink-1)"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; (e.currentTarget as HTMLButtonElement).style.color = "var(--ink-3)"; }}>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                      </svg>
+                    </button>
+                  </header>
 
-                  <div className="user-detail-actions" style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12, marginTop: 24 }}>
-                    <button className="btn btn-secondary btn-sm" onClick={() => onResetPassword(selectedUser.id)}>
-                      Reset Password
-                    </button>
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => {
-                        void onForceLogoutUser(selectedUser);
-                      }}
-                      disabled={isBusy || selectedUser.id === session?.user?.id || !canControlSecurity}
-                      title={
-                        !canControlSecurity
-                          ? "Requires security control permission"
-                          : selectedUser.id === session?.user?.id
-                            ? "Use 'Logout everyone' if you need to clear your own session"
-                            : "Logout this user from all active sessions"
-                      }
-                    >
-                      Logout User
-                    </button>
-                    {(() => {
-                      const isAdminUser = !selectedUser.roles || selectedUser.roles.length === 0;
-                      const isSelf = selectedUser.id === session?.user?.id;
-                      if (isAdminUser) {
-                        return (
-                          <div style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 8,
-                            padding: "8px 14px",
-                            borderRadius: 8,
-                            background: "rgba(129,140,248,0.08)",
-                            border: "1px solid rgba(129,140,248,0.2)",
-                            fontSize: 12,
-                            color: "var(--accent)",
-                            fontWeight: 600
-                          }}>
-                            <ShieldIcon size={14} />
-                            Admin account — cannot be removed
-                          </div>
-                        );
-                      }
-                      return (
+                  {/* ── BODY ── */}
+                  <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: 24, overflowY: "auto", maxHeight: "65vh" }}>
+
+                    {/* Edit Details */}
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12 }}>Edit User Details</div>
+                      <div style={{ display: "flex", gap: 16, marginBottom: 16 }}>
+                        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
+                          <label style={{ fontSize: 13, fontWeight: 500, color: "var(--ink-2)" }}>First Name</label>
+                          <input
+                            className="modal-input"
+                            type="text"
+                            placeholder="First Name"
+                            value={editUserFirstName}
+                            onChange={(e) => setEditUserFirstName(e.target.value)}
+                            style={{ margin: 0 }}
+                          />
+                        </div>
+                        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
+                          <label style={{ fontSize: 13, fontWeight: 500, color: "var(--ink-2)" }}>Last Name</label>
+                          <input
+                            className="modal-input"
+                            type="text"
+                            placeholder="Last Name"
+                            value={editUserLastName}
+                            onChange={(e) => setEditUserLastName(e.target.value)}
+                            style={{ margin: 0 }}
+                          />
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        <label style={{ fontSize: 13, fontWeight: 500, color: "var(--ink-2)" }}>Email Address</label>
+                        <input
+                          className="modal-input"
+                          type="email"
+                          placeholder="Email address"
+                          value={editUserEmail}
+                          onChange={(e) => setEditUserEmail(e.target.value)}
+                          style={{ margin: 0 }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Role Chips */}
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12 }}>Manage Access Role</div>
+                      <div style={{ display: "flex", gap: 12 }}>
+                        {roles.filter(r => ["viewer", "editor"].includes(r.name)).map(role => {
+                          const isActive = selectedRoleIds.has(role.id);
+                          return (
+                            <button
+                              key={role.id}
+                              onClick={() => onRequestUserAccessRoleChange(role.id)}
+                              disabled={isBusy || isActive}
+                              style={{
+                                flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                                padding: "10px 16px", borderRadius: 8, border: `1px solid ${isActive ? "var(--accent)" : "var(--border)"}`,
+                                background: isActive ? "var(--accent-light)" : "var(--surface)",
+                                color: isActive ? "var(--accent)" : "var(--ink-3)",
+                                fontWeight: 500, fontSize: 14, cursor: isActive ? "default" : "pointer",
+                                transition: "all 0.2s", fontFamily: "inherit"
+                              }}
+                            >
+                              <span style={{
+                                width: 18, height: 18, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
+                                background: isActive ? "var(--accent)" : "rgba(255,255,255,0.1)", color: "white", fontSize: 10
+                              }}>
+                                {isActive
+                                  ? <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                                  : <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+                                }
+                              </span>
+                              <span style={{ textTransform: "capitalize" }}>{role.name}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Account Management */}
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12 }}>Account Management</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                         <button
-                          className="btn btn-danger btn-sm"
-                          onClick={() => setDeleteUserId(selectedUser.id)}
-                          disabled={isBusy || isSelf}
-                          title={isSelf ? "You cannot remove your own account" : "Remove user"}
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => onResetPassword(selectedUser.id)}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
                         >
-                          Remove User
+                          <LockIcon size={16} /> Reset Password
                         </button>
-                      );
-                    })()}
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => { void onForceLogoutUser(selectedUser); }}
+                          disabled={isBusy || selectedUser.id === session?.user?.id || !canControlSecurity}
+                          title={!canControlSecurity ? "Requires security control permission" : selectedUser.id === session?.user?.id ? "Cannot logout yourself" : "Force logout this user"}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+                        >
+                          <LogoutIcon size={16} /> Force Logout
+                        </button>
+                      </div>
+
+                      {/* Remove User */}
+                      <div style={{ marginTop: 12 }}>
+                        {(() => {
+                          const isAdminUser = !selectedUser.roles || selectedUser.roles.length === 0;
+                          const isSelf = selectedUser.id === session?.user?.id;
+                          if (isAdminUser) {
+                            return (
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderRadius: 8, background: "rgba(129,140,248,0.08)", border: "1px solid rgba(129,140,248,0.2)", fontSize: 12, color: "var(--accent)", fontWeight: 600 }}>
+                                <ShieldIcon size={14} /> Admin account — cannot be removed
+                              </div>
+                            );
+                          }
+                          return (
+                            <button
+                              className="btn btn-danger btn-sm"
+                              onClick={() => setDeleteUserId(selectedUser.id)}
+                              disabled={isBusy || isSelf}
+                              title={isSelf ? "You cannot remove your own account" : "Remove user"}
+                              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+                            >
+                              <TrashIcon size={16} /> Remove User
+                            </button>
+                          );
+                        })()}
+                      </div>
+                    </div>
                   </div>
 
-                  <div style={{ marginTop: 24, paddingTop: 20, borderTop: "1px solid var(--border)" }}>
+                  {/* ── FOOTER ── */}
+                  <footer style={{ padding: "16px 24px", borderTop: "1px solid var(--border)", background: "var(--panel-bg)", display: "flex", justifyContent: "flex-end", gap: 12 }}>
+                    <button className="btn btn-ghost" onClick={() => setSelectedUser(null)}>Cancel</button>
                     <button
                       className="btn btn-primary"
-                      onClick={() => {
-                        void onDoneUserDetails();
-                      }}
-                      disabled={isBusy}
-                      style={{ width: "100%" }}
+                      onClick={() => { void onDoneUserDetails(); }}
+                      disabled={isBusy || !editUserEmail.trim()}
                     >
-                      {isBusy ? "Saving..." : isUserProfileDirty ? "Save & Done" : "Done"}
+                      {isBusy ? "Saving..." : isUserProfileDirty ? "Save Changes" : "Done"}
                     </button>
-                  </div>
+                  </footer>
+
                 </div>
               </div>
             )}
@@ -3579,6 +3621,42 @@ export default function App() {
                       padding: "10px 12px"
                     }}
                   />
+                </div>
+
+                <div style={{ display: "grid", gap: 12, marginBottom: 16 }}>
+                  <label style={{ fontSize: 12, color: "var(--ink-4)", fontWeight: 600 }}>
+                    Target user for single-account logout
+                  </label>
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <select
+                      value={securityTargetUserId}
+                      onChange={(event) => setSecurityTargetUserId(event.target.value)}
+                      style={{
+                        minWidth: 260,
+                        borderRadius: 10,
+                        border: "1px solid var(--border)",
+                        background: "var(--surface)",
+                        color: "var(--ink-1)",
+                        padding: "10px 12px"
+                      }}
+                    >
+                      <option value="">Select a user...</option>
+                      {users
+                        .filter((user) => user.id !== session?.user?.id)
+                        .map((user) => (
+                          <option key={user.id} value={user.id}>
+                            {user.email}
+                          </option>
+                        ))}
+                    </select>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => void onForceLogoutSelectedUser()}
+                      disabled={isBusy || !securityTargetUserId}
+                    >
+                      Logout Selected User
+                    </button>
+                  </div>
                 </div>
 
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>

@@ -333,6 +333,7 @@ export default function App() {
     const [securityError, setSecurityError] = useState(null);
     const [securityActionToken, setSecurityActionToken] = useState(null);
     const [securityActionExpiresAt, setSecurityActionExpiresAt] = useState(null);
+    const [securityTargetUserId, setSecurityTargetUserId] = useState("");
     const [showSecurityStepUpModal, setShowSecurityStepUpModal] = useState(false);
     const [stepUpPassword, setStepUpPassword] = useState("");
     const [stepUpOtp, setStepUpOtp] = useState("");
@@ -1403,6 +1404,18 @@ export default function App() {
             setIsBusy(false);
         }
     };
+    const onForceLogoutSelectedUser = async () => {
+        if (!securityTargetUserId) {
+            showToast("error", "Select a user", "Choose a user before running targeted logout.");
+            return;
+        }
+        const target = users.find((user) => user.id === securityTargetUserId);
+        if (!target) {
+            showToast("error", "User not found", "Refresh users and try again.");
+            return;
+        }
+        await onForceLogoutUser(target);
+    };
     const onForceLogoutEveryone = async () => {
         if (!accessToken)
             return;
@@ -1806,7 +1819,16 @@ export default function App() {
                                                 background: "var(--surface)",
                                                 color: "var(--ink-1)",
                                                 padding: "10px 12px"
-                                            } })] }), _jsxs("div", { style: { display: "flex", gap: 10, flexWrap: "wrap" }, children: [_jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => void onForceLogoutEveryone(), disabled: isBusy, children: "Logout Everyone" }), _jsx("button", { className: "btn btn-danger btn-sm", onClick: () => void onTapOff(), disabled: isBusy || Boolean(securityState?.tapOffActive), children: "Activate Tap-Off" }), _jsx("button", { className: "btn btn-primary btn-sm", onClick: () => void onTapOn(), disabled: isBusy || !securityState?.tapOffActive, children: "Restore Service" })] }), _jsxs("div", { style: { marginTop: 16, fontSize: 12, color: "var(--ink-4)" }, children: ["Tip: Use the ", _jsx("strong", { children: "Logout user" }), " action in the Users tab for targeted session revocation."] })] })) })), tab === "Audit Logs" && (() => {
+                                            } })] }), _jsxs("div", { style: { display: "grid", gap: 12, marginBottom: 16 }, children: [_jsx("label", { style: { fontSize: 12, color: "var(--ink-4)", fontWeight: 600 }, children: "Target user for single-account logout" }), _jsxs("div", { style: { display: "flex", gap: 10, flexWrap: "wrap" }, children: [_jsxs("select", { value: securityTargetUserId, onChange: (event) => setSecurityTargetUserId(event.target.value), style: {
+                                                        minWidth: 260,
+                                                        borderRadius: 10,
+                                                        border: "1px solid var(--border)",
+                                                        background: "var(--surface)",
+                                                        color: "var(--ink-1)",
+                                                        padding: "10px 12px"
+                                                    }, children: [_jsx("option", { value: "", children: "Select a user..." }), users
+                                                            .filter((user) => user.id !== session?.user?.id)
+                                                            .map((user) => (_jsx("option", { value: user.id, children: user.email }, user.id)))] }), _jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => void onForceLogoutSelectedUser(), disabled: isBusy || !securityTargetUserId, children: "Logout Selected User" })] })] }), _jsxs("div", { style: { display: "flex", gap: 10, flexWrap: "wrap" }, children: [_jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => void onForceLogoutEveryone(), disabled: isBusy, children: "Logout Everyone" }), _jsx("button", { className: "btn btn-danger btn-sm", onClick: () => void onTapOff(), disabled: isBusy || Boolean(securityState?.tapOffActive), children: "Activate Tap-Off" }), _jsx("button", { className: "btn btn-primary btn-sm", onClick: () => void onTapOn(), disabled: isBusy || !securityState?.tapOffActive, children: "Restore Service" })] }), _jsxs("div", { style: { marginTop: 16, fontSize: 12, color: "var(--ink-4)" }, children: ["Tip: Use the ", _jsx("strong", { children: "Logout user" }), " action in the Users tab for targeted session revocation."] })] })) })), tab === "Audit Logs" && (() => {
                         const filteredLogs = auditLogs;
                         const dangerCount = filteredLogs.filter(l => getAuditCategory(l.action) === "danger").length;
                         const authCount = filteredLogs.filter(l => getAuditCategory(l.action) === "auth").length;
