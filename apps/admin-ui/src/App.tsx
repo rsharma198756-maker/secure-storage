@@ -1830,20 +1830,128 @@ export default function App() {
     }
   };
 
-  // ---- upload confirmation (used by FilesPage) ----
-  type PendingUpload =
-    | { kind: "files"; files: FileList }
-    | { kind: "folder"; files: FileList; folderName: string };
+  // ---- folder tree upload (used by FilesPage drag-and-drop and input fallback) ----
 
+  /**
+   * Recursively reads a FileSystemDirectoryEntry and returns all files with
+   * their full relative paths (e.g. "MyFolder/sub/file.txt").
+   */
+  const readEntryTree = (entry: any): Promise<{ relativePath: string; file: File }[]> => {
+    return new Promise((resolve) => {
+      if (entry.isFile) {
+        entry.file((f: File) => resolve([{ relativePath: entry.fullPath.slice(1), file: f }]));
+      } else if (entry.isDirectory) {
+        const reader = entry.createReader();
+        const allEntries: any[] = [];
+        const readBatch = () => {
+          reader.readEntries(async (batch: any[]) => {
+            if (batch.length === 0) {
+              const nested = await Promise.all(allEntries.map(readEntryTree));
+              resolve(nested.flat());
+            } else {
+              allEntries.push(...batch);
+              readBatch(); // keep reading until empty batch
+            }
+          });
+        };
+        readBatch();
+      } else {
+        resolve([]);
+      }
+    });
+  };
+
+  /**
+   * Upload a folder tree:
+   *  1. Collect all files with their path segments.
+   *  2. Create folders top-down, caching id by path.
+   *  3. Upload each file into its created parent.
+   */
+  const onUploadFolderTree = async (
+    entries: { relativePath: string; file: File }[]
+  ) => {
+    if (!accessToken || entries.length === 0) return;
+    setIsBusy(true);
+
+    // folder-id cache: "" = currentFolderId (root of current location)
+    const folderIdCache = new Map<string, string | null>();
+    folderIdCache.set("", currentFolderId ?? null);
+
+    const ensureFolder = async (segments: string[]): Promise<string | null> => {
+      if (segments.length === 0) return currentFolderId ?? null;
+      const key = segments.join("/");
+      if (folderIdCache.has(key)) return folderIdCache.get(key)!;
+      const parentId = await ensureFolder(segments.slice(0, -1));
+      const folderName = segments[segments.length - 1];
+      try {
+        const created = await createFolder(accessToken!, folderName, parentId);
+        const id: string = created?.item?.id ?? created?.id ?? null;
+        folderIdCache.set(key, id);
+        return id;
+      } catch {
+        folderIdCache.set(key, parentId); // fallback: upload into parent
+        return parentId;
+      }
+    };
+
+    let uploaded = 0;
+    let failed = 0;
+    for (const { relativePath, file } of entries) {
+      const parts = relativePath.split("/");
+      const dirSegments = parts.slice(0, -1);
+      try {
+        const parentId = await ensureFolder(dirSegments);
+        await createFile(accessToken!, file, parentId);
+        uploaded++;
+      } catch {
+        failed++;
+      }
+    }
+
+    await refreshItems(currentFolderId);
+    setIsBusy(false);
+
+    if (uploaded > 0) {
+      showToast("success", "Folder uploaded", `${uploaded} file${uploaded === 1 ? "" : "s"} uploaded, folder structure preserved.`);
+    }
+    if (failed > 0) {
+      showToast("error", "Some files failed", `${failed} file${failed === 1 ? "" : "s"} could not be uploaded.`);
+    }
+  };
+
+  /**
+   * Handle drag-and-drop of a folder onto the Files page.
+   * Uses DataTransferItem.webkitGetAsEntry() — no browser security dialog.
+   */
+  const onDropFolder = async (e: React.DragEvent) => {
+    e.preventDefault();
+    const items = Array.from(e.dataTransfer.items);
+    const entries = items
+      .map((item) => item.webkitGetAsEntry?.())
+      .filter(Boolean) as any[];
+
+    const allFiles = (await Promise.all(entries.map(readEntryTree))).flat();
+    if (allFiles.length > 0) await onUploadFolderTree(allFiles);
+  };
+
+  /**
+   * Fallback: input[webkitdirectory] — Chrome shows a dialog, but we still
+   * preserve the folder structure using webkitRelativePath.
+   */
+  const onFolderInputChange = async (files: FileList) => {
+    const entries = Array.from(files).map((file) => ({
+      relativePath: file.webkitRelativePath || file.name,
+      file,
+    }));
+    await onUploadFolderTree(entries);
+  };
+
+  // ---- flat file upload confirmation (used by FilesPage) ----
+  type PendingUpload = { kind: "files"; files: FileList };
   const [pendingUpload, setPendingUpload] = useState<PendingUpload | null>(null);
 
   const queueFileUploadConfirmation = (files: FileList) => {
     setPendingUpload({ kind: "files", files });
-  };
-
-  const queueFolderUploadConfirmation = (files: FileList) => {
-    const firstName = files[0]?.webkitRelativePath?.split("/")[0] ?? "Selected Folder";
-    setPendingUpload({ kind: "folder", files, folderName: firstName });
   };
 
   const onConfirmPendingUpload = async () => {
@@ -1852,6 +1960,8 @@ export default function App() {
     setPendingUpload(null);
     await onUploadFiles(fileList);
   };
+
+
 
   const onConfirmDelete = async () => {
     if (!accessToken || !deleteTarget) return;
@@ -2989,7 +3099,8 @@ export default function App() {
             UploadIcon={UploadIcon}
             queueFileUploadConfirmation={queueFileUploadConfirmation}
             FolderIcon={FolderIcon}
-            queueFolderUploadConfirmation={queueFolderUploadConfirmation}
+            onDropFolder={onDropFolder}
+            onFolderInputChange={onFolderInputChange}
             KeyIcon={KeyIcon}
             items={items}
             openFolder={openFolder}

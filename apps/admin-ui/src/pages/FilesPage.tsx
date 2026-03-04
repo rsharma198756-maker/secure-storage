@@ -46,7 +46,9 @@ export default function FilesPage(props: FilesPageProps) {
     UploadIcon,
     queueFileUploadConfirmation,
     FolderIcon,
-    queueFolderUploadConfirmation,
+    onDropFolder,
+    onFolderInputChange,
+
     KeyIcon,
     items,
     openFolder,
@@ -313,11 +315,12 @@ export default function FilesPage(props: FilesPageProps) {
                     {...({ webkitdirectory: "", directory: "" } as any)}
                     onChange={(e: any) => {
                       const files = e.target.files;
-                      if (files?.length) queueFolderUploadConfirmation(files);
+                      if (files?.length) void onFolderInputChange(files);
                       e.currentTarget.value = "";
                     }}
                   />
                 </label>
+
               </div>
             ) : (
               <div style={{ padding: "8px 16px", fontSize: 13, color: "var(--ink-4)", display: "flex", alignItems: "center", gap: 6 }}>
@@ -325,7 +328,12 @@ export default function FilesPage(props: FilesPageProps) {
               </div>
             )}
 
-            <div className="panel">
+            <div
+              className="panel"
+              onDragOver={(e: any) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; }}
+              onDrop={(e: any) => { void onDropFolder(e); }}
+            >
+
               {items.length === 0 ? (
                 <div style={{ textAlign: "center", padding: "48px 0", color: "var(--ink-3)" }}>
                   <FolderIcon size={40} />
