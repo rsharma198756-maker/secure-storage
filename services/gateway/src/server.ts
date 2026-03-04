@@ -1,7 +1,7 @@
 import "dotenv/config";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import crypto from "node:crypto";
 import archiver from "archiver";
 import { config } from "./config.js";
@@ -287,6 +287,122 @@ const validatePassword = (password: string): string | null => {
   if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]/.test(password))
     return "password_needs_special_char";
   return null;
+};
+
+type DbClient = Pick<PoolClient, "query">;
+
+type HardDeleteUserResult = {
+  id: string;
+  email: string;
+  status: string;
+  isAdmin: boolean;
+};
+
+const isMissingRelationOrColumn = (error: unknown) => {
+  const pgError = error as { code?: string } | undefined;
+  return pgError?.code === "42P01" || pgError?.code === "42703";
+};
+
+const hardDeleteUserAccount = async (
+  client: DbClient,
+  userId: string,
+  options?: { enforceLastAdminCheck?: boolean }
+): Promise<HardDeleteUserResult | null> => {
+  const targetRes = await client.query(
+    `
+    SELECT
+      u.id,
+      u.email,
+      u.status,
+      EXISTS (
+        SELECT 1
+        FROM user_roles ur
+        JOIN roles r ON r.id = ur.role_id
+        WHERE ur.user_id = u.id
+          AND r.name = 'admin'
+      ) AS is_admin
+    FROM users u
+    WHERE u.id = $1
+    LIMIT 1
+    `,
+    [userId]
+  );
+
+  if ((targetRes.rowCount ?? 0) === 0) {
+    return null;
+  }
+
+  const target = targetRes.rows[0] as {
+    id: string;
+    email: string;
+    status: string;
+    is_admin: boolean;
+  };
+  const enforceLastAdminCheck = options?.enforceLastAdminCheck ?? true;
+  if (enforceLastAdminCheck && target.is_admin && target.status !== "deleted") {
+    const remainingAdminsRes = await client.query(
+      `
+      SELECT COUNT(DISTINCT ur.user_id)::int AS total
+      FROM user_roles ur
+      JOIN roles r ON r.id = ur.role_id
+      JOIN users u ON u.id = ur.user_id
+      WHERE r.name = 'admin'
+        AND u.status <> 'deleted'
+        AND u.id <> $1
+      `,
+      [userId]
+    );
+    const remainingActiveAdmins = Number(remainingAdminsRes.rows[0]?.total ?? 0);
+    if (remainingActiveAdmins < 1) {
+      throw new Error("cannot_delete_last_admin");
+    }
+  }
+
+  await client.query(
+    "DELETE FROM item_grants WHERE subject_type = 'user' AND subject_id = $1",
+    [userId]
+  );
+  await client.query("DELETE FROM otp_tokens WHERE email = $1", [target.email]);
+  await client.query("UPDATE audit_logs SET actor_user_id = NULL WHERE actor_user_id = $1", [userId]);
+  try {
+    await client.query(
+      "UPDATE refresh_tokens SET revoked_by_user_id = NULL WHERE revoked_by_user_id = $1",
+      [userId]
+    );
+  } catch (error) {
+    if (!isMissingRelationOrColumn(error)) throw error;
+  }
+  try {
+    await client.query(
+      "UPDATE security_controls SET tap_off_by_user_id = NULL, updated_at = now() WHERE tap_off_by_user_id = $1",
+      [userId]
+    );
+  } catch (error) {
+    if (!isMissingRelationOrColumn(error)) throw error;
+  }
+
+  const deleteRes = await client.query(
+    "DELETE FROM users WHERE id = $1 RETURNING id",
+    [userId]
+  );
+  if ((deleteRes.rowCount ?? 0) === 0) {
+    return null;
+  }
+
+  const verifyRes = await client.query(
+    "SELECT 1 FROM users WHERE email = $1 LIMIT 1",
+    [target.email]
+  );
+  if ((verifyRes.rowCount ?? 0) > 0) {
+    throw new Error("user_delete_not_complete");
+  }
+
+  return {
+    id: target.id,
+    email: target.email,
+    status: target.status,
+    isAdmin: Boolean(target.is_admin)
+  };
 };
 
 app.addHook("preHandler", async (request, reply) => {
@@ -1531,34 +1647,73 @@ app.post("/admin/users", async (request, reply) => {
     return;
   }
 
-  // Check email uniqueness
-  const existing = await pool.query("SELECT id FROM users WHERE email = $1", [email]);
-  if ((existing.rowCount ?? 0) > 0) {
-    reply.code(409).send({ error: "email_already_exists" });
-    return;
-  }
-
-  const passwordHash = await hashPassword(body.password);
-  const insertRes = await pool.query(
-    `INSERT INTO users (email, password_hash, status, first_name, last_name, email_verified_at)
-     VALUES ($1, $2, 'active', $3, $4, now())
-     RETURNING id`,
-    [email, passwordHash, body.firstName ?? "", body.lastName ?? ""]
-  );
-  const newUserId = insertRes.rows[0].id;
-
-  // Assign role (default to 'viewer')
-  // Only allow creating editor or viewer — admin creation is restricted
   const roleName = body.role && ["editor", "viewer"].includes(body.role) ? body.role : "viewer";
-  const roleRes = await pool.query("SELECT id FROM roles WHERE name = $1 LIMIT 1", [roleName]);
-  if (roleRes.rowCount && roleRes.rowCount > 0) {
-    await pool.query(
-      "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-      [newUserId, roleRes.rows[0].id]
+
+  const client = await pool.connect();
+  let newUserId = "";
+  let purgedLegacyDeletedUser = false;
+
+  try {
+    await client.query("BEGIN");
+
+    const existing = await client.query(
+      "SELECT id, status FROM users WHERE email = $1 LIMIT 1",
+      [email]
     );
-    invalidateEnforcer();
+    if ((existing.rowCount ?? 0) > 0) {
+      const existingUser = existing.rows[0] as { id: string; status: string };
+      if (existingUser.status === "deleted") {
+        const purged = await hardDeleteUserAccount(client, existingUser.id, {
+          enforceLastAdminCheck: false
+        });
+        purgedLegacyDeletedUser = Boolean(purged);
+      } else {
+        await client.query("ROLLBACK");
+        reply.code(409).send({ error: "email_already_exists" });
+        return;
+      }
+    }
+
+    const roleRes = await client.query("SELECT id FROM roles WHERE name = $1 LIMIT 1", [roleName]);
+    const passwordHash = await hashPassword(body.password);
+    const insertRes = await client.query(
+      `INSERT INTO users (email, password_hash, status, first_name, last_name, email_verified_at)
+       VALUES ($1, $2, 'active', $3, $4, now())
+       RETURNING id`,
+      [email, passwordHash, body.firstName ?? "", body.lastName ?? ""]
+    );
+    newUserId = insertRes.rows[0].id;
+
+    // Assign role (default to 'viewer')
+    // Only allow creating editor or viewer — admin creation is restricted
+    if (roleRes.rowCount && roleRes.rowCount > 0) {
+      await client.query(
+        "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        [newUserId, roleRes.rows[0].id]
+      );
+    }
+
+    await client.query("COMMIT");
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+    if (error?.code === "23505") {
+      reply.code(409).send({ error: "email_already_exists" });
+      return;
+    }
+    throw error;
+  } finally {
+    client.release();
   }
 
+  invalidateEnforcer();
+  if (purgedLegacyDeletedUser) {
+    await writeAuditLog({
+      actorUserId: request.userId,
+      action: "user.legacy_deleted_purged",
+      targetType: "user",
+      metadata: { email }
+    });
+  }
   await writeAuditLog({
     actorUserId: request.userId,
     action: "user.created",
@@ -1661,77 +1816,27 @@ app.delete("/admin/users/:id", async (request, reply) => {
   }
 
   const client = await pool.connect();
-  let targetEmail: string | null = null;
+  let deletedUser: HardDeleteUserResult | null = null;
 
   try {
     await client.query("BEGIN");
-
-    const targetRes = await client.query(
-      `
-      SELECT
-        u.email,
-        EXISTS (
-          SELECT 1
-          FROM user_roles ur
-          JOIN roles r ON r.id = ur.role_id
-          WHERE ur.user_id = u.id
-            AND r.name = 'admin'
-        ) AS is_admin
-      FROM users u
-      WHERE u.id = $1
-      LIMIT 1
-      `,
-      [id]
-    );
-
-    if ((targetRes.rowCount ?? 0) === 0) {
+    deletedUser = await hardDeleteUserAccount(client, id, { enforceLastAdminCheck: true });
+    if (!deletedUser) {
       await client.query("ROLLBACK");
       reply.code(404).send({ error: "user_not_found" });
       return;
     }
-
-    const target = targetRes.rows[0] as { email: string; is_admin: boolean };
-    targetEmail = target.email;
-
-    if (target.is_admin) {
-      const adminCountRes = await client.query(
-        `
-        SELECT COUNT(DISTINCT ur.user_id)::int AS total
-        FROM user_roles ur
-        JOIN roles r ON r.id = ur.role_id
-        WHERE r.name = 'admin'
-        `
-      );
-      const adminCount = Number(adminCountRes.rows[0]?.total ?? 0);
-      if (adminCount <= 1) {
-        await client.query("ROLLBACK");
-        reply.code(400).send({ error: "cannot_delete_last_admin" });
-        return;
-      }
-    }
-
-    // Remove grants explicitly assigned to this user on other users' items.
-    await client.query(
-      "DELETE FROM item_grants WHERE subject_type = 'user' AND subject_id = $1",
-      [id]
-    );
-
-    // Keep audit history while removing user by detaching actor references.
-    await client.query("UPDATE audit_logs SET actor_user_id = NULL WHERE actor_user_id = $1", [id]);
-
-    const deleteRes = await client.query(
-      "DELETE FROM users WHERE id = $1 RETURNING id",
-      [id]
-    );
-    if ((deleteRes.rowCount ?? 0) === 0) {
-      await client.query("ROLLBACK");
-      reply.code(404).send({ error: "user_not_found" });
-      return;
-    }
-
     await client.query("COMMIT");
-  } catch (error) {
+  } catch (error: any) {
     await client.query("ROLLBACK");
+    if (error?.message === "cannot_delete_last_admin") {
+      reply.code(400).send({ error: "cannot_delete_last_admin" });
+      return;
+    }
+    if (error?.message === "user_delete_not_complete") {
+      reply.code(500).send({ error: "user_delete_failed" });
+      return;
+    }
     throw error;
   } finally {
     client.release();
@@ -1743,7 +1848,7 @@ app.delete("/admin/users/:id", async (request, reply) => {
     action: "user.deleted",
     targetType: "user",
     targetId: id,
-    metadata: targetEmail ? { email: targetEmail } : undefined
+    metadata: deletedUser ? { email: deletedUser.email } : undefined
   });
 
   reply.send({ status: "ok" });

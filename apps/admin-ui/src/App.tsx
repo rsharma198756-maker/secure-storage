@@ -46,6 +46,11 @@ import type {
   UserProfile
 } from "./api";
 import "./styles.css";
+import DashboardPage from "./pages/DashboardPage";
+import UsersPage from "./pages/UsersPage";
+import FilesPage from "./pages/FilesPage";
+import AuditLogsPage from "./pages/AuditLogsPage";
+
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -261,8 +266,9 @@ const CalendarIcon = ({ size = 14, ...props }: IconProps) => (
    Types
    ============================================= */
 
-const ALL_TABS = ["Dashboard", "Users", "Roles", "Permissions", "Files", "Audit Logs", "Security"] as const;
+const ALL_TABS = ["Dashboard", "Users", "Roles", "Permissions", "Files", "Audit Logs"] as const;
 type Tab = (typeof ALL_TABS)[number];
+
 
 type User = {
   id: string;
@@ -431,8 +437,8 @@ const tabIcons: Record<Tab, (props: IconProps) => JSX.Element> = {
   Permissions: KeyIcon,
   Files: FolderIcon,
   "Audit Logs": ActivityIcon,
-  Security: ShieldAlertIcon,
 };
+
 
 const tabDescriptions: Record<Tab, string> = {
   Dashboard: "High-level view of users, files, and security activity across your system.",
@@ -441,8 +447,27 @@ const tabDescriptions: Record<Tab, string> = {
   Permissions: "See which permissions are assigned to each role.",
   Files: "Browse, upload, and manage stored documents and folders.",
   "Audit Logs": "View a chronological log of all system activity.",
-  Security: "Run emergency controls, force logout sessions, and monitor tap-off state.",
 };
+
+
+// ── URL routing ─────────────────────────────────────────────────────────────
+const TAB_TO_PATH: Record<Tab, string> = {
+  Dashboard: "/dashboard",
+  Users: "/users",
+  Roles: "/roles",
+  Permissions: "/permissions",
+  Files: "/files",
+  "Audit Logs": "/audit-logs",
+};
+
+const PATH_TO_TAB: Record<string, Tab> = Object.fromEntries(
+  Object.entries(TAB_TO_PATH).map(([tab, path]) => [path, tab as Tab])
+);
+
+function tabFromPath(): Tab {
+  const path = window.location.pathname;
+  return PATH_TO_TAB[path] ?? "Files";
+}
 
 const DASHBOARD_RANGE_OPTIONS: Array<{ value: DashboardRange; label: string }> = [
   { value: "7d", label: "Last 7 Days" },
@@ -459,24 +484,22 @@ const DASHBOARD_RANGE_LABELS: Record<DashboardRange, string> = {
 const DEFAULT_PAGE_SIZE = 10;
 
 const getTabsForRole = (roles: string[], permissions: string[]): Tab[] => {
-  const canControlSecurity = permissions.includes("security:control");
   const canAccessFiles = permissions.some((permission) =>
     ["items:read", "items:write", "items:delete", "items:share"].includes(permission)
   );
   if (roles.includes("admin")) {
-    return canControlSecurity ? [...ALL_TABS] : ALL_TABS.filter((tab) => tab !== "Security");
+    return [...ALL_TABS];
   }
   if (roles.some((role) => ["viewer", "editor"].includes(role))) {
     const tabs: Tab[] = ["Dashboard"];
     if (canAccessFiles) tabs.push("Files");
-    if (canControlSecurity) tabs.push("Security");
     return tabs;
   }
   const tabs: Tab[] = [];
   if (canAccessFiles) tabs.push("Files");
-  if (canControlSecurity) tabs.push("Security");
   return tabs.length > 0 ? tabs : ["Dashboard"];
 };
+
 
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
 
@@ -688,7 +711,16 @@ export default function App() {
   const [otp, setOtp] = useState("");
   const [loginStep, setLoginStep] = useState<1 | 2 | 3>(1);
   const [session, setSession] = useState<Session | null>(null);
-  const [tab, setTab] = useState<Tab>("Files");
+  const [tab, setTab] = useState<Tab>(() => tabFromPath());
+
+  // Keep URL in sync when tab changes programmatically
+  const navigateToTab = useCallback((next: Tab) => {
+    setTab(next);
+    const path = TAB_TO_PATH[next];
+    if (window.location.pathname !== path) {
+      window.history.pushState({ tab: next }, "", path);
+    }
+  }, []);
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
   const [permissions, setPermissions] = useState<Permission[]>([]);
@@ -1758,6 +1790,29 @@ export default function App() {
     }
   };
 
+  // ---- upload confirmation (used by FilesPage) ----
+  type PendingUpload =
+    | { kind: "files"; files: FileList }
+    | { kind: "folder"; files: FileList; folderName: string };
+
+  const [pendingUpload, setPendingUpload] = useState<PendingUpload | null>(null);
+
+  const queueFileUploadConfirmation = (files: FileList) => {
+    setPendingUpload({ kind: "files", files });
+  };
+
+  const queueFolderUploadConfirmation = (files: FileList) => {
+    const firstName = files[0]?.webkitRelativePath?.split("/")[0] ?? "Selected Folder";
+    setPendingUpload({ kind: "folder", files, folderName: firstName });
+  };
+
+  const onConfirmPendingUpload = async () => {
+    if (!pendingUpload) return;
+    const fileList = pendingUpload.files;
+    setPendingUpload(null);
+    await onUploadFiles(fileList);
+  };
+
   const onConfirmDelete = async () => {
     if (!accessToken || !deleteTarget) return;
     setIsBusy(true);
@@ -2203,11 +2258,22 @@ export default function App() {
 
   useEffect(() => {
     if (!session || visibleTabs.includes(tab)) return;
-    const fallbackTab = visibleTabs.includes("Dashboard")
-      ? "Dashboard"
-      : visibleTabs[0] ?? "Files";
-    setTab(fallbackTab);
-  }, [session, tab, visibleTabs]);
+    const fallbackTab = visibleTabs[0] ?? "Files";
+    navigateToTab(fallbackTab);
+  }, [session, tab, visibleTabs, navigateToTab]);
+
+  // Sync tab when browser back/forward buttons are used
+  useEffect(() => {
+    const onPop = (e: PopStateEvent) => {
+      const next = (e.state?.tab as Tab | undefined) ?? tabFromPath();
+      setTab(next);
+    };
+    window.addEventListener("popstate", onPop);
+    // Stamp the current entry so popstate fires correctly on first back
+    window.history.replaceState({ tab }, "", TAB_TO_PATH[tab]);
+    return () => window.removeEventListener("popstate", onPop);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     setDashboardAuditPage(1);
@@ -2230,24 +2296,6 @@ export default function App() {
     setAuditPage(1);
     setAuditExpandedRows(new Set());
   }, [auditLogs]);
-
-  useEffect(() => {
-    if (
-      tab === "Security" &&
-      accessToken &&
-      canControlSecurity &&
-      isSecurityTokenValid &&
-      securityActionToken
-    ) {
-      void refreshSecurityControlState();
-    }
-  }, [
-    tab,
-    accessToken,
-    canControlSecurity,
-    isSecurityTokenValid,
-    securityActionToken
-  ]);
 
   if (isSessionChecking) {
     return (
@@ -2464,7 +2512,7 @@ export default function App() {
                 <button
                   key={t}
                   className={`sidebar-nav-item ${tab === t ? "active" : ""}`}
-                  onClick={() => setTab(t)}
+                  onClick={() => navigateToTab(t)}
                 >
                   <span className="nav-icon"><Icon /></span>
                   {t}
@@ -2546,901 +2594,94 @@ export default function App() {
 
         {/* ---- DASHBOARD TAB ---- */}
         {tab === "Dashboard" && (
-          <div style={{ display: "flex", flexDirection: "column" }}>
-            {dashboardLoading && !(isAdmin ? dashboard : userDashboard) ? (
-              <div className="panel" style={{ textAlign: "center", padding: "56px 0", color: "var(--ink-3)" }}>
-                Loading dashboard metrics...
-              </div>
-            ) : dashboardError && !(isAdmin ? dashboard : userDashboard) ? (
-              <div className="panel" style={{ textAlign: "center", padding: "56px 0", color: "var(--red)" }}>
-                {dashboardError}
-              </div>
-            ) : isAdmin && dashboard ? (
-              <>
-                <div className="dashboard-v2-header">
-                  <div>
-                    <h1>Security Overview</h1>
-                    <p>High-level view of users, files, and system activity.</p>
-                  </div>
-                  <div className="time-range-picker">
-                    <CalendarIcon />
-                    <select
-                      value={dashboardRange}
-                      onChange={(event) => setDashboardRange(event.target.value as DashboardRange)}
-                      style={{
-                        background: "transparent",
-                        border: "none",
-                        color: "var(--ink-2)",
-                        fontSize: 13,
-                        fontWeight: 600,
-                        outline: "none",
-                        cursor: "pointer"
-                      }}
-                    >
-                      {DASHBOARD_RANGE_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      className="btn-ghost"
-                      style={{ padding: "2px 6px" }}
-                      onClick={() => void refreshDashboard()}
-                      title="Refresh dashboard"
-                    >
-                      <RefreshCwIcon size={14} />
-                    </button>
-                  </div>
-                </div>
-
-                <section className="metrics-v2-grid">
-                  <div className="metric-v2-card" style={{ transitionDelay: "0.1s" }}>
-                    <div className="m-v2-header">
-                      <span className="m-v2-title">Total Users</span>
-                      <UsersIcon size={16} className="m-v2-icon" />
-                    </div>
-                    <div className="m-v2-value">{dashboard.users.total.toLocaleString()}</div>
-                    <div className="m-v2-footer">
-                      <span className="text-green">{dashboard.users.active} Active</span>
-                      <span className="m-divider"></span>
-                      <span style={{ color: "var(--ink-4)" }}>{dashboard.users.disabled} Disabled</span>
-                    </div>
-                  </div>
-
-                  <div className="metric-v2-card" style={{ transitionDelay: "0.15s" }}>
-                    <div className="m-v2-header">
-                      <span className="m-v2-title">Active Items</span>
-                      <LayersIcon size={16} className="m-v2-icon" />
-                    </div>
-                    <div className="m-v2-value">{dashboard.items.total_active.toLocaleString()}</div>
-                    <div className="m-v2-footer">
-                      <span style={{ color: "var(--ink-3)" }}>{dashboard.items.files} Files</span>
-                      <span className="m-divider"></span>
-                      <span style={{ color: "var(--ink-3)" }}>{dashboard.items.folders} Folders</span>
-                    </div>
-                  </div>
-
-                  <div className="metric-v2-card" style={{ transitionDelay: "0.2s" }}>
-                    <div className="m-v2-header">
-                      <span className="m-v2-title">Role / Permission Sets</span>
-                      <KeyIcon size={16} className="m-v2-icon" />
-                    </div>
-                    <div className="m-v2-value">
-                      {dashboard.roles.total}
-                      <span style={{ color: "var(--ink-4)", fontWeight: 400, margin: "0 4px" }}>/</span>
-                      {dashboard.permissions.total}
-                    </div>
-                    <div className="m-v2-footer">
-                      <span style={{ color: "var(--ink-3)" }}>{dashboard.shares.total} Grants</span>
-                      <span className="m-divider"></span>
-                      <span style={{ color: "var(--ink-3)" }}>{dashboard.items.deleted} Deleted</span>
-                    </div>
-                  </div>
-
-                  <div className="metric-v2-card bg-alert-subtle" style={{ border: "1px solid rgba(248, 113, 113, 0.2)", transitionDelay: "0.25s" }}>
-                    <div className="m-v2-header">
-                      <span className="m-v2-title text-alert">Auth Security (24H)</span>
-                      <ShieldAlertIcon size={16} className="m-v2-icon text-alert" />
-                    </div>
-                    <div className="m-v2-value text-alert">{dashboard.activityLast24h.login_failed}</div>
-                    <div className="m-v2-footer">
-                      <span className="badge badge-disabled" style={{ padding: "2px 6px", fontSize: 11 }}>Failed Logins</span>
-                      <span className="m-divider"></span>
-                      <span style={{ color: "var(--ink-3)" }}>{dashboard.activityLast24h.logins} total</span>
-                    </div>
-                  </div>
-                </section>
-
-
-
-
-                <div className="panel-v2 table-panel-v2">
-                  <div className="panel-v2-header">
-                    <h2>Recent Security Activity ({DASHBOARD_RANGE_LABELS[dashboardRange]})</h2>
-                    <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                      {/* Email / name search */}
-                      <div className="shad-input-wrapper" style={{ width: 240 }}>
-                        <div className="shad-search-icon">
-                          <SearchIcon size={16} />
-                        </div>
-                        <input
-                          type="text"
-                          placeholder="Search by name or email..."
-                          value={auditSearch}
-                          onChange={e => setAuditSearch(e.target.value)}
-                          className="shad-input shad-input-search"
-                        />
-                      </div>
-                      {/* Action filter dropdown */}
-                      <div className="shad-select-wrapper" style={{ width: 160 }}>
-                        <select
-                          value={auditActionFilter}
-                          onChange={e => setAuditActionFilter(e.target.value)}
-                          className="shad-select"
-                        >
-                          <option value="">All actions</option>
-                          {[...new Set(dashboard.recentAudit.map(l => l.action))].sort().map(action => (
-                            <option key={action} value={action}>{formatActionLabel(action)}</option>
-                          ))}
-                        </select>
-                        <div className="shad-select-caret">
-                          <ChevronIcon size={14} />
-                        </div>
-                      </div>
-                      {/* Clear filters */}
-                      {(auditSearch || auditActionFilter) && (
-                        <button
-                          className="shad-btn-ghost"
-                          onClick={() => { setAuditSearch(""); setAuditActionFilter(""); }}
-                        >
-                          Clear
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  {(() => {
-                    const q = auditSearch.toLowerCase();
-                    const filtered = dashboard.recentAudit.filter(log => {
-                      const matchesAction = !auditActionFilter || log.action === auditActionFilter;
-                      const actorUser = log.actor_email ? users.find(u => u.email === log.actor_email) : null;
-                      const fullName = actorUser?.first_name
-                        ? `${actorUser.first_name} ${actorUser.last_name ?? ""}`.trim().toLowerCase()
-                        : (log.actor_email ?? "").toLowerCase();
-                      const matchesSearch = !q || fullName.includes(q) || (log.actor_email ?? "").toLowerCase().includes(q);
-                      return matchesAction && matchesSearch;
-                    });
-                    const totalPages = Math.max(1, Math.ceil(filtered.length / DEFAULT_PAGE_SIZE));
-                    const currentPage = Math.min(dashboardAuditPage, totalPages);
-                    const startIndex = (currentPage - 1) * DEFAULT_PAGE_SIZE;
-                    const pagedLogs = filtered.slice(startIndex, startIndex + DEFAULT_PAGE_SIZE);
-                    if (filtered.length === 0) return (
-                      <div style={{ color: "var(--ink-4)", fontSize: 14, padding: "40px 0", textAlign: "center" }}>
-                        {dashboard.recentAudit.length === 0 ? "No security entries yet." : "No results match your filters."}
-                      </div>
-                    );
-                    return (
-                      <>
-                        <table className="data-table">
-                          <thead>
-                            <tr>
-                              <th>Time</th>
-                              <th>Action</th>
-                              <th>Actor</th>
-                              <th>Target</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {pagedLogs.map((log) => {
-                              const isAlert = log.action.includes("failed") || log.action.includes("delete");
-                              const actorUser = log.actor_email ? users.find(u => u.email === log.actor_email) : null;
-                              const actorName = actorUser?.first_name
-                                ? `${actorUser.first_name} ${actorUser.last_name ?? ""}`.trim()
-                                : log.actor_email
-                                  ? log.actor_email.split("@")[0].replace(/[._-]/g, " ").replace(/\b\w/g, c => c.toUpperCase())
-                                  : "System";
-                              return (
-                                <tr key={log.id} className={isAlert ? "row-danger" : ""}>
-                                  <td className="cell-muted" style={{ fontSize: 12 }}>{formatDate(log.created_at)}</td>
-                                  <td>
-                                    <span className={`pill-v2 ${isAlert ? "pill-v2-red" : "pill-v2-blue"}`}>{formatActionLabel(log.action)}</span>
-                                  </td>
-                                  <td className="t-main" style={{ fontWeight: 600 }}>{actorName}</td>
-                                  <td className="cell-muted" style={{ fontSize: 13 }}>
-                                    {log.target_type
-                                      ? <span style={{ textTransform: "capitalize" }}>{log.target_type}</span>
-                                      : "—"}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "12px 0 0", flexWrap: "wrap" }}>
-                          <span style={{ fontSize: 12, color: "var(--ink-4)" }}>
-                            Showing {startIndex + 1}-{Math.min(startIndex + DEFAULT_PAGE_SIZE, filtered.length)} of {filtered.length}
-                          </span>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            <button
-                              className="btn btn-secondary btn-sm"
-                              onClick={() => setDashboardAuditPage((prev) => Math.max(1, prev - 1))}
-                              disabled={currentPage <= 1}
-                            >
-                              Previous
-                            </button>
-                            <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
-                              Page {currentPage} of {totalPages}
-                            </span>
-                            <button
-                              className="btn btn-secondary btn-sm"
-                              onClick={() => setDashboardAuditPage((prev) => Math.min(totalPages, prev + 1))}
-                              disabled={currentPage >= totalPages}
-                            >
-                              Next
-                            </button>
-                          </div>
-                        </div>
-                      </>
-                    );
-                  })()}
-                </div>
-              </>
-            ) : !isAdmin && userDashboard ? (
-              <>
-                <div className="dashboard-v2-header">
-                  <div>
-                    <h1>My Dashboard</h1>
-                    <p>Live usage and activity for your account.</p>
-                  </div>
-                  <div className="time-range-picker">
-                    <CalendarIcon />
-                    <select
-                      value={dashboardRange}
-                      onChange={(event) => setDashboardRange(event.target.value as DashboardRange)}
-                      style={{
-                        background: "transparent",
-                        border: "none",
-                        color: "var(--ink-2)",
-                        fontSize: 13,
-                        fontWeight: 600,
-                        outline: "none",
-                        cursor: "pointer"
-                      }}
-                    >
-                      {DASHBOARD_RANGE_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      className="btn-ghost"
-                      style={{ padding: "2px 6px" }}
-                      onClick={() => void refreshDashboard()}
-                      title="Refresh dashboard"
-                    >
-                      <RefreshCwIcon size={14} />
-                    </button>
-                  </div>
-                </div>
-
-                <section className="metrics-v2-grid">
-                  <div className="metric-v2-card" style={{ transitionDelay: "0.1s" }}>
-                    <div className="m-v2-header">
-                      <span className="m-v2-title">Accessible Items</span>
-                      <LayersIcon size={16} className="m-v2-icon" />
-                    </div>
-                    <div className="m-v2-value">{userDashboard.items.total_accessible.toLocaleString()}</div>
-                    <div className="m-v2-footer">
-                      <span style={{ color: "var(--ink-3)" }}>{userDashboard.items.files} Files</span>
-                      <span className="m-divider"></span>
-                      <span style={{ color: "var(--ink-3)" }}>{userDashboard.items.folders} Folders</span>
-                    </div>
-                  </div>
-
-                  <div className="metric-v2-card" style={{ transitionDelay: "0.15s" }}>
-                    <div className="m-v2-header">
-                      <span className="m-v2-title">Ownership</span>
-                      <UsersIcon size={16} className="m-v2-icon" />
-                    </div>
-                    <div className="m-v2-value">{userDashboard.items.owned.toLocaleString()}</div>
-                    <div className="m-v2-footer">
-                      <span style={{ color: "var(--ink-3)" }}>Owned by you</span>
-                      <span className="m-divider"></span>
-                      <span style={{ color: "var(--ink-3)" }}>{userDashboard.items.shared_with_me} Shared with you</span>
-                    </div>
-                  </div>
-
-                  <div className="metric-v2-card" style={{ transitionDelay: "0.2s" }}>
-                    <div className="m-v2-header">
-                      <span className="m-v2-title">Current Role</span>
-                      <ShieldIcon size={16} className="m-v2-icon" />
-                    </div>
-                    <div className="m-v2-value" style={{ textTransform: "capitalize" }}>{userDashboard.role}</div>
-                    <div className="m-v2-footer">
-                      <span style={{ color: "var(--ink-3)" }}>{userDashboard.permissions.length} Active permissions</span>
-                    </div>
-                  </div>
-
-                  <div className="metric-v2-card" style={{ transitionDelay: "0.25s" }}>
-                    <div className="m-v2-header">
-                      <span className="m-v2-title">24H Actions</span>
-                      <ActivityIcon size={16} className="m-v2-icon" />
-                    </div>
-                    <div className="m-v2-value">
-                      {(userDashboard.activityLast24h.uploads + userDashboard.activityLast24h.downloads + userDashboard.activityLast24h.updates + userDashboard.activityLast24h.deletes).toLocaleString()}
-                    </div>
-                    <div className="m-v2-footer">
-                      <span style={{ color: "var(--ink-3)" }}>{userDashboard.activityLast24h.logins} Logins</span>
-                      <span className="m-divider"></span>
-                      <span style={{ color: "var(--ink-3)" }}>{userDashboard.activityLast24h.shares} Shares</span>
-                    </div>
-                  </div>
-                </section>
-
-                <section className="bento-v2-grid">
-                  <div className="panel-v2">
-                    <div className="panel-v2-header">
-                      <h2>Top Actions ({DASHBOARD_RANGE_LABELS[dashboardRange]})</h2>
-                      <button className="btn-ghost" style={{ padding: 4 }}><ActivityIcon size={16} /></button>
-                    </div>
-                    <div className="action-v2-list">
-                      {userDashboard.topActions7d.length === 0 ? (
-                        <div style={{ color: "var(--ink-4)", fontSize: 14, padding: "20px 0", textAlign: "center" }}>No recent activity.</div>
-                      ) : (
-                        userDashboard.topActions7d.map((row) => {
-                          const max = Math.max(...userDashboard.topActions7d.map((a) => a.count), 1);
-                          const width = Math.max(8, Math.round((row.count / max) * 100));
-                          const isAlert = row.action.includes("failed") || row.action.includes("delete");
-                          return (
-                            <div className="action-v2-item" key={row.action}>
-                              <div className="a-v2-info">
-                                <span className={`a-v2-name ${isAlert ? "text-alert" : ""}`}>{formatActionLabel(row.action)}</span>
-                                <span className="a-v2-count">{row.count}</span>
-                              </div>
-                              <div className="progress-v2-track">
-                                <div
-                                  className={`progress-v2-fill ${isAlert ? "fill-red" : row.action.includes("create") || row.action.includes("upload") ? "fill-accent" : "fill-muted"}`}
-                                  style={{ width: `${width}%` }}
-                                />
-                              </div>
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="panel-v2">
-                    <div className="panel-v2-header">
-                      <h2>Activity Snapshot</h2>
-                      <span className="badge badge-neutral" style={{ fontSize: 11 }}>24h</span>
-                    </div>
-                    <div className="snapshot-v2-grid">
-                      <div className="snap-v2-box">
-                        <span className="s-v2-label">Logins</span>
-                        <span className="s-v2-val">{userDashboard.activityLast24h.logins}</span>
-                      </div>
-                      <div className="snap-v2-box">
-                        <span className="s-v2-label">Uploads</span>
-                        <span className="s-v2-val">{userDashboard.activityLast24h.uploads}</span>
-                      </div>
-                      <div className="snap-v2-box">
-                        <span className="s-v2-label">Downloads</span>
-                        <span className="s-v2-val">{userDashboard.activityLast24h.downloads}</span>
-                      </div>
-                      <div className="snap-v2-box">
-                        <span className="s-v2-label">Updates</span>
-                        <span className="s-v2-val">{userDashboard.activityLast24h.updates}</span>
-                      </div>
-                      <div className="snap-v2-box bg-alert-subtle">
-                        <span className="s-v2-label text-alert">Deletes</span>
-                        <span className="s-v2-val text-alert">{userDashboard.activityLast24h.deletes}</span>
-                      </div>
-                      <div className="snap-v2-box">
-                        <span className="s-v2-label">Shares</span>
-                        <span className="s-v2-val">{userDashboard.activityLast24h.shares}</span>
-                      </div>
-                    </div>
-                  </div>
-                </section>
-
-                <div className="panel-v2 table-panel-v2">
-                  <div className="panel-v2-header">
-                    <h2>Recent Activity</h2>
-                  </div>
-                  {(() => {
-                    const totalPages = Math.max(1, Math.ceil(userDashboard.recentActivity.length / DEFAULT_PAGE_SIZE));
-                    const currentPage = Math.min(userRecentActivityPage, totalPages);
-                    const startIndex = (currentPage - 1) * DEFAULT_PAGE_SIZE;
-                    const pagedLogs = userDashboard.recentActivity.slice(startIndex, startIndex + DEFAULT_PAGE_SIZE);
-                    if (userDashboard.recentActivity.length === 0) {
-                      return (
-                        <div style={{ color: "var(--ink-4)", fontSize: 14, padding: "40px 0", textAlign: "center" }}>No activity entries yet.</div>
-                      );
-                    }
-                    return (
-                      <>
-                        <table className="data-table">
-                          <thead>
-                            <tr>
-                              <th>Time</th>
-                              <th>Action</th>
-                              <th>Actor</th>
-                              <th>Target</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {pagedLogs.map((log) => {
-                              const isAlert = log.action.includes("failed") || log.action.includes("delete");
-                              return (
-                                <tr key={log.id} className={isAlert ? "row-danger" : ""}>
-                                  <td className="cell-muted" style={{ fontSize: 12 }}>{formatDate(log.created_at)}</td>
-                                  <td>
-                                    <span className={`pill-v2 ${isAlert ? "pill-v2-red" : "pill-v2-blue"}`}>{formatActionLabel(log.action)}</span>
-                                  </td>
-                                  <td className="t-main" style={{ fontWeight: 600 }}>{log.actor_email ?? session.user.email}</td>
-                                  <td className="cell-muted" style={{ fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
-                                    {log.target_type}{log.target_id ? ` · ${String(log.target_id).slice(0, 8)}...` : ""}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "12px 0 0", flexWrap: "wrap" }}>
-                          <span style={{ fontSize: 12, color: "var(--ink-4)" }}>
-                            Showing {startIndex + 1}-{Math.min(startIndex + DEFAULT_PAGE_SIZE, userDashboard.recentActivity.length)} of {userDashboard.recentActivity.length}
-                          </span>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            <button
-                              className="btn btn-secondary btn-sm"
-                              onClick={() => setUserRecentActivityPage((prev) => Math.max(1, prev - 1))}
-                              disabled={currentPage <= 1}
-                            >
-                              Previous
-                            </button>
-                            <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
-                              Page {currentPage} of {totalPages}
-                            </span>
-                            <button
-                              className="btn btn-secondary btn-sm"
-                              onClick={() => setUserRecentActivityPage((prev) => Math.min(totalPages, prev + 1))}
-                              disabled={currentPage >= totalPages}
-                            >
-                              Next
-                            </button>
-                          </div>
-                        </div>
-                      </>
-                    );
-                  })()}
-                </div>
-              </>
-            ) : (
-              <div className="panel" style={{ textAlign: "center", padding: "56px 0", color: "var(--ink-3)" }}>
-                Dashboard data is unavailable.
-              </div>
-            )}
-          </div>
+          <DashboardPage
+            dashboardLoading={dashboardLoading}
+            isAdmin={isAdmin}
+            dashboard={dashboard}
+            userDashboard={userDashboard}
+            dashboardError={dashboardError}
+            CalendarIcon={CalendarIcon}
+            dashboardRange={dashboardRange}
+            setDashboardRange={setDashboardRange}
+            DASHBOARD_RANGE_OPTIONS={DASHBOARD_RANGE_OPTIONS}
+            DASHBOARD_RANGE_LABELS={DASHBOARD_RANGE_LABELS}
+            refreshDashboard={refreshDashboard}
+            RefreshCwIcon={RefreshCwIcon}
+            UsersIcon={UsersIcon}
+            LayersIcon={LayersIcon}
+            KeyIcon={KeyIcon}
+            ShieldAlertIcon={ShieldAlertIcon}
+            ShieldIcon={ShieldIcon}
+            ActivityIcon={ActivityIcon}
+            SearchIcon={SearchIcon}
+            ChevronIcon={ChevronIcon}
+            auditSearch={auditSearch}
+            setAuditSearch={setAuditSearch}
+            auditActionFilter={auditActionFilter}
+            setAuditActionFilter={setAuditActionFilter}
+            formatActionLabel={formatActionLabel}
+            formatDate={formatDate}
+            users={users}
+            DEFAULT_PAGE_SIZE={DEFAULT_PAGE_SIZE}
+            dashboardAuditPage={dashboardAuditPage}
+            setDashboardAuditPage={setDashboardAuditPage}
+            userRecentActivityPage={userRecentActivityPage}
+            setUserRecentActivityPage={setUserRecentActivityPage}
+            session={session}
+          />
         )}
 
         {/* ---- USERS TAB ---- */}
         {tab === "Users" && (
-          <div className="panel">
-            <div style={{ display: "flex", justifyContent: "flex-end", padding: "12px 16px", borderBottom: "1px solid var(--border)" }}>
-              <button className="btn btn-primary btn-sm" onClick={() => setShowCreateUser(true)}>
-                <PlusIcon /> Create User
-              </button>
-            </div>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>User / Name</th>
-                  <th>Roles</th>
-                  <th>Status</th>
-                  <th>Created</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(() => {
-                  const adminUsers = users.filter(u => !u.roles || u.roles.length === 0);
-                  const regularUsers = users.filter(u => u.roles && u.roles.length > 0);
-                  const orderedUsers = [...adminUsers, ...regularUsers];
-                  const totalPages = Math.max(1, Math.ceil(orderedUsers.length / DEFAULT_PAGE_SIZE));
-                  const currentPage = Math.min(usersPage, totalPages);
-                  const startIndex = (currentPage - 1) * DEFAULT_PAGE_SIZE;
-                  const pagedUsers = orderedUsers.slice(startIndex, startIndex + DEFAULT_PAGE_SIZE);
-                  const pagedAdminUsers = pagedUsers.filter(u => !u.roles || u.roles.length === 0);
-                  const pagedRegularUsers = pagedUsers.filter(u => u.roles && u.roles.length > 0);
-
-                  const renderRow = (user: typeof users[0]) => {
-                    const isAdminUser = !user.roles || user.roles.length === 0;
-                    return (
-                      <tr
-                        key={user.id}
-                        onClick={() => !isAdminUser && onSelectUser(user)}
-                        style={{
-                          background: selectedUser?.id === user.id ? "var(--accent-light)" : undefined,
-                          cursor: isAdminUser ? "default" : "pointer",
-                          opacity: isAdminUser ? 0.7 : 1
-                        }}
-                      >
-                        <td>
-                          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                            <div className="sidebar-avatar" style={{ width: 32, height: 32, fontSize: 12 }}>
-                              {getInitials({ firstName: user.first_name, lastName: user.last_name, email: user.email })}
-                            </div>
-                            <div style={{ display: "flex", flexDirection: "column" }}>
-                              <span className="cell-email" style={{ marginBottom: 2 }}>
-                                {user.first_name ? `${user.first_name} ${user.last_name}` : "-"}
-                              </span>
-                              <span style={{ fontSize: 12, color: "var(--ink-4)" }}>{user.email}</span>
-                            </div>
-                          </div>
-                        </td>
-                        <td>
-                          {isAdminUser ? (
-                            <span className="badge badge-accent" style={{ fontSize: 11 }}>
-                              <ShieldIcon size={11} style={{ marginRight: 3 }} /> admin
-                            </span>
-                          ) : (() => {
-                            const visibleRoles = (user.roles ?? []).filter(r => ["viewer", "editor"].includes(r));
-                            if (visibleRoles.length === 0) return <span className="cell-muted">-</span>;
-                            return visibleRoles.map(role => (
-                              <span key={role} className={`badge ${role === "editor" ? "badge-active" : "badge-disabled"}`} style={{ marginRight: 4 }}>
-                                {role}
-                              </span>
-                            ));
-                          })()}
-                        </td>
-                        <td>
-                          <span className={`badge ${user.status === "active" ? "badge-active" : "badge-disabled"}`}>
-                            {user.status}
-                          </span>
-                        </td>
-                        <td className="cell-muted">{formatDate(user.created_at)}</td>
-                        <td>
-                          {canControlSecurity ? (
-                            <button
-                              className="btn btn-ghost btn-sm"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void onForceLogoutUser(user);
-                              }}
-                              disabled={isBusy || session?.user?.id === user.id}
-                              title={
-                                session?.user?.id === user.id
-                                  ? "Cannot force-logout your active security session here"
-                                  : "Logout this user from all active sessions"
-                              }
-                            >
-                              Logout user
-                            </button>
-                          ) : (
-                            <span className="cell-muted">-</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  };
-
-                  const sectionLabel = (label: string) => (
-                    <tr key={`section-${label}`} style={{ pointerEvents: "none" }}>
-                      <td colSpan={5} style={{ padding: "8px 16px 4px", background: "var(--bg)" }}>
-                        <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-4)", letterSpacing: "0.6px", textTransform: "uppercase" }}>
-                          {label}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-
-                  return (
-                    <>
-                      {pagedAdminUsers.length > 0 && sectionLabel("Administrators")}
-                      {pagedAdminUsers.map(u => renderRow(u))}
-                      {pagedRegularUsers.length > 0 && sectionLabel("Users")}
-                      {pagedRegularUsers.map(u => renderRow(u))}
-                    </>
-                  );
-                })()}
-              </tbody>
-            </table>
-            {(() => {
-              const totalUsers = users.length;
-              const totalPages = Math.max(1, Math.ceil(totalUsers / DEFAULT_PAGE_SIZE));
-              const currentPage = Math.min(usersPage, totalPages);
-              const startIndex = (currentPage - 1) * DEFAULT_PAGE_SIZE;
-              const start = totalUsers === 0 ? 0 : startIndex + 1;
-              const end = Math.min(startIndex + DEFAULT_PAGE_SIZE, totalUsers);
-              return (
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "12px 16px 0", flexWrap: "wrap" }}>
-                  <span style={{ fontSize: 12, color: "var(--ink-4)" }}>
-                    Showing {start}-{end} of {totalUsers}
-                  </span>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => setUsersPage((prev) => Math.max(1, prev - 1))}
-                      disabled={currentPage <= 1}
-                    >
-                      Previous
-                    </button>
-                    <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
-                      Page {currentPage} of {totalPages}
-                    </span>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => setUsersPage((prev) => Math.min(totalPages, prev + 1))}
-                      disabled={currentPage >= totalPages}
-                    >
-                      Next
-                    </button>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {selectedUser && (
-              <div className="modal-overlay" onClick={() => setSelectedUser(null)}>
-                <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 480, padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-
-                  {/* ── HEADER ── */}
-                  <header style={{ padding: "24px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-                      <div style={{
-                        width: 56, height: 56, borderRadius: "50%",
-                        background: "linear-gradient(135deg, #4f46e5, #818cf8)",
-                        color: "white", display: "flex", alignItems: "center", justifyContent: "center",
-                        fontSize: 20, fontWeight: 700, flexShrink: 0,
-                        boxShadow: "0 4px 10px rgba(99,102,241,0.3)"
-                      }}>
-                        {getInitials({ firstName: selectedUser.first_name, lastName: selectedUser.last_name, email: selectedUser.email })}
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 18, fontWeight: 600, color: "var(--ink-1)", display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                          {selectedUser.first_name ? `${selectedUser.first_name} ${selectedUser.last_name}` : "System User"}
-                          <span className={`badge ${selectedUser.status === "active" ? "badge-active" : "badge-disabled"}`} style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                            {selectedUser.status}
-                          </span>
-                        </div>
-                        <div style={{ fontSize: 14, color: "var(--ink-3)" }}>{selectedUser.email}</div>
-                      </div>
-                    </div>
-                    <button onClick={() => setSelectedUser(null)} style={{ background: "transparent", border: "none", color: "var(--ink-3)", cursor: "pointer", padding: 4, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center" }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "var(--surface)"; (e.currentTarget as HTMLButtonElement).style.color = "var(--ink-1)"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; (e.currentTarget as HTMLButtonElement).style.color = "var(--ink-3)"; }}>
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                      </svg>
-                    </button>
-                  </header>
-
-                  {/* ── BODY ── */}
-                  <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: 24, overflowY: "auto", maxHeight: "65vh" }}>
-
-                    {/* Edit Details */}
-                    <div>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12 }}>Edit User Details</div>
-                      <div style={{ display: "flex", gap: 16, marginBottom: 16 }}>
-                        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
-                          <label style={{ fontSize: 13, fontWeight: 500, color: "var(--ink-2)" }}>First Name</label>
-                          <input
-                            className="modal-input"
-                            type="text"
-                            placeholder="First Name"
-                            value={editUserFirstName}
-                            onChange={(e) => setEditUserFirstName(e.target.value)}
-                            style={{ margin: 0 }}
-                          />
-                        </div>
-                        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
-                          <label style={{ fontSize: 13, fontWeight: 500, color: "var(--ink-2)" }}>Last Name</label>
-                          <input
-                            className="modal-input"
-                            type="text"
-                            placeholder="Last Name"
-                            value={editUserLastName}
-                            onChange={(e) => setEditUserLastName(e.target.value)}
-                            style={{ margin: 0 }}
-                          />
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                        <label style={{ fontSize: 13, fontWeight: 500, color: "var(--ink-2)" }}>Email Address</label>
-                        <input
-                          className="modal-input"
-                          type="email"
-                          placeholder="Email address"
-                          value={editUserEmail}
-                          onChange={(e) => setEditUserEmail(e.target.value)}
-                          style={{ margin: 0 }}
-                        />
-                      </div>
-                    </div>
-
-                    {/* Role Dropdown */}
-                    <div>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12 }}>Manage Access Role</div>
-                      <div className="shad-select-wrapper" style={{ width: "100%" }}>
-                        <select
-                          className="shad-select modal-input"
-                          style={{ width: "100%", margin: 0 }}
-                          value={Array.from(selectedRoleIds)[0] || ""}
-                          onChange={(e) => onRequestUserAccessRoleChange(e.target.value)}
-                          disabled={isBusy}
-                        >
-                          <option value="" disabled>Select a role...</option>
-                          {roles.filter(r => ["viewer", "editor"].includes(r.name)).map(role => (
-                            <option key={role.id} value={role.id}>
-                              {role.name.charAt(0).toUpperCase() + role.name.slice(1)}
-                            </option>
-                          ))}
-                        </select>
-                        <ChevronIcon size={16} className="shad-select-caret" />
-                      </div>
-                    </div>
-
-                    {/* Account Management Dropdown */}
-                    <div>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12 }}>Account Management</div>
-                      <div className="shad-select-wrapper" style={{ width: "100%" }}>
-                        <select
-                          className="shad-select modal-input"
-                          style={{ width: "100%", margin: 0 }}
-                          value=""
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            if (val === "reset") onResetPassword(selectedUser.id);
-                            else if (val === "logout") void onForceLogoutUser(selectedUser);
-                            else if (val === "remove") setDeleteUserId(selectedUser.id);
-                            e.target.value = "";
-                          }}
-                          disabled={isBusy}
-                        >
-                          <option value="" disabled>Select an action...</option>
-                          <option value="reset">Reset Password</option>
-
-                          <option
-                            value="logout"
-                            disabled={selectedUser.id === session?.user?.id || !canControlSecurity}
-                          >
-                            Force Logout
-                          </option>
-
-                          {(() => {
-                            const isAdminUser = !selectedUser.roles || selectedUser.roles.length === 0;
-                            const isSelf = selectedUser.id === session?.user?.id;
-                            if (!isAdminUser) {
-                              return <option key="remove" value="remove" disabled={isSelf}>Remove User</option>;
-                            }
-                            return null;
-                          })()}
-                        </select>
-                        <ChevronIcon size={16} className="shad-select-caret" />
-                      </div>
-
-                      {(() => {
-                        const isAdminUser = !selectedUser.roles || selectedUser.roles.length === 0;
-                        if (isAdminUser) {
-                          return (
-                            <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderRadius: 8, background: "rgba(129,140,248,0.08)", border: "1px solid rgba(129,140,248,0.2)", fontSize: 12, color: "var(--accent)", fontWeight: 600 }}>
-                              <ShieldIcon size={14} /> Admin account — cannot be removed
-                            </div>
-                          );
-                        }
-                        return null;
-                      })()}
-                    </div>
-                  </div>
-
-                  {/* ── FOOTER ── */}
-                  <footer style={{ padding: "16px 24px", borderTop: "1px solid var(--border)", background: "var(--panel-bg)", display: "flex", justifyContent: "flex-end", gap: 12 }}>
-                    <button className="btn btn-ghost" onClick={() => setSelectedUser(null)}>Cancel</button>
-                    <button
-                      className="btn btn-primary"
-                      onClick={() => { void onDoneUserDetails(); }}
-                      disabled={isBusy || !editUserEmail.trim()}
-                    >
-                      {isBusy ? "Saving..." : isUserProfileDirty ? "Save Changes" : "Save"}
-                    </button>
-                  </footer>
-
-                </div>
-              </div>
-            )}
-
-            {resetUserId && (
-              <div className="modal-overlay" onClick={() => setResetUserId(null)}>
-                <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 400 }}>
-                  <div className="modal-title">Reset Password</div>
-                  <div className="modal-desc">
-                    Enter a new password for this user.
-                  </div>
-                  <div style={{ fontSize: 12, color: "var(--ink-4)", marginBottom: 14, padding: "10px 14px", background: "var(--surface)", borderRadius: 10, lineHeight: 1.6 }}>
-                    🔒 Must be <strong>8+ characters</strong> with uppercase, lowercase, number and special character (e.g. <code>Secure@123</code>).
-                  </div>
-
-                  <div className="input-group" style={{ marginBottom: 20 }}>
-                    <span className="input-icon"><LockIcon /></span>
-                    <input
-                      type={showResetPassword ? "text" : "password"}
-                      placeholder="New password"
-                      value={resetNewPassword}
-                      onChange={(e) => setResetNewPassword(e.target.value)}
-                      required
-                      autoFocus
-                    />
-                    <button type="button" className="input-action-btn" onClick={() => setShowResetPassword(!showResetPassword)}>
-                      {showResetPassword ? <EyeOffIcon size={18} /> : <EyeIcon size={18} />}
-                    </button>
-                  </div>
-                  <div style={{ display: "flex", gap: 12 }}>
-                    <button className="btn btn-secondary" onClick={() => setResetUserId(null)} style={{ flex: 1 }}>
-                      Cancel
-                    </button>
-                    <button className="btn btn-primary" onClick={onConfirmResetPassword} disabled={isBusy || Boolean(resetPasswordError)} style={{ flex: 1 }}>
-                      {isBusy ? "Resetting..." : "Reset Password"}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {pendingRoleChange && selectedUser && (
-              <div className="modal-overlay" onClick={() => (!isBusy ? setPendingRoleChange(null) : undefined)}>
-                <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420 }}>
-                  <div className="modal-title">Confirm role change</div>
-                  <div className="modal-desc" style={{ lineHeight: 1.6 }}>
-                    Change <strong>{selectedUser.email}</strong> from{" "}
-                    <strong>{pendingRoleChange.currentRoleName ?? "no role"}</strong> to{" "}
-                    <strong>{pendingRoleChange.roleName}</strong>?
-                  </div>
-                  <div style={{ display: "flex", gap: 12 }}>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => setPendingRoleChange(null)}
-                      disabled={isBusy}
-                      style={{ flex: 1 }}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      className="btn btn-primary btn-sm"
-                      onClick={() => {
-                        void onConfirmUserAccessRoleChange();
-                      }}
-                      disabled={isBusy}
-                      style={{ flex: 1 }}
-                    >
-                      {isBusy ? "Updating..." : "Confirm"}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {deleteUserId && (
-              <div className="modal-overlay" onClick={() => (!isBusy ? setDeleteUserId(null) : undefined)}>
-                <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420 }}>
-                  <div className="modal-title">Remove user</div>
-                  <div className="modal-desc" style={{ lineHeight: 1.6 }}>
-                    This will permanently remove <strong>{deleteUserTarget?.email ?? "this user"}</strong> and all owned data.
-                    This action cannot be undone.
-                  </div>
-                  <div style={{ display: "flex", gap: 12 }}>
-                    <button className="btn btn-secondary btn-sm" onClick={() => setDeleteUserId(null)} disabled={isBusy} style={{ flex: 1 }}>
-                      Cancel
-                    </button>
-                    <button className="btn btn-danger btn-sm" onClick={onConfirmRemoveUser} disabled={isBusy} style={{ flex: 1 }}>
-                      {isBusy ? "Removing..." : "Remove User"}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+          <UsersPage
+            setShowCreateUser={setShowCreateUser}
+            PlusIcon={PlusIcon}
+            users={users}
+            DEFAULT_PAGE_SIZE={DEFAULT_PAGE_SIZE}
+            usersPage={usersPage}
+            setUsersPage={setUsersPage}
+            onSelectUser={onSelectUser}
+            selectedUser={selectedUser}
+            getInitials={getInitials}
+            ShieldIcon={ShieldIcon}
+            canControlSecurity={canControlSecurity}
+            onForceLogoutUser={onForceLogoutUser}
+            isBusy={isBusy}
+            session={session}
+            formatDate={formatDate}
+            setSelectedUser={setSelectedUser}
+            editUserFirstName={editUserFirstName}
+            setEditUserFirstName={setEditUserFirstName}
+            editUserLastName={editUserLastName}
+            setEditUserLastName={setEditUserLastName}
+            editUserEmail={editUserEmail}
+            setEditUserEmail={setEditUserEmail}
+            selectedRoleIds={selectedRoleIds}
+            onRequestUserAccessRoleChange={onRequestUserAccessRoleChange}
+            roles={roles}
+            ChevronIcon={ChevronIcon}
+            onResetPassword={onResetPassword}
+            setDeleteUserId={setDeleteUserId}
+            onDoneUserDetails={onDoneUserDetails}
+            isUserProfileDirty={isUserProfileDirty}
+            resetUserId={resetUserId}
+            setResetUserId={setResetUserId}
+            showResetPassword={showResetPassword}
+            setShowResetPassword={setShowResetPassword}
+            resetNewPassword={resetNewPassword}
+            setResetNewPassword={setResetNewPassword}
+            LockIcon={LockIcon}
+            EyeOffIcon={EyeOffIcon}
+            EyeIcon={EyeIcon}
+            onConfirmResetPassword={onConfirmResetPassword}
+            resetPasswordError={resetPasswordError}
+            pendingRoleChange={pendingRoleChange}
+            setPendingRoleChange={setPendingRoleChange}
+            onConfirmUserAccessRoleChange={onConfirmUserAccessRoleChange}
+            deleteUserId={deleteUserId}
+            deleteUserTarget={deleteUserTarget}
+            onConfirmRemoveUser={onConfirmRemoveUser}
+          />
         )}
 
         {/* ---- ROLES TAB ---- */}
@@ -3665,885 +2906,98 @@ export default function App() {
 
         {/* ---- FILES TAB ---- */}
         {tab === "Files" && (
-          <>
-            {viewerItem ? (
-              <div className="file-viewer-shell">
-                <div className="file-viewer-header">
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <button className="btn btn-secondary btn-sm" onClick={closeViewer}>
-                      <ArrowLeftIcon /> Back to Files
-                    </button>
-                    <span className="file-viewer-title">{viewerItem.name}</span>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <button className="btn btn-secondary btn-sm" onClick={() => onDownload(viewerItem)}>
-                      <DownloadIcon /> Download
-                    </button>
-                    {viewerUrl && (
-                      <button
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => window.open(viewerUrl, "_blank", "noopener,noreferrer")}
-                      >
-                        Open Raw
-                      </button>
-                    )}
-                    {canWrite && (
-                      <button className="btn btn-secondary btn-sm" onClick={() => onOpenEdit(viewerItem)}>
-                        <EditIcon /> Edit name
-                      </button>
-                    )}
-                    {canDelete && (
-                      <button className="btn btn-danger btn-sm" onClick={() => setDeleteTarget(viewerItem)}>
-                        <TrashIcon /> Delete
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {viewerLoading ? (
-                  <div className="file-viewer-loading">Loading file preview...</div>
-                ) : viewerError ? (
-                  <div className="file-viewer-error">{viewerError}</div>
-                ) : !viewerUrl ? (
-                  <div className="file-viewer-error">Preview unavailable.</div>
-                ) : isCurrentViewerPdf ? (
-                  <div className="pdf-editor-layout">
-                    <div className="pdf-preview-pane">
-                      <div className="pdf-preview-toolbar">
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => setViewerPdfPage((prev) => Math.max(1, prev - 1))}
-                          disabled={selectedPdfPage <= 1}
-                        >
-                          Previous
-                        </button>
-                        <div className="pdf-page-indicator">
-                          Page {selectedPdfPage} of {viewerPdfPages}
-                        </div>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => setViewerPdfPage((prev) => Math.min(viewerPdfPages, prev + 1))}
-                          disabled={selectedPdfPage >= viewerPdfPages}
-                        >
-                          Next
-                        </button>
-                      </div>
-                      <div className="pdf-preview-meta">
-                        <span>Fit to width</span>
-                        <strong>{pdfScalePercent}%</strong>
-                      </div>
-                      <div className="pdf-canvas-wrap" ref={pdfCanvasWrapRef}>
-                        <canvas ref={pdfCanvasRef} className="pdf-preview-canvas" />
-                        {pdfRendering && (
-                          <div className="pdf-render-overlay">Rendering page…</div>
-                        )}
-                        {pdfRenderError && (
-                          <div className="pdf-render-overlay pdf-render-overlay-error">{pdfRenderError}</div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="file-details-pane">
-                      <h3>PDF Details</h3>
-                      <div className="file-detail-row"><span>Name</span><strong>{viewerItem.name}</strong></div>
-                      <div className="file-detail-row"><span>Type</span><strong>{viewerContentType || viewerItem.content_type || "application/pdf"}</strong></div>
-                      <div className="file-detail-row"><span>Size</span><strong>{formatBytes(viewerItem.size_bytes)}</strong></div>
-                      <div className="file-detail-row"><span>Total pages</span><strong>{viewerPdfPages}</strong></div>
-                      {viewerItem.updated_at && (
-                        <div className="file-detail-row"><span>Updated</span><strong>{formatDate(viewerItem.updated_at)}</strong></div>
-                      )}
-                      {viewerItem.owner_user_id && (() => {
-                        const owner = users.find(u => u.id === viewerItem.owner_user_id);
-                        const display = owner?.email ?? viewerItem.owner_user_id.slice(0, 8);
-                        return (
-                          <div className="file-detail-row">
-                            <span>Uploaded by</span>
-                            <strong style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                              <span style={{ width: 20, height: 20, borderRadius: 10, background: "var(--accent-light)", color: "var(--accent)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, flexShrink: 0 }}>
-                                {display[0]?.toUpperCase()}
-                              </span>
-                              {display}
-                            </strong>
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  </div>
-                ) : viewerTextPreview !== null ? (
-                  <div className="file-viewer-generic">
-                    <div className="file-text-preview">
-                      <pre>{viewerTextPreview || "(No preview available.)"}</pre>
-                    </div>
-                    <div className="file-details-pane">
-                      <h3>File Details</h3>
-                      <div className="file-detail-row"><span>Name</span><strong>{viewerItem.name}</strong></div>
-                      <div className="file-detail-row"><span>Type</span><strong>{viewerContentType || viewerItem.content_type || "Unknown"}</strong></div>
-                      <div className="file-detail-row"><span>Size</span><strong>{formatBytes(viewerItem.size_bytes)}</strong></div>
-                      {viewerItem.updated_at && (
-                        <div className="file-detail-row"><span>Updated</span><strong>{formatDate(viewerItem.updated_at)}</strong></div>
-                      )}
-                      {viewerItem.owner_user_id && (() => {
-                        const owner = users.find(u => u.id === viewerItem.owner_user_id);
-                        const display = owner?.email ?? viewerItem.owner_user_id.slice(0, 8);
-                        return (
-                          <div className="file-detail-row">
-                            <span>Uploaded by</span>
-                            <strong style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                              <span style={{ width: 20, height: 20, borderRadius: 10, background: "var(--accent-light)", color: "var(--accent)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, flexShrink: 0 }}>
-                                {display[0]?.toUpperCase()}
-                              </span>
-                              {display}
-                            </strong>
-                          </div>
-                        );
-                      })()}
-                      {viewerPreviewNote && <div className="file-preview-note">{viewerPreviewNote}</div>}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="file-viewer-generic">
-                    <div className="file-generic-preview">
-                      {viewerContentType.startsWith("image/") ? (
-                        <img src={viewerUrl} alt={viewerItem.name} className="file-image-preview" />
-                      ) : canEmbedCurrentViewer ? (
-                        <object
-                          data={viewerUrl}
-                          type={viewerContentType || "application/octet-stream"}
-                          className="file-generic-frame"
-                        >
-                          <iframe title={viewerItem.name} src={viewerUrl} className="file-generic-frame" />
-                        </object>
-                      ) : (
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            height: "100%",
-                            padding: "24px",
-                            color: "var(--ink-3)",
-                            textAlign: "center",
-                            lineHeight: 1.6
-                          }}
-                        >
-                          This file type cannot be previewed in the browser.
-                          Use Download to view it in the native app.
-                        </div>
-                      )}
-                    </div>
-                    <div className="file-details-pane">
-                      <h3>File Details</h3>
-                      <div className="file-detail-row"><span>Name</span><strong>{viewerItem.name}</strong></div>
-                      <div className="file-detail-row"><span>Type</span><strong>{viewerContentType || viewerItem.content_type || "Unknown"}</strong></div>
-                      <div className="file-detail-row"><span>Size</span><strong>{formatBytes(viewerItem.size_bytes)}</strong></div>
-                      {viewerItem.updated_at && (
-                        <div className="file-detail-row"><span>Updated</span><strong>{formatDate(viewerItem.updated_at)}</strong></div>
-                      )}
-                      {viewerItem.owner_user_id && (() => {
-                        const owner = users.find(u => u.id === viewerItem.owner_user_id);
-                        const display = owner?.email ?? viewerItem.owner_user_id.slice(0, 8);
-                        return (
-                          <div className="file-detail-row">
-                            <span>Uploaded by</span>
-                            <strong style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                              <span style={{ width: 20, height: 20, borderRadius: 10, background: "var(--accent-light)", color: "var(--accent)", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, flexShrink: 0 }}>
-                                {display[0]?.toUpperCase()}
-                              </span>
-                              {display}
-                            </strong>
-                          </div>
-                        );
-                      })()}
-                      {viewerPreviewNote && <div className="file-preview-note">{viewerPreviewNote}</div>}
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <>
-                <div className="breadcrumb">
-                  <button
-                    className={`breadcrumb-item ${path.length === 0 ? "current" : ""}`}
-                    onClick={goToRoot}
-                  >
-                    <HomeIcon /> Root
-                  </button>
-                  {path.map((crumb, index) => (
-                    <span key={crumb.id} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                      <span className="breadcrumb-sep"><ChevronIcon /></span>
-                      <button
-                        className={`breadcrumb-item ${index === path.length - 1 ? "current" : ""}`}
-                        onClick={() => goToBreadcrumb(index)}
-                      >
-                        {crumb.name}
-                      </button>
-                    </span>
-                  ))}
-                </div>
-
-                {canWrite ? (
-                  <div className="file-toolbar">
-                    <button className="btn btn-primary btn-sm" onClick={() => { setFolderName(""); setShowFolderModal(true); }} disabled={isBusy}>
-                      <PlusIcon /> New Folder
-                    </button>
-                    <label className="upload-label">
-                      <UploadIcon /> Upload Files
-                      <input
-                        type="file"
-                        multiple
-                        onChange={(e) => {
-                          const files = e.target.files;
-                          if (files?.length) onUploadFiles(files);
-                          e.currentTarget.value = "";
-                        }}
-                      />
-                    </label>
-                  </div>
-                ) : (
-                  <div style={{ padding: "8px 16px", fontSize: 13, color: "var(--ink-4)", display: "flex", alignItems: "center", gap: 6 }}>
-                    <KeyIcon /> Read-only access — you can view and download files.
-                  </div>
-                )}
-
-                <div className="panel">
-                  {items.length === 0 ? (
-                    <div style={{ textAlign: "center", padding: "48px 0", color: "var(--ink-3)" }}>
-                      <FolderIcon size={40} />
-                      <p style={{ marginTop: 12, fontSize: 15 }}>This folder is empty</p>
-                      <p style={{ fontSize: 13, color: "var(--ink-4)" }}>
-                        Create a folder or upload a file to get started.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="file-grid">
-                      {items.map((item) => (
-                        <div key={item.id} className="file-row">
-                          <div className={`file-icon-box ${item.type === "folder" ? "file-icon-folder" : "file-icon-file"}`}>
-                            {item.type === "folder" ? <FolderIcon /> : <FileIcon />}
-                          </div>
-                          <div>
-                            <div
-                              className="file-name clickable"
-                              onClick={() => (item.type === "folder" ? openFolder(item) : onOpenFile(item))}
-                            >
-                              {item.name}
-                            </div>
-                            <div className="file-type">
-                              {item.type} {item.type === "file" ? `· ${formatBytes(item.size_bytes)}` : ""}
-                            </div>
-                          </div>
-                          <div className="file-actions">
-                            {item.type === "file" && (
-                              <button className="btn btn-ghost btn-sm" onClick={() => onOpenFile(item)} title="Open">
-                                <EyeIcon size={16} />
-                              </button>
-                            )}
-                            <button className="btn btn-ghost btn-sm" onClick={() => onDownload(item)} title="Download">
-                              <DownloadIcon />
-                            </button>
-                            {canWrite && (
-                              <button className="btn btn-ghost btn-sm" onClick={() => onOpenEdit(item)} title="Edit">
-                                <EditIcon />
-                              </button>
-                            )}
-                            {canDelete && (
-                              <button className="btn btn-ghost btn-sm" onClick={() => setDeleteTarget(item)} title="Delete" style={{ color: "var(--red)" }}>
-                                <TrashIcon />
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
-
-            {/* Create Folder Modal */}
-            {showFolderModal && (
-              <div className="modal-overlay" onClick={() => setShowFolderModal(false)}>
-                <div className="modal" onClick={(e) => e.stopPropagation()}>
-                  <div className="modal-icon modal-icon-folder">
-                    <FolderIcon size={24} />
-                  </div>
-                  <div className="modal-title">Create new folder</div>
-                  <div className="modal-desc">Enter a name for your new folder.</div>
-                  <form onSubmit={(e) => { e.preventDefault(); onCreateFolder(); }}>
-                    <input
-                      className="modal-input"
-                      placeholder="Folder name"
-                      value={folderName}
-                      onChange={(e) => setFolderName(e.target.value)}
-                      autoFocus
-                      required
-                    />
-                    <div className="modal-actions">
-                      <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowFolderModal(false)}>Cancel</button>
-                      <button type="submit" className="btn btn-primary btn-sm" disabled={!folderName.trim() || isBusy}>Create</button>
-                    </div>
-                  </form>
-                </div>
-              </div>
-            )}
-
-            {/* Delete Confirmation Modal */}
-            {deleteTarget && (
-              <div className="modal-overlay" onClick={() => setDeleteTarget(null)}>
-                <div className="modal" onClick={(e) => e.stopPropagation()}>
-                  <div className="modal-icon modal-icon-danger">
-                    <TrashIcon />
-                  </div>
-                  <div className="modal-title">Delete {deleteTarget.type}</div>
-                  <div className="modal-desc">
-                    Are you sure you want to delete <strong>&ldquo;{deleteTarget.name}&rdquo;</strong>? This action cannot be undone.
-                  </div>
-                  <div className="modal-actions">
-                    <button className="btn btn-secondary btn-sm" onClick={() => setDeleteTarget(null)}>Cancel</button>
-                    <button className="btn btn-danger btn-sm" onClick={onConfirmDelete} disabled={isBusy}>Delete</button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Rename/Edit Modal */}
-            {editTarget && (
-              <div className="modal-overlay" onClick={() => setEditTarget(null)}>
-                <div className="modal" onClick={(e) => e.stopPropagation()}>
-                  <div className="modal-icon modal-icon-folder">
-                    <EditIcon size={22} />
-                  </div>
-                  <div className="modal-title">Edit {editTarget.type} name</div>
-                  <div className="modal-desc">Update the display name for this {editTarget.type}.</div>
-                  <form onSubmit={(e) => { e.preventDefault(); onConfirmEdit(); }}>
-                    <input
-                      className="modal-input"
-                      placeholder="Enter new name"
-                      value={editName}
-                      onChange={(e) => setEditName(e.target.value)}
-                      autoFocus
-                      required
-                    />
-                    <div className="modal-actions">
-                      <button type="button" className="btn btn-secondary btn-sm" onClick={() => setEditTarget(null)}>Cancel</button>
-                      <button type="submit" className="btn btn-primary btn-sm" disabled={!editName.trim() || isBusy}>Save</button>
-                    </div>
-                  </form>
-                </div>
-              </div>
-            )}
-          </>
-        )}
-
-        {/* ---- SECURITY TAB ---- */}
-        {tab === "Security" && (
-          <div className="panel" style={{ padding: 20 }}>
-            {!canControlSecurity ? (
-              <div style={{ color: "var(--ink-3)", padding: "8px 0" }}>
-                You do not have permission to use security controls.
-              </div>
-            ) : (
-              <>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
-                  <div>
-                    <h2 style={{ margin: 0, fontSize: 20, color: "var(--ink-1)" }}>Security Control Center</h2>
-                    <p style={{ margin: "6px 0 0", color: "var(--ink-3)", fontSize: 14 }}>
-                      Targeted/global logout and emergency tap-off controls.
-                    </p>
-                  </div>
-                  <button
-                    className="btn btn-secondary btn-sm"
-                    onClick={() => void refreshSecurityControlState()}
-                    disabled={securityLoading || isBusy}
-                  >
-                    <RefreshCwIcon size={14} style={{ marginRight: 4 }} />
-                    {securityLoading ? "Refreshing..." : "Refresh State"}
-                  </button>
-                </div>
-
-                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
-                  <span className={`badge ${isSecurityTokenValid ? "badge-active" : "badge-disabled"}`}>
-                    {isSecurityTokenValid ? "Security controls unlocked" : "Verification required"}
-                  </span>
-                  {isSecurityTokenValid && (
-                    <span style={{ color: "var(--ink-4)", fontSize: 12 }}>
-                      Token expires in {securityTokenRemainingSeconds}s
-                    </span>
-                  )}
-                  <button className="btn btn-primary btn-sm" onClick={openSecurityStepUpModal} disabled={stepUpBusy}>
-                    {isSecurityTokenValid ? "Re-verify identity" : "Verify identity"}
-                  </button>
-                </div>
-
-                {securityError && (
-                  <div style={{ marginBottom: 12, color: "var(--red)", fontSize: 13 }}>
-                    {securityError}
-                  </div>
-                )}
-
-                <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", marginBottom: 18 }}>
-                  <div className="panel" style={{ margin: 0 }}>
-                    <div style={{ fontSize: 12, color: "var(--ink-4)", marginBottom: 6 }}>Tap-off status</div>
-                    <div style={{ fontSize: 18, fontWeight: 700, color: securityState?.tapOffActive ? "var(--red)" : "var(--green)" }}>
-                      {securityState?.tapOffActive ? "ACTIVE" : "INACTIVE"}
-                    </div>
-                    <div style={{ marginTop: 6, fontSize: 12, color: "var(--ink-4)" }}>
-                      Started: {securityState?.tapOffStartedAt ? formatDate(securityState.tapOffStartedAt) : "-"}
-                    </div>
-                  </div>
-                  <div className="panel" style={{ margin: 0 }}>
-                    <div style={{ fontSize: 12, color: "var(--ink-4)", marginBottom: 6 }}>Global logout cutoff</div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-2)" }}>
-                      {securityState?.globalLogoutAfter ? formatDate(securityState.globalLogoutAfter) : "Not set"}
-                    </div>
-                    <div style={{ marginTop: 6, fontSize: 12, color: "var(--ink-4)" }}>
-                      Last tap-off by: {securityState?.tapOffBy ?? "-"}
-                    </div>
-                  </div>
-                </div>
-
-                <div style={{ display: "grid", gap: 12, marginBottom: 16 }}>
-                  <label style={{ fontSize: 12, color: "var(--ink-4)", fontWeight: 600 }}>Reason for security action</label>
-                  <textarea
-                    value={securityReason}
-                    onChange={(event) => setSecurityReason(event.target.value)}
-                    placeholder="Reason for audit trail..."
-                    style={{
-                      minHeight: 80,
-                      resize: "vertical",
-                      borderRadius: 10,
-                      border: "1px solid var(--border)",
-                      background: "var(--surface)",
-                      color: "var(--ink-1)",
-                      padding: "10px 12px"
-                    }}
-                  />
-                </div>
-
-                <div style={{ display: "grid", gap: 12, marginBottom: 16 }}>
-                  <label style={{ fontSize: 12, color: "var(--ink-4)", fontWeight: 600 }}>
-                    Target user for single-account logout
-                  </label>
-                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                    <select
-                      value={securityTargetUserId}
-                      onChange={(event) => setSecurityTargetUserId(event.target.value)}
-                      style={{
-                        minWidth: 260,
-                        borderRadius: 10,
-                        border: "1px solid var(--border)",
-                        background: "var(--surface)",
-                        color: "var(--ink-1)",
-                        padding: "10px 12px"
-                      }}
-                    >
-                      <option value="">Select a user...</option>
-                      {users
-                        .filter((user) => user.id !== session?.user?.id)
-                        .map((user) => (
-                          <option key={user.id} value={user.id}>
-                            {user.email}
-                          </option>
-                        ))}
-                    </select>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => void onForceLogoutSelectedUser()}
-                      disabled={isBusy || !securityTargetUserId}
-                    >
-                      Logout Selected User
-                    </button>
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <button
-                    className="btn btn-secondary btn-sm"
-                    onClick={() => void onForceLogoutEveryone()}
-                    disabled={isBusy}
-                  >
-                    Logout Everyone
-                  </button>
-                  <button
-                    className="btn btn-danger btn-sm"
-                    onClick={() => void onTapOff()}
-                    disabled={isBusy || Boolean(securityState?.tapOffActive)}
-                  >
-                    Activate Tap-Off
-                  </button>
-                  <button
-                    className="btn btn-primary btn-sm"
-                    onClick={() => void onTapOn()}
-                    disabled={isBusy || !securityState?.tapOffActive}
-                  >
-                    Restore Service
-                  </button>
-                </div>
-
-                <div style={{ marginTop: 16, fontSize: 12, color: "var(--ink-4)" }}>
-                  Tip: Use the <strong>Logout user</strong> action in the Users tab for targeted session revocation.
-                </div>
-              </>
-            )}
-          </div>
+          <FilesPage
+            viewerItem={viewerItem}
+            closeViewer={closeViewer}
+            ArrowLeftIcon={ArrowLeftIcon}
+            onDownload={onDownload}
+            DownloadIcon={DownloadIcon}
+            viewerUrl={viewerUrl}
+            canWrite={canWrite}
+            onOpenEdit={onOpenEdit}
+            EditIcon={EditIcon}
+            canDelete={canDelete}
+            setDeleteTarget={setDeleteTarget}
+            TrashIcon={TrashIcon}
+            viewerLoading={viewerLoading}
+            viewerError={viewerError}
+            isCurrentViewerPdf={isCurrentViewerPdf}
+            setViewerPdfPage={setViewerPdfPage}
+            selectedPdfPage={selectedPdfPage}
+            viewerPdfPages={viewerPdfPages}
+            pdfScalePercent={pdfScalePercent}
+            pdfCanvasWrapRef={pdfCanvasWrapRef}
+            pdfCanvasRef={pdfCanvasRef}
+            pdfRendering={pdfRendering}
+            pdfRenderError={pdfRenderError}
+            viewerContentType={viewerContentType}
+            formatBytes={formatBytes}
+            formatDate={formatDate}
+            users={users}
+            viewerTextPreview={viewerTextPreview}
+            viewerPreviewNote={viewerPreviewNote}
+            canEmbedCurrentViewer={canEmbedCurrentViewer}
+            path={path}
+            goToRoot={goToRoot}
+            HomeIcon={HomeIcon}
+            goToBreadcrumb={goToBreadcrumb}
+            ChevronIcon={ChevronIcon}
+            setFolderName={setFolderName}
+            setShowFolderModal={setShowFolderModal}
+            isBusy={isBusy}
+            PlusIcon={PlusIcon}
+            UploadIcon={UploadIcon}
+            queueFileUploadConfirmation={queueFileUploadConfirmation}
+            FolderIcon={FolderIcon}
+            queueFolderUploadConfirmation={queueFolderUploadConfirmation}
+            KeyIcon={KeyIcon}
+            items={items}
+            openFolder={openFolder}
+            onOpenFile={onOpenFile}
+            FileIcon={FileIcon}
+            EyeIcon={EyeIcon}
+            showFolderModal={showFolderModal}
+            folderName={folderName}
+            onCreateFolder={onCreateFolder}
+            pendingUpload={pendingUpload}
+            setPendingUpload={setPendingUpload}
+            onConfirmPendingUpload={onConfirmPendingUpload}
+            deleteTarget={deleteTarget}
+            onConfirmDelete={onConfirmDelete}
+            editTarget={editTarget}
+            setEditTarget={setEditTarget}
+            editName={editName}
+            setEditName={setEditName}
+            onConfirmEdit={onConfirmEdit}
+          />
         )}
 
         {/* ---- AUDIT LOGS TAB ---- */}
-        {tab === "Audit Logs" && (() => {
-          const filteredLogs = auditLogs;
-          const totalPages = Math.max(1, Math.ceil(filteredLogs.length / DEFAULT_PAGE_SIZE));
-          const currentPage = Math.min(auditPage, totalPages);
-          const startIndex = (currentPage - 1) * DEFAULT_PAGE_SIZE;
-          const pagedLogs = filteredLogs.slice(startIndex, startIndex + DEFAULT_PAGE_SIZE);
-
-          const dangerCount = filteredLogs.filter(l => getAuditCategory(l.action) === "danger").length;
-          const authCount = filteredLogs.filter(l => getAuditCategory(l.action) === "auth").length;
-          const fileCount = filteredLogs.filter(l => getAuditCategory(l.action) === "file").length;
-          const adminCount = filteredLogs.filter(l => getAuditCategory(l.action) === "admin").length;
-
-          // Build rows with date-group separators
-          const rows: Array<{ type: "separator"; label: string } | { type: "log"; log: AuditLog }> = [];
-          let lastGroup = "";
-          for (const log of pagedLogs) {
-            const group = formatDateGroup(log.created_at);
-            if (group !== lastGroup) {
-              rows.push({ type: "separator", label: group });
-              lastGroup = group;
-            }
-            rows.push({ type: "log", log });
-          }
-
-          return (
-            <div className="panel">
-              {/* Header */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: 20, flexWrap: "wrap" }}>
-                <div>
-                  <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: "var(--ink-1)" }}>Audit Activity</h2>
-                  <p style={{ margin: "6px 0 0", fontSize: 14, color: "var(--ink-3)" }}>
-                    Track who did what, when, and on which target.
-                  </p>
-                </div>
-                <button
-                  className="btn btn-secondary btn-sm"
-                  onClick={() => void refreshAuditLogs()}
-                  disabled={auditLoading}
-                >
-                  <RefreshCwIcon size={14} style={{ marginRight: 4 }} />
-                  {auditLoading ? "Refreshing..." : "Refresh"}
-                </button>
-              </div>
-
-
-              {/* Stats bar */}
-              {filteredLogs.length > 0 && (
-                <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
-                  <span style={{ fontSize: 12, color: "var(--ink-4)", fontWeight: 600 }}>
-                    {filteredLogs.length} event{filteredLogs.length !== 1 ? "s" : ""}
-                  </span>
-                  {dangerCount > 0 && (
-                    <span className="audit-stat-chip audit-stat-chip-danger">{dangerCount} danger</span>
-                  )}
-                  {authCount > 0 && (
-                    <span className="audit-stat-chip audit-stat-chip-auth">{authCount} auth</span>
-                  )}
-                  {fileCount > 0 && (
-                    <span className="audit-stat-chip audit-stat-chip-file">{fileCount} file</span>
-                  )}
-                  {adminCount > 0 && (
-                    <span className="audit-stat-chip audit-stat-chip-admin">{adminCount} admin</span>
-                  )}
-                </div>
-              )}
-
-              {/* Content */}
-              {auditError ? (
-                <div style={{ color: "var(--red)", textAlign: "center", padding: "32px 0", fontSize: 14 }}>
-                  ⚠ {auditError}
-                </div>
-              ) : auditLoading && auditLogs.length === 0 ? (
-                <div style={{ color: "var(--ink-3)", textAlign: "center", padding: "40px 0", fontSize: 14 }}>
-                  <div style={{ marginBottom: 8, opacity: 0.5 }}>⏳</div>
-                  Loading activity logs…
-                </div>
-              ) : filteredLogs.length === 0 ? (
-                <div style={{ color: "var(--ink-3)", textAlign: "center", padding: "40px 0", fontSize: 14 }}>
-                  <div style={{ fontSize: 28, marginBottom: 8 }}>🔍</div>
-                  No activity found for the selected filters.
-                </div>
-              ) : (
-                <div style={{ overflowX: "auto" }}>
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th style={{ minWidth: 160 }}>Time</th>
-                        <th style={{ minWidth: 200 }}>User / Actor</th>
-                        <th style={{ minWidth: 170 }}>Action</th>
-                        <th style={{ minWidth: 150 }}>Target</th>
-                        <th>Details</th>
-                        <th style={{ width: 36 }} />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map((row, idx) => {
-                        if (row.type === "separator") {
-                          return (
-                            <tr key={`sep-${idx}`} className="date-separator">
-                              <td colSpan={6}>{row.label}</td>
-                            </tr>
-                          );
-                        }
-                        const { log } = row;
-                        const cat = getAuditCategory(log.action);
-                        const catStyle = AUDIT_CATEGORY_STYLES[cat];
-                        const isExpanded = auditExpandedRows.has(log.id);
-                        const hasMetadata = log.metadata && Object.keys(log.metadata).length > 0;
-                        const isDanger = cat === "danger";
-                        return (
-                          <>
-                            <tr
-                              key={log.id}
-                              className={`audit-row-hover${isDanger ? " bg-alert-subtle" : ""}`}
-                              style={{ cursor: hasMetadata ? "pointer" : "default" }}
-                              onClick={() => {
-                                if (!hasMetadata) return;
-                                setAuditExpandedRows((prev) => {
-                                  const next = new Set(prev);
-                                  next.has(log.id) ? next.delete(log.id) : next.add(log.id);
-                                  return next;
-                                });
-                              }}
-                            >
-                              <td className="cell-muted" style={{ whiteSpace: "nowrap", fontSize: 12 }}>
-                                <CalendarIcon size={12} style={{ marginRight: 4, opacity: 0.5, verticalAlign: "middle" }} />
-                                {formatDate(log.created_at)}
-                              </td>
-                              <td>
-                                {log.actor_email ? (
-                                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                    <div style={{
-                                      width: 28,
-                                      height: 28,
-                                      borderRadius: "50%",
-                                      background: "var(--accent-light)",
-                                      color: "var(--accent)",
-                                      display: "flex",
-                                      alignItems: "center",
-                                      justifyContent: "center",
-                                      fontSize: 11,
-                                      fontWeight: 700,
-                                      flexShrink: 0
-                                    }}>
-                                      {log.actor_email.slice(0, 2).toUpperCase()}
-                                    </div>
-                                    <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-2)" }}>
-                                      {log.actor_email}
-                                    </span>
-                                  </div>
-                                ) : (
-                                  <span style={{ fontSize: 12, color: "var(--ink-4)", fontStyle: "italic" }}>System</span>
-                                )}
-                              </td>
-                              <td>
-                                <span
-                                  style={{
-                                    display: "inline-flex",
-                                    padding: "3px 9px",
-                                    borderRadius: 6,
-                                    fontSize: 11,
-                                    fontWeight: 600,
-                                    fontFamily: "ui-monospace, monospace",
-                                    background: catStyle.bg,
-                                    color: catStyle.color,
-                                    border: `1px solid ${catStyle.border}`,
-                                    letterSpacing: "0.01em"
-                                  }}
-                                >
-                                  {formatActionLabel(log.action)}
-                                </span>
-                              </td>
-                              <td className="cell-muted" style={{ fontSize: 12 }}>
-                                {log.target_type === "item" && log.target_id ? (() => {
-                                  const fileName = (log.metadata as any)?.name as string | undefined;
-                                  const isFolder = log.action.includes("folder") || (log.metadata as any)?.type === "folder";
-                                  const icon = isFolder ? "📁" : "📄";
-                                  return (
-                                    <button
-                                      title="Go to Files tab"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setTab("Files");
-                                        setPath([]);
-                                      }}
-                                      style={{
-                                        background: "none",
-                                        border: "none",
-                                        padding: "2px 6px",
-                                        borderRadius: 6,
-                                        cursor: "pointer",
-                                        display: "inline-flex",
-                                        alignItems: "center",
-                                        gap: 5,
-                                        color: "var(--accent)",
-                                        fontWeight: 600,
-                                        fontSize: 12,
-                                        textDecoration: "underline",
-                                        textUnderlineOffset: 2,
-                                        transition: "opacity 150ms"
-                                      }}
-                                      onMouseEnter={e => (e.currentTarget.style.opacity = "0.75")}
-                                      onMouseLeave={e => (e.currentTarget.style.opacity = "1")}
-                                    >
-                                      <span>{icon}</span>
-                                      <span>{fileName ?? `item #${String(log.target_id).slice(0, 8)}`}</span>
-                                    </button>
-                                  );
-                                })() : log.target_type ? (
-                                  <span>
-                                    <span style={{ fontWeight: 600, color: "var(--ink-3)" }}>{log.target_type}</span>
-                                    {log.target_id && (
-                                      <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, marginLeft: 6, color: "var(--ink-4)" }}>
-                                        #{String(log.target_id).slice(0, 8)}
-                                      </span>
-                                    )}
-                                  </span>
-                                ) : (
-                                  <span style={{ color: "var(--ink-4)" }}>—</span>
-                                )}
-                              </td>
-                              <td style={{ fontSize: 12, color: "var(--ink-4)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {hasMetadata ? summarizeAuditMetadata(log.metadata) : <span style={{ color: "var(--ink-4)" }}>—</span>}
-                              </td>
-                              <td style={{ textAlign: "center" }}>
-                                {hasMetadata && (
-                                  <span style={{ color: "var(--ink-4)", fontSize: 12, transition: "transform 200ms", display: "inline-block", transform: isExpanded ? "rotate(90deg)" : "none" }}>
-                                    <ChevronIcon size={14} />
-                                  </span>
-                                )}
-                              </td>
-                            </tr>
-                            {isExpanded && hasMetadata && (
-                              <tr key={`${log.id}-detail`} style={{ background: "var(--bg)" }}>
-                                <td colSpan={6} style={{ padding: "0 16px 16px 56px" }}>
-                                  <div style={{
-                                    marginTop: 10,
-                                    background: "var(--sidebar-bg)",
-                                    border: "1px solid var(--border)",
-                                    borderRadius: 10,
-                                    padding: "14px 18px",
-                                    display: "grid",
-                                    gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
-                                    gap: "10px 24px"
-                                  }}>
-                                    {Object.entries(log.metadata!).map(([key, val]) => (
-                                      <div key={key}>
-                                        <div style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.6px", marginBottom: 3 }}>
-                                          {formatActionLabel(key)}
-                                        </div>
-                                        <div style={{ fontSize: 13, color: "var(--ink-2)", fontFamily: typeof val === "string" || typeof val === "number" ? "inherit" : "ui-monospace, monospace", wordBreak: "break-word" }}>
-                                          {formatAuditMetadataValue(val)}
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </td>
-                              </tr>
-                            )}
-                          </>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "12px 0 0", flexWrap: "wrap" }}>
-                    <span style={{ fontSize: 12, color: "var(--ink-4)" }}>
-                      Showing {startIndex + 1}-{Math.min(startIndex + DEFAULT_PAGE_SIZE, filteredLogs.length)} of {filteredLogs.length}
-                    </span>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <button
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => setAuditPage((prev) => Math.max(1, prev - 1))}
-                        disabled={currentPage <= 1}
-                      >
-                        Previous
-                      </button>
-                      <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
-                        Page {currentPage} of {totalPages}
-                      </span>
-                      <button
-                        className="btn btn-secondary btn-sm"
-                        onClick={() => setAuditPage((prev) => Math.min(totalPages, prev + 1))}
-                        disabled={currentPage >= totalPages}
-                      >
-                        Next
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          );
-        })()}
-
-        {showSecurityStepUpModal && (
-          <div className="modal-overlay" onClick={() => (!stepUpBusy ? setShowSecurityStepUpModal(false) : undefined)}>
-            <div className="modal" onClick={(event) => event.stopPropagation()} style={{ maxWidth: 420 }}>
-              <div className="modal-title">Verify identity</div>
-              <div className="modal-desc">
-                Confirm your password and OTP to unlock security controls.
-              </div>
-
-              <div className="input-group" style={{ marginBottom: 12 }}>
-                <span className="input-icon"><LockIcon /></span>
-                <input
-                  type="password"
-                  placeholder="Current password"
-                  value={stepUpPassword}
-                  onChange={(event) => setStepUpPassword(event.target.value)}
-                  disabled={stepUpBusy}
-                />
-              </div>
-
-              {!stepUpOtpRequested ? (
-                <button
-                  className="btn btn-primary"
-                  onClick={() => void onRequestSecurityStepUpOtp()}
-                  disabled={stepUpBusy || !stepUpPassword}
-                  style={{ width: "100%", marginBottom: 12 }}
-                >
-                  {stepUpBusy ? "Requesting..." : "Send OTP"}
-                </button>
-              ) : (
-                <>
-                  <div className="input-group" style={{ marginBottom: 12 }}>
-                    <span className="input-icon"><MailIcon /></span>
-                    <input
-                      type="text"
-                      placeholder="Enter 6-digit OTP"
-                      value={stepUpOtp}
-                      onChange={(event) => setStepUpOtp(event.target.value)}
-                      disabled={stepUpBusy}
-                      maxLength={6}
-                    />
-                  </div>
-                  <button
-                    className="btn btn-primary"
-                    onClick={() => void onVerifySecurityStepUpOtp()}
-                    disabled={stepUpBusy || !stepUpOtp}
-                    style={{ width: "100%", marginBottom: 10 }}
-                  >
-                    {stepUpBusy ? "Verifying..." : "Verify & Unlock"}
-                  </button>
-                  <button
-                    className="btn btn-secondary btn-sm"
-                    onClick={() => void onRequestSecurityStepUpOtp()}
-                    disabled={stepUpBusy}
-                    style={{ width: "100%" }}
-                  >
-                    Resend OTP
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
+        {tab === "Audit Logs" && (
+          <AuditLogsPage
+            tab={tab}
+            auditLogs={auditLogs}
+            auditPage={auditPage}
+            setAuditPage={setAuditPage}
+            auditLoading={auditLoading}
+            auditError={auditError}
+            refreshAuditLogs={refreshAuditLogs}
+            DEFAULT_PAGE_SIZE={DEFAULT_PAGE_SIZE}
+            getAuditCategory={getAuditCategory}
+            AUDIT_CATEGORY_STYLES={AUDIT_CATEGORY_STYLES}
+            auditExpandedRows={auditExpandedRows}
+            setAuditExpandedRows={setAuditExpandedRows}
+            formatDate={formatDate}
+            formatDateGroup={formatDateGroup}
+            formatActionLabel={formatActionLabel}
+            summarizeAuditMetadata={summarizeAuditMetadata}
+            formatAuditMetadataValue={formatAuditMetadataValue}
+            CalendarIcon={CalendarIcon}
+            RefreshCwIcon={RefreshCwIcon}
+            ChevronIcon={ChevronIcon}
+            setTab={navigateToTab}
+            setPath={setPath}
+          />
         )}
 
         {/* Create User Modal */}

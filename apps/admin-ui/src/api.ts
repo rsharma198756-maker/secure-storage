@@ -820,7 +820,14 @@ export const createUser = async (
     throw new Error(data.error ?? "Failed to create user");
   }
 
-  return res.json();
+  return res.json() as Promise<{
+    id: string;
+    email: string;
+    status: string;
+    role: string;
+    reused?: boolean;
+    previousStatus?: string;
+  }>;
 };
 
 export const resetUserPassword = async (token: string, userId: string, password: string) => {

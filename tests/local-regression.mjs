@@ -337,6 +337,26 @@ async function userManagement() {
             email: `x.${uid()}@x.com`, password: "Valid@Pass1", role: "viewer"
         }, S.editorToken), 403);
     });
+
+    await test("Users", "Delete user removes DB row, same email can be re-created", async () => {
+        const recycleEmail = `recycle.${uid()}@example.com`;
+        const createFirst = assertStatus(await req("POST", "/admin/users", {
+            email: recycleEmail, password: "Recycle@Pass1", role: "viewer"
+        }, S.adminToken), 200);
+        const firstId = createFirst.body?.id;
+        assert(firstId, "first user id must be present");
+
+        assertStatus(await req("DELETE", `/admin/users/${firstId}`, null, S.adminToken), 200);
+
+        const usersAfterDelete = assertStatus(await req("GET", "/admin/users", null, S.adminToken), 200);
+        const stillExists = usersAfterDelete.body?.some?.((u) => u.email === recycleEmail);
+        assert(!stillExists, "deleted user email must not exist in users table");
+
+        const createSecond = assertStatus(await req("POST", "/admin/users", {
+            email: recycleEmail, password: "Recycle@Pass1", role: "viewer"
+        }, S.adminToken), 200);
+        assert(createSecond.body?.id && createSecond.body.id !== firstId, "recreated user id must differ from deleted user id");
+    });
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
