@@ -289,38 +289,42 @@ export default function FilesPage(props: FilesPageProps) {
             </div>
 
             {canWrite ? (
-              <div className="file-toolbar">
-                <button className="btn btn-primary btn-sm" onClick={() => { setFolderName(""); setShowFolderModal(true); }} disabled={isBusy}>
-                  <PlusIcon /> New Folder
-                </button>
-                <label className="upload-label">
-                  <UploadIcon /> Upload Files
-                  <input
-                    type="file"
-                    multiple
-                    disabled={isBusy}
-                    onChange={(e: any) => {
-                      const files = e.target.files;
-                      if (files?.length) queueFileUploadConfirmation(files);
-                      e.currentTarget.value = "";
-                    }}
-                  />
-                </label>
-                <label className="upload-label">
-                  <FolderIcon /> Upload Folder
-                  <input
-                    type="file"
-                    multiple
-                    disabled={isBusy}
-                    {...({ webkitdirectory: "", directory: "" } as any)}
-                    onChange={(e: any) => {
-                      const files = e.target.files;
-                      if (files?.length) void onFolderInputChange(files);
-                      e.currentTarget.value = "";
-                    }}
-                  />
-                </label>
-
+              <div>
+                <div className="file-toolbar">
+                  <button className="btn btn-primary btn-sm" onClick={() => { setFolderName(""); setShowFolderModal(true); }} disabled={isBusy}>
+                    <PlusIcon /> New Folder
+                  </button>
+                  <label className="upload-label">
+                    <UploadIcon /> Upload Files
+                    <input
+                      type="file"
+                      multiple
+                      disabled={isBusy}
+                      onChange={(e: any) => {
+                        const files = e.target.files;
+                        if (files?.length) queueFileUploadConfirmation(files);
+                        e.currentTarget.value = "";
+                      }}
+                    />
+                  </label>
+                  <label className="upload-label">
+                    <FolderIcon /> Upload Folder
+                    <input
+                      type="file"
+                      multiple
+                      disabled={isBusy}
+                      {...({ webkitdirectory: "", directory: "" } as any)}
+                      onChange={(e: any) => {
+                        const files = e.target.files;
+                        if (files?.length) void onFolderInputChange(files);
+                        e.currentTarget.value = "";
+                      }}
+                    />
+                  </label>
+                </div>
+                <div style={{ marginBottom: 16, fontSize: 12, color: "var(--ink-4)" }}>
+                  Tip: Drag a folder into the panel below to upload without the browser&apos;s folder-upload confirmation popup.
+                </div>
               </div>
             ) : (
               <div style={{ padding: "8px 16px", fontSize: 13, color: "var(--ink-4)", display: "flex", alignItems: "center", gap: 6 }}>

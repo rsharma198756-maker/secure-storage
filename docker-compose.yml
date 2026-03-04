@@ -60,6 +60,8 @@ services:
     build:
       context: .
       dockerfile: services/storage/Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-public.ecr.aws/docker/library/node:20-alpine}
     environment:
       PORT: 4000
       INTERNAL_TOKEN: dev-internal-token
@@ -88,6 +90,8 @@ services:
     build:
       context: .
       dockerfile: services/gateway/Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-public.ecr.aws/docker/library/node:20-alpine}
     environment:
       PORT: 3000
       STORAGE_URL: http://storage:4000
@@ -136,6 +140,8 @@ services:
     build:
       context: .
       dockerfile: apps/admin-ui/Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-public.ecr.aws/docker/library/node:20-alpine}
     environment:
       VITE_API_BASE: http://localhost:3000
     ports:

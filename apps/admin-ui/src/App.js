@@ -58,7 +58,7 @@ const SAVED_EMAILS_STORAGE_KEY = "magnus_saved_emails";
 const REMEMBER_ME_STORAGE_KEY = "magnus_remember";
 const REFRESH_SKEW_MS = 30 * 1000;
 const ACCESS_REFRESH_AHEAD_MS = 60 * 1000;
-const PROFILE_SYNC_INTERVAL_MS = 10 * 1000;
+const PROFILE_SYNC_INTERVAL_MS = 5 * 1000; // poll every 5 s so permission changes reflect quickly
 const parseStoredSession = (raw) => {
     if (!raw)
         return null;
@@ -221,20 +221,28 @@ const DASHBOARD_RANGE_LABELS = {
 };
 const DEFAULT_PAGE_SIZE = 10;
 const getTabsForRole = (roles, permissions) => {
-    const canAccessFiles = permissions.some((permission) => ["items:read", "items:write", "items:delete", "items:share"].includes(permission));
-    if (roles.includes("admin")) {
+    // Admin always gets everything
+    if (roles.includes("admin"))
         return [...ALL_TABS];
-    }
-    if (roles.some((role) => ["viewer", "editor"].includes(role))) {
-        const tabs = ["Dashboard"];
-        if (canAccessFiles)
-            tabs.push("Files");
-        return tabs;
-    }
-    const tabs = [];
-    if (canAccessFiles)
+    // For everyone else, derive tabs from what permissions they actually have.
+    // This means the admin's Permissions page directly controls which tabs appear.
+    const has = (p) => permissions.includes(p);
+    const tabs = ["Dashboard"]; // Dashboard is always visible when logged in
+    if (has("items:read") || has("items:write") || has("items:delete") || has("items:share")) {
         tabs.push("Files");
-    return tabs.length > 0 ? tabs : ["Dashboard"];
+    }
+    if (has("audit:read")) {
+        tabs.push("Audit Logs");
+    }
+    if (has("roles:manage")) {
+        tabs.push("Roles");
+        tabs.push("Permissions");
+    }
+    if (has("users:manage")) {
+        tabs.push("Users");
+    }
+    // Preserve the canonical tab order from ALL_TABS
+    return ALL_TABS.filter(t => tabs.includes(t));
 };
 const normalizeEmail = (value) => value.trim().toLowerCase();
 const formatActionLabel = (action) => action.replace(/\./g, " ").replace(/_/g, " ");
@@ -1051,13 +1059,28 @@ export default function App() {
                     const prevPerms = normalizeStringList(prev.user.permissions);
                     const nextRoles = normalizeStringList(profile.roles);
                     const nextPerms = normalizeStringList(profile.permissions);
-                    const changed = prev.user.email !== profile.email ||
+                    const rolesChanged = !isSameStringList(prevRoles, nextRoles);
+                    const permsChanged = !isSameStringList(prevPerms, nextPerms);
+                    const profileChanged = prev.user.email !== profile.email ||
                         prev.user.firstName !== profile.firstName ||
                         prev.user.lastName !== profile.lastName ||
-                        !isSameStringList(prevRoles, nextRoles) ||
-                        !isSameStringList(prevPerms, nextPerms);
-                    if (!changed)
+                        rolesChanged ||
+                        permsChanged;
+                    if (!profileChanged)
                         return prev;
+                    // ── Notify the user about access changes ─────────────────────────
+                    if (rolesChanged || permsChanged) {
+                        const prevTabs = getTabsForRole(prevRoles, prevPerms);
+                        const nextTabs = getTabsForRole(nextRoles, nextPerms);
+                        const gained = nextTabs.filter(t => !prevTabs.includes(t));
+                        const lost = prevTabs.filter(t => !nextTabs.includes(t));
+                        if (gained.length > 0) {
+                            showToast("success", "Access granted", `You now have access to: ${gained.join(", ")}`);
+                        }
+                        if (lost.length > 0) {
+                            showToast("error", "Access removed", `Your access to the following was removed: ${lost.join(", ")}`);
+                        }
+                    }
                     return {
                         ...prev,
                         user: {
@@ -1079,7 +1102,7 @@ export default function App() {
         });
         profileSyncInFlightRef.current = promise;
         return promise;
-    }, [accessToken]);
+    }, [accessToken, showToast]);
     // Rotate access token before it expires.
     useEffect(() => {
         if (!session?.accessToken)
@@ -1420,13 +1443,152 @@ export default function App() {
             setIsBusy(false);
         }
     };
+    // ---- folder tree upload (used by FilesPage drag-and-drop and input fallback) ----
+    /**
+     * Recursively reads a FileSystemDirectoryEntry and returns all files with
+     * their full relative paths (e.g. "MyFolder/sub/file.txt").
+     */
+    const readEntryTree = (entry) => {
+        return new Promise((resolve) => {
+            if (entry.isFile) {
+                entry.file((f) => resolve([{ relativePath: entry.fullPath.slice(1), file: f }]));
+            }
+            else if (entry.isDirectory) {
+                const reader = entry.createReader();
+                const allEntries = [];
+                const readBatch = () => {
+                    reader.readEntries(async (batch) => {
+                        if (batch.length === 0) {
+                            const nested = await Promise.all(allEntries.map(readEntryTree));
+                            resolve(nested.flat());
+                        }
+                        else {
+                            allEntries.push(...batch);
+                            readBatch(); // keep reading until empty batch
+                        }
+                    });
+                };
+                readBatch();
+            }
+            else {
+                resolve([]);
+            }
+        });
+    };
+    /**
+     * Upload a folder tree:
+     *  1. Collect all files with their path segments.
+     *  2. Create folders top-down, caching id by path.
+     *  3. Upload each file into its created parent.
+     */
+    const onUploadFolderTree = async (entries) => {
+        if (!accessToken || entries.length === 0)
+            return;
+        setIsBusy(true);
+        // folder-id cache: "" = currentFolderId (root of current location)
+        const folderIdCache = new Map();
+        folderIdCache.set("", currentFolderId ?? null);
+        const existingFolderLookup = new Map();
+        const toLookupKey = (parentId, folderName) => `${parentId ?? "root"}::${folderName}`;
+        const findExistingFolderId = async (parentId, folderName) => {
+            const lookupKey = toLookupKey(parentId, folderName);
+            if (existingFolderLookup.has(lookupKey)) {
+                return existingFolderLookup.get(lookupKey);
+            }
+            const siblings = await listItems(accessToken, parentId);
+            const existingFolder = siblings.find((item) => item.type === "folder" && item.name === folderName);
+            const existingId = existingFolder?.id ?? null;
+            existingFolderLookup.set(lookupKey, existingId);
+            return existingId;
+        };
+        const ensureFolder = async (segments) => {
+            if (segments.length === 0)
+                return currentFolderId ?? null;
+            const key = segments.join("/");
+            if (folderIdCache.has(key))
+                return folderIdCache.get(key);
+            const parentId = await ensureFolder(segments.slice(0, -1));
+            const folderName = segments[segments.length - 1];
+            try {
+                const created = await createFolder(accessToken, folderName, parentId);
+                const id = created?.item?.id ?? created?.id ?? null;
+                folderIdCache.set(key, id);
+                existingFolderLookup.set(toLookupKey(parentId, folderName), id);
+                return id;
+            }
+            catch (error) {
+                const message = (error?.message ?? "").toLowerCase();
+                const isDuplicate = message.includes("already exists") || message.includes("duplicate");
+                if (!isDuplicate) {
+                    throw error;
+                }
+                const existingId = await findExistingFolderId(parentId, folderName);
+                if (!existingId) {
+                    throw error;
+                }
+                folderIdCache.set(key, existingId);
+                return existingId;
+            }
+        };
+        let uploaded = 0;
+        let failed = 0;
+        try {
+            for (const { relativePath, file } of entries) {
+                const parts = relativePath.split("/").filter(Boolean);
+                if (parts.length === 0) {
+                    failed++;
+                    continue;
+                }
+                const dirSegments = parts.slice(0, -1);
+                try {
+                    const parentId = await ensureFolder(dirSegments);
+                    await createFile(accessToken, file, parentId);
+                    uploaded++;
+                }
+                catch {
+                    failed++;
+                }
+            }
+            await refreshItems(currentFolderId);
+        }
+        finally {
+            setIsBusy(false);
+        }
+        if (uploaded > 0) {
+            showToast("success", "Folder uploaded", `${uploaded} file${uploaded === 1 ? "" : "s"} uploaded, folder structure preserved.`);
+        }
+        if (failed > 0) {
+            showToast("error", "Some files failed", `${failed} file${failed === 1 ? "" : "s"} could not be uploaded.`);
+        }
+    };
+    /**
+     * Handle drag-and-drop of a folder onto the Files page.
+     * Uses DataTransferItem.webkitGetAsEntry() — no browser security dialog.
+     */
+    const onDropFolder = async (e) => {
+        e.preventDefault();
+        const items = Array.from(e.dataTransfer.items);
+        const entries = items
+            .map((item) => item.webkitGetAsEntry?.())
+            .filter(Boolean);
+        const allFiles = (await Promise.all(entries.map(readEntryTree))).flat();
+        if (allFiles.length > 0)
+            await onUploadFolderTree(allFiles);
+    };
+    /**
+     * Fallback: input[webkitdirectory] — Chrome shows a dialog, but we still
+     * preserve the folder structure using webkitRelativePath.
+     */
+    const onFolderInputChange = async (files) => {
+        const entries = Array.from(files).map((file) => ({
+            relativePath: file.webkitRelativePath || file.name,
+            file,
+        }));
+        await onUploadFolderTree(entries);
+    };
     const [pendingUpload, setPendingUpload] = useState(null);
     const queueFileUploadConfirmation = (files) => {
         setPendingUpload({ kind: "files", files });
-    };
-    const queueFolderUploadConfirmation = (files) => {
-        const firstName = files[0]?.webkitRelativePath?.split("/")[0] ?? "Selected Folder";
-        setPendingUpload({ kind: "folder", files, folderName: firstName });
     };
     const onConfirmPendingUpload = async () => {
         if (!pendingUpload)
@@ -2103,5 +2265,5 @@ export default function App() {
                                                                     flexShrink: 0
                                                                 }, children: assigned ? "✓" : "" }), _jsxs("span", { style: { display: "grid", gap: 2 }, children: [_jsx("span", { style: { fontWeight: 600, color: "var(--ink-1)" }, children: label }), _jsx("span", { style: { fontSize: 11, color: "var(--ink-4)", fontFamily: "ui-monospace, monospace" }, children: perm.key })] }), _jsx("span", { style: { marginLeft: "auto", fontSize: 12, opacity: 0.9 }, children: assigned ? "Enabled" : "Disabled" })] }, `${role.id}:${perm.id}`));
                                                 }) }))] }, role.id));
-                                }) })] })), tab === "Files" && (_jsx(FilesPage, { viewerItem: viewerItem, closeViewer: closeViewer, ArrowLeftIcon: ArrowLeftIcon, onDownload: onDownload, DownloadIcon: DownloadIcon, viewerUrl: viewerUrl, canWrite: canWrite, onOpenEdit: onOpenEdit, EditIcon: EditIcon, canDelete: canDelete, setDeleteTarget: setDeleteTarget, TrashIcon: TrashIcon, viewerLoading: viewerLoading, viewerError: viewerError, isCurrentViewerPdf: isCurrentViewerPdf, setViewerPdfPage: setViewerPdfPage, selectedPdfPage: selectedPdfPage, viewerPdfPages: viewerPdfPages, pdfScalePercent: pdfScalePercent, pdfCanvasWrapRef: pdfCanvasWrapRef, pdfCanvasRef: pdfCanvasRef, pdfRendering: pdfRendering, pdfRenderError: pdfRenderError, viewerContentType: viewerContentType, formatBytes: formatBytes, formatDate: formatDate, users: users, viewerTextPreview: viewerTextPreview, viewerPreviewNote: viewerPreviewNote, canEmbedCurrentViewer: canEmbedCurrentViewer, path: path, goToRoot: goToRoot, HomeIcon: HomeIcon, goToBreadcrumb: goToBreadcrumb, ChevronIcon: ChevronIcon, setFolderName: setFolderName, setShowFolderModal: setShowFolderModal, isBusy: isBusy, PlusIcon: PlusIcon, UploadIcon: UploadIcon, queueFileUploadConfirmation: queueFileUploadConfirmation, FolderIcon: FolderIcon, queueFolderUploadConfirmation: queueFolderUploadConfirmation, KeyIcon: KeyIcon, items: items, openFolder: openFolder, onOpenFile: onOpenFile, FileIcon: FileIcon, EyeIcon: EyeIcon, showFolderModal: showFolderModal, folderName: folderName, onCreateFolder: onCreateFolder, pendingUpload: pendingUpload, setPendingUpload: setPendingUpload, onConfirmPendingUpload: onConfirmPendingUpload, deleteTarget: deleteTarget, onConfirmDelete: onConfirmDelete, editTarget: editTarget, setEditTarget: setEditTarget, editName: editName, setEditName: setEditName, onConfirmEdit: onConfirmEdit })), tab === "Audit Logs" && (_jsx(AuditLogsPage, { tab: tab, auditLogs: auditLogs, auditPage: auditPage, setAuditPage: setAuditPage, auditLoading: auditLoading, auditError: auditError, refreshAuditLogs: refreshAuditLogs, DEFAULT_PAGE_SIZE: DEFAULT_PAGE_SIZE, getAuditCategory: getAuditCategory, AUDIT_CATEGORY_STYLES: AUDIT_CATEGORY_STYLES, auditExpandedRows: auditExpandedRows, setAuditExpandedRows: setAuditExpandedRows, formatDate: formatDate, formatDateGroup: formatDateGroup, formatActionLabel: formatActionLabel, summarizeAuditMetadata: summarizeAuditMetadata, formatAuditMetadataValue: formatAuditMetadataValue, CalendarIcon: CalendarIcon, RefreshCwIcon: RefreshCwIcon, ChevronIcon: ChevronIcon, setTab: navigateToTab, setPath: setPath })), showCreateUser && (_jsx("div", { className: "modal-overlay", onClick: () => setShowCreateUser(false), children: _jsxs("div", { className: "modal", onClick: (e) => e.stopPropagation(), children: [_jsx("div", { className: "modal-icon modal-icon-folder", children: _jsx(UsersIcon, {}) }), _jsx("div", { className: "modal-title", children: "Create new user" }), _jsx("div", { className: "modal-desc", children: "Add a new user to the system with their personal details and role." }), _jsxs("form", { onSubmit: (e) => { e.preventDefault(); onCreateUserSubmit(); }, children: [_jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }, children: [_jsx("input", { className: "modal-input", type: "text", placeholder: "First Name", value: newUserFirstName, onChange: (e) => setNewUserFirstName(e.target.value), required: true, style: { margin: 0 } }), _jsx("input", { className: "modal-input", type: "text", placeholder: "Last Name", value: newUserLastName, onChange: (e) => setNewUserLastName(e.target.value), required: true, style: { margin: 0 } })] }), _jsx("input", { className: "modal-input", type: "email", placeholder: "Email address", value: newUserEmail, onChange: (e) => setNewUserEmail(e.target.value), required: true, style: { marginBottom: 12 } }), _jsxs("div", { style: { position: "relative", marginBottom: 6 }, children: [_jsx("input", { className: "modal-input", type: showNewUserPassword ? "text" : "password", placeholder: "Password", value: newUserPassword, onChange: (e) => setNewUserPassword(e.target.value), required: true, minLength: 8, style: { margin: 0, paddingRight: 40 } }), _jsx("button", { type: "button", onClick: () => setShowNewUserPassword(!showNewUserPassword), style: { position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "var(--ink-4)", cursor: "pointer", display: "flex", alignItems: "center" }, children: showNewUserPassword ? _jsx(EyeOffIcon, { size: 18 }) : _jsx(EyeIcon, { size: 18 }) })] }), _jsxs("div", { style: { fontSize: 12, color: "var(--ink-4)", marginBottom: 12, padding: "8px 12px", background: "var(--surface)", borderRadius: 10, lineHeight: 1.6 }, children: ["\uD83D\uDD12 Min 8 chars \u00B7 Uppercase \u00B7 Lowercase \u00B7 Number \u00B7 Special char", _jsx("br", {}), _jsxs("span", { style: { color: "var(--ink-3)" }, children: ["e.g. ", _jsx("code", { children: "Secure@123" })] })] }), _jsxs("select", { className: "modal-input", value: newUserRole, onChange: (e) => setNewUserRole(e.target.value), style: { marginBottom: 12 }, children: [_jsx("option", { value: "viewer", children: "Viewer (read-only)" }), _jsx("option", { value: "editor", children: "Editor (read/write)" })] }), _jsxs("div", { className: "modal-actions", children: [_jsx("button", { type: "button", className: "btn btn-secondary btn-sm", onClick: () => setShowCreateUser(false), children: "Cancel" }), _jsx("button", { type: "submit", className: "btn btn-primary btn-sm", disabled: !newUserEmail.trim() || Boolean(newUserPasswordError) || isBusy, children: isBusy ? "Creating..." : "Create User" })] })] })] }) }))] }, tab)] }));
+                                }) })] })), tab === "Files" && (_jsx(FilesPage, { viewerItem: viewerItem, closeViewer: closeViewer, ArrowLeftIcon: ArrowLeftIcon, onDownload: onDownload, DownloadIcon: DownloadIcon, viewerUrl: viewerUrl, canWrite: canWrite, onOpenEdit: onOpenEdit, EditIcon: EditIcon, canDelete: canDelete, setDeleteTarget: setDeleteTarget, TrashIcon: TrashIcon, viewerLoading: viewerLoading, viewerError: viewerError, isCurrentViewerPdf: isCurrentViewerPdf, setViewerPdfPage: setViewerPdfPage, selectedPdfPage: selectedPdfPage, viewerPdfPages: viewerPdfPages, pdfScalePercent: pdfScalePercent, pdfCanvasWrapRef: pdfCanvasWrapRef, pdfCanvasRef: pdfCanvasRef, pdfRendering: pdfRendering, pdfRenderError: pdfRenderError, viewerContentType: viewerContentType, formatBytes: formatBytes, formatDate: formatDate, users: users, viewerTextPreview: viewerTextPreview, viewerPreviewNote: viewerPreviewNote, canEmbedCurrentViewer: canEmbedCurrentViewer, path: path, goToRoot: goToRoot, HomeIcon: HomeIcon, goToBreadcrumb: goToBreadcrumb, ChevronIcon: ChevronIcon, setFolderName: setFolderName, setShowFolderModal: setShowFolderModal, isBusy: isBusy, PlusIcon: PlusIcon, UploadIcon: UploadIcon, queueFileUploadConfirmation: queueFileUploadConfirmation, FolderIcon: FolderIcon, onDropFolder: onDropFolder, onFolderInputChange: onFolderInputChange, KeyIcon: KeyIcon, items: items, openFolder: openFolder, onOpenFile: onOpenFile, FileIcon: FileIcon, EyeIcon: EyeIcon, showFolderModal: showFolderModal, folderName: folderName, onCreateFolder: onCreateFolder, pendingUpload: pendingUpload, setPendingUpload: setPendingUpload, onConfirmPendingUpload: onConfirmPendingUpload, deleteTarget: deleteTarget, onConfirmDelete: onConfirmDelete, editTarget: editTarget, setEditTarget: setEditTarget, editName: editName, setEditName: setEditName, onConfirmEdit: onConfirmEdit })), tab === "Audit Logs" && (_jsx(AuditLogsPage, { tab: tab, auditLogs: auditLogs, auditPage: auditPage, setAuditPage: setAuditPage, auditLoading: auditLoading, auditError: auditError, refreshAuditLogs: refreshAuditLogs, DEFAULT_PAGE_SIZE: DEFAULT_PAGE_SIZE, getAuditCategory: getAuditCategory, AUDIT_CATEGORY_STYLES: AUDIT_CATEGORY_STYLES, auditExpandedRows: auditExpandedRows, setAuditExpandedRows: setAuditExpandedRows, formatDate: formatDate, formatDateGroup: formatDateGroup, formatActionLabel: formatActionLabel, summarizeAuditMetadata: summarizeAuditMetadata, formatAuditMetadataValue: formatAuditMetadataValue, CalendarIcon: CalendarIcon, RefreshCwIcon: RefreshCwIcon, ChevronIcon: ChevronIcon, setTab: navigateToTab, setPath: setPath })), showCreateUser && (_jsx("div", { className: "modal-overlay", onClick: () => setShowCreateUser(false), children: _jsxs("div", { className: "modal", onClick: (e) => e.stopPropagation(), children: [_jsx("div", { className: "modal-icon modal-icon-folder", children: _jsx(UsersIcon, {}) }), _jsx("div", { className: "modal-title", children: "Create new user" }), _jsx("div", { className: "modal-desc", children: "Add a new user to the system with their personal details and role." }), _jsxs("form", { onSubmit: (e) => { e.preventDefault(); onCreateUserSubmit(); }, children: [_jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }, children: [_jsx("input", { className: "modal-input", type: "text", placeholder: "First Name", value: newUserFirstName, onChange: (e) => setNewUserFirstName(e.target.value), required: true, style: { margin: 0 } }), _jsx("input", { className: "modal-input", type: "text", placeholder: "Last Name", value: newUserLastName, onChange: (e) => setNewUserLastName(e.target.value), required: true, style: { margin: 0 } })] }), _jsx("input", { className: "modal-input", type: "email", placeholder: "Email address", value: newUserEmail, onChange: (e) => setNewUserEmail(e.target.value), required: true, style: { marginBottom: 12 } }), _jsxs("div", { style: { position: "relative", marginBottom: 6 }, children: [_jsx("input", { className: "modal-input", type: showNewUserPassword ? "text" : "password", placeholder: "Password", value: newUserPassword, onChange: (e) => setNewUserPassword(e.target.value), required: true, minLength: 8, style: { margin: 0, paddingRight: 40 } }), _jsx("button", { type: "button", onClick: () => setShowNewUserPassword(!showNewUserPassword), style: { position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "var(--ink-4)", cursor: "pointer", display: "flex", alignItems: "center" }, children: showNewUserPassword ? _jsx(EyeOffIcon, { size: 18 }) : _jsx(EyeIcon, { size: 18 }) })] }), _jsxs("div", { style: { fontSize: 12, color: "var(--ink-4)", marginBottom: 12, padding: "8px 12px", background: "var(--surface)", borderRadius: 10, lineHeight: 1.6 }, children: ["\uD83D\uDD12 Min 8 chars \u00B7 Uppercase \u00B7 Lowercase \u00B7 Number \u00B7 Special char", _jsx("br", {}), _jsxs("span", { style: { color: "var(--ink-3)" }, children: ["e.g. ", _jsx("code", { children: "Secure@123" })] })] }), _jsxs("select", { className: "modal-input", value: newUserRole, onChange: (e) => setNewUserRole(e.target.value), style: { marginBottom: 12 }, children: [_jsx("option", { value: "viewer", children: "Viewer (read-only)" }), _jsx("option", { value: "editor", children: "Editor (read/write)" })] }), _jsxs("div", { className: "modal-actions", children: [_jsx("button", { type: "button", className: "btn btn-secondary btn-sm", onClick: () => setShowCreateUser(false), children: "Cancel" }), _jsx("button", { type: "submit", className: "btn btn-primary btn-sm", disabled: !newUserEmail.trim() || Boolean(newUserPasswordError) || isBusy, children: isBusy ? "Creating..." : "Create User" })] })] })] }) }))] }, tab)] }));
 }

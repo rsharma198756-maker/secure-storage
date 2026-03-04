@@ -431,6 +431,19 @@ export const createFolder = async (token, name, parentId) => {
         body: JSON.stringify({ name, parentId: parentId ?? null })
     });
     if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        const maintenance = toApiErrorMessage(body, "");
+        if (maintenance)
+            throw new Error(maintenance);
+        if (body.error === "duplicate_name") {
+            throw new Error("A file or folder with this name already exists.");
+        }
+        if (body.error === "parent_not_found") {
+            throw new Error("Parent folder was not found.");
+        }
+        if (body.error === "forbidden") {
+            throw new Error("You do not have permission to create folders here.");
+        }
         throw new Error("Failed to create folder");
     }
     return res.json();

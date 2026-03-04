@@ -1876,6 +1876,28 @@ export default function App() {
     // folder-id cache: "" = currentFolderId (root of current location)
     const folderIdCache = new Map<string, string | null>();
     folderIdCache.set("", currentFolderId ?? null);
+    const existingFolderLookup = new Map<string, string | null>();
+
+    const toLookupKey = (parentId: string | null, folderName: string) =>
+      `${parentId ?? "root"}::${folderName}`;
+
+    const findExistingFolderId = async (
+      parentId: string | null,
+      folderName: string
+    ) => {
+      const lookupKey = toLookupKey(parentId, folderName);
+      if (existingFolderLookup.has(lookupKey)) {
+        return existingFolderLookup.get(lookupKey)!;
+      }
+
+      const siblings = await listItems(accessToken, parentId);
+      const existingFolder = siblings.find(
+        (item) => item.type === "folder" && item.name === folderName
+      );
+      const existingId = existingFolder?.id ?? null;
+      existingFolderLookup.set(lookupKey, existingId);
+      return existingId;
+    };
 
     const ensureFolder = async (segments: string[]): Promise<string | null> => {
       if (segments.length === 0) return currentFolderId ?? null;
@@ -1884,32 +1906,51 @@ export default function App() {
       const parentId = await ensureFolder(segments.slice(0, -1));
       const folderName = segments[segments.length - 1];
       try {
-        const created = await createFolder(accessToken!, folderName, parentId);
-        const id: string = created?.item?.id ?? created?.id ?? null;
+        const created = await createFolder(accessToken, folderName, parentId);
+        const id: string | null = created?.item?.id ?? created?.id ?? null;
         folderIdCache.set(key, id);
+        existingFolderLookup.set(toLookupKey(parentId, folderName), id);
         return id;
-      } catch {
-        folderIdCache.set(key, parentId); // fallback: upload into parent
-        return parentId;
+      } catch (error: any) {
+        const message = (error?.message ?? "").toLowerCase();
+        const isDuplicate =
+          message.includes("already exists") || message.includes("duplicate");
+        if (!isDuplicate) {
+          throw error;
+        }
+
+        const existingId = await findExistingFolderId(parentId, folderName);
+        if (!existingId) {
+          throw error;
+        }
+        folderIdCache.set(key, existingId);
+        return existingId;
       }
     };
 
     let uploaded = 0;
     let failed = 0;
-    for (const { relativePath, file } of entries) {
-      const parts = relativePath.split("/");
-      const dirSegments = parts.slice(0, -1);
-      try {
-        const parentId = await ensureFolder(dirSegments);
-        await createFile(accessToken!, file, parentId);
-        uploaded++;
-      } catch {
-        failed++;
+    try {
+      for (const { relativePath, file } of entries) {
+        const parts = relativePath.split("/").filter(Boolean);
+        if (parts.length === 0) {
+          failed++;
+          continue;
+        }
+        const dirSegments = parts.slice(0, -1);
+        try {
+          const parentId = await ensureFolder(dirSegments);
+          await createFile(accessToken, file, parentId);
+          uploaded++;
+        } catch {
+          failed++;
+        }
       }
-    }
 
-    await refreshItems(currentFolderId);
-    setIsBusy(false);
+      await refreshItems(currentFolderId);
+    } finally {
+      setIsBusy(false);
+    }
 
     if (uploaded > 0) {
       showToast("success", "Folder uploaded", `${uploaded} file${uploaded === 1 ? "" : "s"} uploaded, folder structure preserved.`);
