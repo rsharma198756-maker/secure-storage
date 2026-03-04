@@ -20,6 +20,32 @@ const MAINTENANCE_PAYLOAD = {
     error: "service_temporarily_unavailable",
     message: "We're performing routine service maintenance. Please try again shortly."
 };
+const parseDashboardRange = (value) => {
+    if (value === "today" || value === "yesterday" || value === "7d")
+        return value;
+    return "7d";
+};
+const startOfDay = (date) => {
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    return d;
+};
+const getDashboardRangeWindow = (range) => {
+    const now = new Date();
+    if (range === "today") {
+        return { from: startOfDay(now), to: now };
+    }
+    if (range === "yesterday") {
+        const todayStart = startOfDay(now);
+        const yesterdayStart = new Date(todayStart);
+        yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+        return { from: yesterdayStart, to: todayStart };
+    }
+    return {
+        from: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000),
+        to: now
+    };
+};
 const SECURITY_STATE_CACHE_MS = 1000;
 let securityControlsCache;
 let warnedMissingSecurityControlsTable = false;
@@ -1368,6 +1394,9 @@ app.get("/admin/audit-logs", async (request, reply) => {
 app.get("/admin/dashboard", async (request, reply) => {
     if (!(await requirePermission(request, reply, "audit:read")))
         return;
+    const query = request.query;
+    const range = parseDashboardRange(query.range);
+    const rangeWindow = getDashboardRangeWindow(range);
     const [usersRes, rolesRes, permissionsRes, itemsRes, grantsRes, last24hRes, topActionsRes, recentAuditRes] = await Promise.all([
         pool.query(`
       SELECT
@@ -1399,11 +1428,12 @@ app.get("/admin/dashboard", async (request, reply) => {
         pool.query(`
       SELECT action, COUNT(*)::int AS count
       FROM audit_logs
-      WHERE created_at >= now() - interval '7 days'
+      WHERE created_at >= $1
+        AND created_at < $2
       GROUP BY action
       ORDER BY count DESC, action ASC
       LIMIT 8
-      `),
+      `, [rangeWindow.from.toISOString(), rangeWindow.to.toISOString()]),
         pool.query(`
       SELECT
         a.id,
@@ -1415,9 +1445,11 @@ app.get("/admin/dashboard", async (request, reply) => {
         u.email AS actor_email
       FROM audit_logs a
       LEFT JOIN users u ON u.id = a.actor_user_id
+      WHERE a.created_at >= $1
+        AND a.created_at < $2
       ORDER BY a.created_at DESC
       LIMIT 12
-      `)
+      `, [rangeWindow.from.toISOString(), rangeWindow.to.toISOString()])
     ]);
     reply.send({
         users: usersRes.rows[0],
@@ -1427,7 +1459,8 @@ app.get("/admin/dashboard", async (request, reply) => {
         shares: grantsRes.rows[0],
         activityLast24h: last24hRes.rows[0],
         topActions7d: topActionsRes.rows,
-        recentAudit: recentAuditRes.rows
+        recentAudit: recentAuditRes.rows,
+        selectedRange: range
     });
 });
 app.get("/dashboard", async (request, reply) => {
@@ -1436,6 +1469,9 @@ app.get("/dashboard", async (request, reply) => {
         reply.code(401).send({ error: "unauthorized" });
         return;
     }
+    const query = request.query;
+    const range = parseDashboardRange(query.range);
+    const rangeWindow = getDashboardRangeWindow(range);
     const profile = await getUserProfile(userId);
     const primaryRole = profile.roles.includes("admin")
         ? "admin"
@@ -1487,11 +1523,12 @@ app.get("/dashboard", async (request, reply) => {
       SELECT action, COUNT(*)::int AS count
       FROM audit_logs
       WHERE actor_user_id = $1
-        AND created_at >= now() - interval '7 days'
+        AND created_at >= $2
+        AND created_at < $3
       GROUP BY action
       ORDER BY count DESC, action ASC
       LIMIT 8
-      `, [userId]),
+      `, [userId, rangeWindow.from.toISOString(), rangeWindow.to.toISOString()]),
         pool.query(`
       SELECT
         a.id,
@@ -1504,9 +1541,11 @@ app.get("/dashboard", async (request, reply) => {
       FROM audit_logs a
       LEFT JOIN users u ON u.id = a.actor_user_id
       WHERE a.actor_user_id = $1
+        AND a.created_at >= $2
+        AND a.created_at < $3
       ORDER BY a.created_at DESC
       LIMIT 12
-      `, [userId])
+      `, [userId, rangeWindow.from.toISOString(), rangeWindow.to.toISOString()])
     ]);
     reply.send({
         role: primaryRole,
@@ -1514,7 +1553,8 @@ app.get("/dashboard", async (request, reply) => {
         items: itemsRes.rows[0],
         activityLast24h: activityRes.rows[0],
         topActions7d: topActionsRes.rows,
-        recentActivity: recentActivityRes.rows
+        recentActivity: recentActivityRes.rows,
+        selectedRange: range
     });
 });
 app.patch("/admin/users/:id/status", async (request, reply) => {

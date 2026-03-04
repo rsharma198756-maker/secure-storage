@@ -620,5 +620,5 @@ export const listAuditLogs = async (token, opts) => {
     const qs = params.toString();
     return (await authFetch(token, `/admin/audit-logs${qs ? `?${qs}` : ""}`));
 };
-export const fetchDashboardSummary = (token) => authFetch(token, "/admin/dashboard");
-export const fetchUserDashboardSummary = (token) => authFetch(token, "/dashboard");
+export const fetchDashboardSummary = (token, range = "7d") => authFetch(token, `/admin/dashboard?range=${encodeURIComponent(range)}`);
+export const fetchUserDashboardSummary = (token, range = "7d") => authFetch(token, `/dashboard?range=${encodeURIComponent(range)}`);

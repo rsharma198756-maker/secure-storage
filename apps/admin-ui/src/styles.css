@@ -1954,3 +1954,115 @@ select.modal-input {
     gap: 16px;
   }
 }
+
+/* ============================================
+   SHADCN-LIKE FILTER UTILITIES
+   ============================================ */
+
+.shad-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.shad-input {
+  display: flex;
+  height: 36px;
+  width: 100%;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--ink-1);
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  box-sizing: border-box;
+}
+
+.shad-input::placeholder {
+  color: var(--ink-4);
+}
+
+.shad-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.shad-input-search {
+  padding-left: 36px;
+}
+
+.shad-search-icon {
+  position: absolute;
+  left: 10px;
+  color: var(--ink-4);
+  pointer-events: none;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shad-select-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.shad-select {
+  display: flex;
+  height: 36px;
+  width: 100%;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  padding: 8px 32px 8px 12px;
+  font-size: 13px;
+  color: var(--ink-1);
+  outline: none;
+  appearance: none;
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  box-sizing: border-box;
+}
+
+.shad-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.shad-select-caret {
+  position: absolute;
+  right: 12px;
+  pointer-events: none;
+  color: var(--ink-4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.shad-btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  height: 36px;
+  padding: 0 16px;
+  background: transparent;
+  color: var(--ink-2);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s;
+  white-space: nowrap;
+}
+
+.shad-btn-ghost:hover {
+  background: var(--border);
+  color: var(--ink-1);
+}

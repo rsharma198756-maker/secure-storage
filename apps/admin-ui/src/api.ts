@@ -783,6 +783,8 @@ export type UserDashboardSummary = {
   recentActivity: AuditLog[];
 };
 
+export type DashboardRange = "7d" | "today" | "yesterday";
+
 const mapPasswordPolicyError = (code?: string): string | null => {
   if (code === "password_min_8_chars") return "Password must be at least 8 characters.";
   if (code === "password_needs_uppercase") return "Password must include at least one uppercase letter.";
@@ -852,8 +854,8 @@ export const listAuditLogs = async (
   return (await authFetch(token, `/admin/audit-logs${qs ? `?${qs}` : ""}`)) as AuditLog[];
 };
 
-export const fetchDashboardSummary = (token: string) =>
-  authFetch(token, "/admin/dashboard") as Promise<DashboardSummary>;
+export const fetchDashboardSummary = (token: string, range: DashboardRange = "7d") =>
+  authFetch(token, `/admin/dashboard?range=${encodeURIComponent(range)}`) as Promise<DashboardSummary>;
 
-export const fetchUserDashboardSummary = (token: string) =>
-  authFetch(token, "/dashboard") as Promise<UserDashboardSummary>;
+export const fetchUserDashboardSummary = (token: string, range: DashboardRange = "7d") =>
+  authFetch(token, `/dashboard?range=${encodeURIComponent(range)}`) as Promise<UserDashboardSummary>;

@@ -11,6 +11,7 @@ import {
   forceLogoutEveryone,
   forceLogoutUser,
   fetchDashboardSummary,
+  fetchMyProfile,
   getSecurityState,
   fetchUserDashboardSummary,
   listAuditLogs,
@@ -22,6 +23,7 @@ import {
   listUsers,
   login,
   logout,
+  refreshSession as refreshAuthSession,
   requestSecurityStepUp,
   removeUser,
   resetUserPassword,
@@ -36,6 +38,7 @@ import {
 } from "./api";
 import type {
   AuditLog,
+  DashboardRange,
   DashboardSummary,
   Item,
   SecurityState,
@@ -283,6 +286,35 @@ type Session = {
   user: UserProfile;
 };
 
+const SESSION_STORAGE_KEY = "magnus_session";
+const LAST_EMAIL_STORAGE_KEY = "magnus_last_email";
+const SAVED_EMAILS_STORAGE_KEY = "magnus_saved_emails";
+const REMEMBER_ME_STORAGE_KEY = "magnus_remember";
+const REFRESH_SKEW_MS = 30 * 1000;
+const ACCESS_REFRESH_AHEAD_MS = 60 * 1000;
+const PROFILE_SYNC_INTERVAL_MS = 10 * 1000;
+
+const parseStoredSession = (raw: string | null): Session | null => {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Session;
+    if (!parsed?.accessToken || !parsed?.refreshToken || !parsed?.refreshExpiresAt) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const normalizeStringList = (values: string[] | undefined) =>
+  Array.from(
+    new Set(values?.filter((value): value is string => typeof value === "string" && value.length > 0) ?? [])
+  ).sort();
+
+const isSameStringList = (a: string[], b: string[]) =>
+  a.length === b.length && a.every((value, index) => value === b[index]);
+
 const formatDate = (value: string) => {
   const d = new Date(value);
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' · ' +
@@ -412,15 +444,38 @@ const tabDescriptions: Record<Tab, string> = {
   Security: "Run emergency controls, force logout sessions, and monitor tap-off state.",
 };
 
+const DASHBOARD_RANGE_OPTIONS: Array<{ value: DashboardRange; label: string }> = [
+  { value: "7d", label: "Last 7 Days" },
+  { value: "today", label: "Today" },
+  { value: "yesterday", label: "Yesterday" }
+];
+
+const DASHBOARD_RANGE_LABELS: Record<DashboardRange, string> = {
+  "7d": "Last 7 Days",
+  today: "Today",
+  yesterday: "Yesterday"
+};
+
+const DEFAULT_PAGE_SIZE = 10;
+
 const getTabsForRole = (roles: string[], permissions: string[]): Tab[] => {
   const canControlSecurity = permissions.includes("security:control");
+  const canAccessFiles = permissions.some((permission) =>
+    ["items:read", "items:write", "items:delete", "items:share"].includes(permission)
+  );
   if (roles.includes("admin")) {
     return canControlSecurity ? [...ALL_TABS] : ALL_TABS.filter((tab) => tab !== "Security");
   }
   if (roles.some((role) => ["viewer", "editor"].includes(role))) {
-    return canControlSecurity ? ["Dashboard", "Files", "Security"] : ["Dashboard", "Files"];
+    const tabs: Tab[] = ["Dashboard"];
+    if (canAccessFiles) tabs.push("Files");
+    if (canControlSecurity) tabs.push("Security");
+    return tabs;
   }
-  return canControlSecurity ? ["Files", "Security"] : ["Files"];
+  const tabs: Tab[] = [];
+  if (canAccessFiles) tabs.push("Files");
+  if (canControlSecurity) tabs.push("Security");
+  return tabs.length > 0 ? tabs : ["Dashboard"];
 };
 
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
@@ -627,7 +682,7 @@ const CheckSmall = ({ size = 14, color = "currentColor" }: { size?: number; colo
 
 export default function App() {
   const [email, setEmail] = useState(
-    () => localStorage.getItem("magnus_last_email") ?? ""
+    () => localStorage.getItem(LAST_EMAIL_STORAGE_KEY) ?? ""
   );
   const [password, setPassword] = useState("");
   const [otp, setOtp] = useState("");
@@ -681,6 +736,13 @@ export default function App() {
   const [userDashboard, setUserDashboard] = useState<UserDashboardSummary | null>(null);
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [dashboardRange, setDashboardRange] = useState<DashboardRange>("7d");
+  const [dashboardAuditPage, setDashboardAuditPage] = useState(1);
+  const [userRecentActivityPage, setUserRecentActivityPage] = useState(1);
+  const [auditSearch, setAuditSearch] = useState("");
+  const [auditActionFilter, setAuditActionFilter] = useState("");
+  const [usersPage, setUsersPage] = useState(1);
+  const [auditPage, setAuditPage] = useState(1);
   const [securityState, setSecurityState] = useState<SecurityState | null>(null);
   const [securityLoading, setSecurityLoading] = useState(false);
   const [securityError, setSecurityError] = useState<string | null>(null);
@@ -699,7 +761,9 @@ export default function App() {
   const [newUserRole, setNewUserRole] = useState("viewer");
   const [newUserFirstName, setNewUserFirstName] = useState("");
   const [newUserLastName, setNewUserLastName] = useState("");
-  const [rememberMe, setRememberMe] = useState(() => localStorage.getItem("magnus_remember") === "true");
+  const [rememberMe, setRememberMe] = useState(
+    () => localStorage.getItem(REMEMBER_ME_STORAGE_KEY) !== "false"
+  );
   const [showPassword, setShowPassword] = useState(false);
   const [isLoginSubmitting, setIsLoginSubmitting] = useState(false);
   const [isOtpSubmitting, setIsOtpSubmitting] = useState(false);
@@ -717,13 +781,15 @@ export default function App() {
   const [isSessionChecking, setIsSessionChecking] = useState(true);
   const [savedEmails, setSavedEmails] = useState<string[]>(() => {
     try {
-      const raw = localStorage.getItem("magnus_saved_emails");
+      const raw = localStorage.getItem(SAVED_EMAILS_STORAGE_KEY);
       return raw ? (JSON.parse(raw) as string[]) : [];
     } catch {
       return [];
     }
   });
   const viewerUrlRef = useRef<string | null>(null);
+  const refreshInFlightRef = useRef<Promise<boolean> | null>(null);
+  const profileSyncInFlightRef = useRef<Promise<void> | null>(null);
   const pdfCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const pdfCanvasWrapRef = useRef<HTMLDivElement | null>(null);
   const pdfRenderTaskRef = useRef<RenderTask | null>(null);
@@ -736,23 +802,84 @@ export default function App() {
   const newUserPasswordError = getPasswordValidationError(newUserPassword);
   const resetPasswordError = getPasswordValidationError(resetNewPassword);
 
-  // Restore session from localStorage on mount
+  // Restore session on mount and rotate access token if needed.
   useEffect(() => {
-    const saved = localStorage.getItem("magnus_session");
-    if (saved) {
-      try {
-        setSession(JSON.parse(saved));
-      } catch (e) {
-        localStorage.removeItem("magnus_session");
+    let cancelled = false;
+
+    const bootstrapSession = async () => {
+      const localRaw = localStorage.getItem(SESSION_STORAGE_KEY);
+      const tabRaw = sessionStorage.getItem(SESSION_STORAGE_KEY);
+      const localSession = parseStoredSession(localRaw);
+      const tabSession = parseStoredSession(tabRaw);
+
+      if (localRaw && !localSession) localStorage.removeItem(SESSION_STORAGE_KEY);
+      if (tabRaw && !tabSession) sessionStorage.removeItem(SESSION_STORAGE_KEY);
+
+      const candidates: Session[] = [];
+      if (localSession) candidates.push(localSession);
+      if (tabSession) candidates.push(tabSession);
+      if (candidates.length === 0) {
+        if (!cancelled) setIsSessionChecking(false);
+        return;
       }
-    }
-    setIsSessionChecking(false);
+
+      candidates.sort((a, b) => {
+        const aExp = getJwtExpiryTime(a.accessToken) ?? 0;
+        const bExp = getJwtExpiryTime(b.accessToken) ?? 0;
+        return bExp - aExp;
+      });
+      const chosen = candidates[0];
+
+      const accessExpiry = getJwtExpiryTime(chosen.accessToken);
+      if (accessExpiry && accessExpiry > Date.now() + REFRESH_SKEW_MS) {
+        if (!cancelled) {
+          setSession(chosen);
+          setIsSessionChecking(false);
+        }
+        return;
+      }
+
+      const refreshExpiry = new Date(chosen.refreshExpiresAt).getTime();
+      const refreshStillValid = Number.isFinite(refreshExpiry) && refreshExpiry > Date.now() + REFRESH_SKEW_MS;
+      if (!refreshStillValid) {
+        localStorage.removeItem(SESSION_STORAGE_KEY);
+        sessionStorage.removeItem(SESSION_STORAGE_KEY);
+        if (!cancelled) setIsSessionChecking(false);
+        return;
+      }
+
+      try {
+        const refreshed = await refreshAuthSession(chosen.refreshToken);
+        if (cancelled) return;
+        setSession(refreshed);
+        sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(refreshed));
+        localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(refreshed));
+      } catch {
+        localStorage.removeItem(SESSION_STORAGE_KEY);
+        sessionStorage.removeItem(SESSION_STORAGE_KEY);
+      } finally {
+        if (!cancelled) setIsSessionChecking(false);
+      }
+    };
+
+    void bootstrapSession();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Persist rememberMe preference
   useEffect(() => {
-    localStorage.setItem("magnus_remember", String(rememberMe));
+    localStorage.setItem(REMEMBER_ME_STORAGE_KEY, String(rememberMe));
   }, [rememberMe]);
+
+  // Keep session tokens in storage in sync with in-memory session.
+  // Persist in both storages so refresh/new-tab/window reopen all recover session reliably.
+  useEffect(() => {
+    if (!session) return;
+    sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+  }, [session]);
 
   useEffect(() => {
     if (!securityActionExpiresAt) return;
@@ -972,11 +1099,11 @@ export default function App() {
     setDashboardError(null);
     try {
       if (isAdmin) {
-        const data = await fetchDashboardSummary(accessToken);
+        const data = await fetchDashboardSummary(accessToken, dashboardRange);
         setDashboard(data);
         setUserDashboard(null);
       } else {
-        const data = await fetchUserDashboardSummary(accessToken);
+        const data = await fetchUserDashboardSummary(accessToken, dashboardRange);
         setUserDashboard(data);
         setDashboard(null);
       }
@@ -996,7 +1123,7 @@ export default function App() {
           listRoles(accessToken),
           listPermissions(accessToken),
           listRolePermissions(accessToken),
-          fetchDashboardSummary(accessToken)
+          fetchDashboardSummary(accessToken, dashboardRange)
         ]);
         setUsers(usersRes);
         setRoles(rolesRes);
@@ -1007,7 +1134,7 @@ export default function App() {
         setDashboardError(null);
         setDashboardLoading(false);
       } else {
-        const dashboardRes = await fetchUserDashboardSummary(accessToken);
+        const dashboardRes = await fetchUserDashboardSummary(accessToken, dashboardRange);
         setUserDashboard(dashboardRes);
         setDashboard(null);
         setUsers([]);
@@ -1031,28 +1158,34 @@ export default function App() {
   };
 
   const completeSessionLogin = (data: Session) => {
-    setSession(data);
+    const normalizedSession: Session = {
+      ...data,
+      user: {
+        ...data.user,
+        roles: normalizeStringList(data.user?.roles),
+        permissions: normalizeStringList(data.user?.permissions)
+      }
+    };
+
+    setSession(normalizedSession);
     setSecurityActionToken(null);
     setSecurityActionExpiresAt(null);
     setSecurityState(null);
     setSecurityError(null);
     if (rememberMe) {
-      localStorage.setItem("magnus_session", JSON.stringify(data));
-      localStorage.setItem("magnus_last_email", email);
+      localStorage.setItem(LAST_EMAIL_STORAGE_KEY, email);
       setSavedEmails((prev) => {
         const next = [email, ...prev.filter((value) => value !== email)].slice(0, 10);
-        localStorage.setItem("magnus_saved_emails", JSON.stringify(next));
+        localStorage.setItem(SAVED_EMAILS_STORAGE_KEY, JSON.stringify(next));
         return next;
       });
-    } else {
-      localStorage.removeItem("magnus_session");
     }
     setLoginStep(1);
     setOtp("");
     setPassword("");
     const userTabs = getTabsForRole(
-      data.user?.roles ?? [],
-      data.user?.permissions ?? []
+      normalizedSession.user?.roles ?? [],
+      normalizedSession.user?.permissions ?? []
     );
     setTab(userTabs.includes("Dashboard") ? "Dashboard" : "Files");
   };
@@ -1099,10 +1232,11 @@ export default function App() {
       refreshData();
       refreshItems(null);
     }
-  }, [session?.accessToken]);
+  }, [session?.accessToken, isAdmin]);
 
   const clearClientSession = useCallback(() => {
-    localStorage.removeItem("magnus_session");
+    localStorage.removeItem(SESSION_STORAGE_KEY);
+    sessionStorage.removeItem(SESSION_STORAGE_KEY);
     if (viewerUrl) URL.revokeObjectURL(viewerUrl);
     if (pdfRenderTaskRef.current) {
       pdfRenderTaskRef.current.cancel();
@@ -1156,33 +1290,144 @@ export default function App() {
     clearClientSession();
   };
 
+  const rotateAccessSession = useCallback(
+    async (showExpiryToast = true): Promise<boolean> => {
+      if (!session?.refreshToken) return false;
+      if (refreshInFlightRef.current) return refreshInFlightRef.current;
+
+      const refreshExpiry = new Date(session.refreshExpiresAt).getTime();
+      const refreshStillValid = Number.isFinite(refreshExpiry) && refreshExpiry > Date.now() + REFRESH_SKEW_MS;
+      if (!refreshStillValid) {
+        if (showExpiryToast) {
+          showToast("error", "Session expired", "Your session expired. Please sign in again.");
+        }
+        clearClientSession();
+        return false;
+      }
+
+      const promise = refreshAuthSession(session.refreshToken)
+        .then((next) => {
+          setSession(next);
+          return true;
+        })
+        .catch(() => {
+          if (showExpiryToast) {
+            showToast("error", "Session expired", "Your session expired. Please sign in again.");
+          }
+          clearClientSession();
+          return false;
+        })
+        .finally(() => {
+          refreshInFlightRef.current = null;
+        });
+
+      refreshInFlightRef.current = promise;
+      return promise;
+    },
+    [session?.refreshToken, session?.refreshExpiresAt, clearClientSession, showToast]
+  );
+
+  const syncSessionProfile = useCallback(async () => {
+    if (!accessToken) return;
+    if (profileSyncInFlightRef.current) return profileSyncInFlightRef.current;
+
+    const promise = (async () => {
+      try {
+        const profile = await fetchMyProfile(accessToken);
+        setSession((prev) => {
+          if (!prev || prev.user.id !== profile.id) return prev;
+
+          const prevRoles = normalizeStringList(prev.user.roles);
+          const prevPerms = normalizeStringList(prev.user.permissions);
+          const nextRoles = normalizeStringList(profile.roles);
+          const nextPerms = normalizeStringList(profile.permissions);
+
+          const changed =
+            prev.user.email !== profile.email ||
+            prev.user.firstName !== profile.firstName ||
+            prev.user.lastName !== profile.lastName ||
+            !isSameStringList(prevRoles, nextRoles) ||
+            !isSameStringList(prevPerms, nextPerms);
+
+          if (!changed) return prev;
+
+          return {
+            ...prev,
+            user: {
+              ...prev.user,
+              email: profile.email,
+              firstName: profile.firstName,
+              lastName: profile.lastName,
+              roles: nextRoles,
+              permissions: nextPerms
+            }
+          };
+        });
+      } catch {
+        // Ignore transient profile-sync failures; next interval/focus retries.
+      }
+    })().finally(() => {
+      profileSyncInFlightRef.current = null;
+    });
+
+    profileSyncInFlightRef.current = promise;
+    return promise;
+  }, [accessToken]);
+
+  // Rotate access token before it expires.
   useEffect(() => {
     if (!session?.accessToken) return;
     const expiryMs = getJwtExpiryTime(session.accessToken);
     if (!expiryMs) return;
 
-    const msUntilExpiry = expiryMs - Date.now();
-    const refreshToken = session.refreshToken;
-
-    if (msUntilExpiry <= 0) {
-      if (refreshToken) {
-        void logout(refreshToken).catch(() => undefined);
-      }
-      showToast("error", "Session expired", "Your session expired. Please sign in again.");
-      clearClientSession();
+    const msUntilRefresh = expiryMs - Date.now() - ACCESS_REFRESH_AHEAD_MS;
+    if (msUntilRefresh <= 0) {
+      void rotateAccessSession(false);
       return;
     }
 
     const timeoutId = window.setTimeout(() => {
-      if (refreshToken) {
-        void logout(refreshToken).catch(() => undefined);
-      }
-      showToast("error", "Session expired", "Your session expired. Please sign in again.");
-      clearClientSession();
-    }, msUntilExpiry);
+      void rotateAccessSession(false);
+    }, msUntilRefresh);
 
     return () => window.clearTimeout(timeoutId);
-  }, [session?.accessToken, session?.refreshToken, clearClientSession, showToast]);
+  }, [session?.accessToken, rotateAccessSession]);
+
+  // If user comes back to the tab near expiry, refresh immediately.
+  useEffect(() => {
+    const onForegroundCheck = () => {
+      if (document.visibilityState === "hidden" || !session?.accessToken) return;
+      const expiryMs = getJwtExpiryTime(session.accessToken);
+      if (!expiryMs) return;
+      if (expiryMs - Date.now() <= ACCESS_REFRESH_AHEAD_MS) {
+        void rotateAccessSession(false);
+      }
+    };
+
+    window.addEventListener("focus", onForegroundCheck);
+    document.addEventListener("visibilitychange", onForegroundCheck);
+    return () => {
+      window.removeEventListener("focus", onForegroundCheck);
+      document.removeEventListener("visibilitychange", onForegroundCheck);
+    };
+  }, [session?.accessToken, rotateAccessSession]);
+
+  // Sync auth session across tabs (localStorage-backed sessions).
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== SESSION_STORAGE_KEY) return;
+      if (!event.newValue) {
+        clearClientSession();
+        return;
+      }
+      const next = parseStoredSession(event.newValue);
+      if (!next) return;
+      setSession(next);
+    };
+
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [clearClientSession]);
 
   const onSelectUser = async (user: User) => {
     if (!accessToken) return;
@@ -1263,9 +1508,6 @@ export default function App() {
           }
         };
         setSession(nextSession);
-        if (rememberMe) {
-          localStorage.setItem("magnus_session", JSON.stringify(nextSession));
-        }
       }
 
       showToast("success", "User updated", "User profile information has been saved.");
@@ -1935,7 +2177,59 @@ export default function App() {
     if (tab === "Dashboard" && accessToken) {
       refreshDashboard();
     }
-  }, [tab, accessToken, isAdmin]);
+  }, [tab, accessToken, isAdmin, dashboardRange]);
+
+  useEffect(() => {
+    if (!accessToken) return;
+    void syncSessionProfile();
+
+    const intervalId = window.setInterval(() => {
+      void syncSessionProfile();
+    }, PROFILE_SYNC_INTERVAL_MS);
+
+    const onFocusOrVisible = () => {
+      if (document.visibilityState === "hidden") return;
+      void syncSessionProfile();
+    };
+
+    window.addEventListener("focus", onFocusOrVisible);
+    document.addEventListener("visibilitychange", onFocusOrVisible);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", onFocusOrVisible);
+      document.removeEventListener("visibilitychange", onFocusOrVisible);
+    };
+  }, [accessToken, syncSessionProfile]);
+
+  useEffect(() => {
+    if (!session || visibleTabs.includes(tab)) return;
+    const fallbackTab = visibleTabs.includes("Dashboard")
+      ? "Dashboard"
+      : visibleTabs[0] ?? "Files";
+    setTab(fallbackTab);
+  }, [session, tab, visibleTabs]);
+
+  useEffect(() => {
+    setDashboardAuditPage(1);
+    setUserRecentActivityPage(1);
+  }, [dashboardRange, auditSearch, auditActionFilter]);
+
+  useEffect(() => {
+    setDashboardAuditPage(1);
+  }, [dashboard?.recentAudit.length]);
+
+  useEffect(() => {
+    setUserRecentActivityPage(1);
+  }, [userDashboard?.recentActivity.length]);
+
+  useEffect(() => {
+    setUsersPage(1);
+  }, [users]);
+
+  useEffect(() => {
+    setAuditPage(1);
+    setAuditExpandedRows(new Set());
+  }, [auditLogs]);
 
   useEffect(() => {
     if (
@@ -2268,10 +2562,35 @@ export default function App() {
                     <h1>Security Overview</h1>
                     <p>High-level view of users, files, and system activity.</p>
                   </div>
-                  <div className="time-range-picker" onClick={refreshDashboard}>
+                  <div className="time-range-picker">
                     <CalendarIcon />
-                    <span>Last 7 Days</span>
-                    <ChevronIcon />
+                    <select
+                      value={dashboardRange}
+                      onChange={(event) => setDashboardRange(event.target.value as DashboardRange)}
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        color: "var(--ink-2)",
+                        fontSize: 13,
+                        fontWeight: 600,
+                        outline: "none",
+                        cursor: "pointer"
+                      }}
+                    >
+                      {DASHBOARD_RANGE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      className="btn-ghost"
+                      style={{ padding: "2px 6px" }}
+                      onClick={() => void refreshDashboard()}
+                      title="Refresh dashboard"
+                    >
+                      <RefreshCwIcon size={14} />
+                    </button>
                   </div>
                 </div>
 
@@ -2338,53 +2657,132 @@ export default function App() {
 
                 <div className="panel-v2 table-panel-v2">
                   <div className="panel-v2-header">
-                    <h2>Recent Security Activity</h2>
-                    <div style={{ display: "flex", gap: 10 }}>
-                      <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
-                        <SearchIcon style={{ position: "absolute", left: 10, color: "var(--ink-4)" }} />
+                    <h2>Recent Security Activity ({DASHBOARD_RANGE_LABELS[dashboardRange]})</h2>
+                    <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                      {/* Email / name search */}
+                      <div className="shad-input-wrapper" style={{ width: 240 }}>
+                        <div className="shad-search-icon">
+                          <SearchIcon size={16} />
+                        </div>
                         <input
                           type="text"
-                          placeholder="Search logs..."
-                          className="modal-input"
-                          style={{ margin: 0, paddingLeft: 34, width: 180, fontSize: 13, height: 34 }}
+                          placeholder="Search by name or email..."
+                          value={auditSearch}
+                          onChange={e => setAuditSearch(e.target.value)}
+                          className="shad-input shad-input-search"
                         />
                       </div>
-                      <button className="btn-ghost" style={{ border: "1px solid var(--border)", borderRadius: 8, height: 34, width: 34, padding: 0 }}>
-                        <FilterIcon size={14} />
-                      </button>
+                      {/* Action filter dropdown */}
+                      <div className="shad-select-wrapper" style={{ width: 160 }}>
+                        <select
+                          value={auditActionFilter}
+                          onChange={e => setAuditActionFilter(e.target.value)}
+                          className="shad-select"
+                        >
+                          <option value="">All actions</option>
+                          {[...new Set(dashboard.recentAudit.map(l => l.action))].sort().map(action => (
+                            <option key={action} value={action}>{formatActionLabel(action)}</option>
+                          ))}
+                        </select>
+                        <div className="shad-select-caret">
+                          <ChevronIcon size={14} />
+                        </div>
+                      </div>
+                      {/* Clear filters */}
+                      {(auditSearch || auditActionFilter) && (
+                        <button
+                          className="shad-btn-ghost"
+                          onClick={() => { setAuditSearch(""); setAuditActionFilter(""); }}
+                        >
+                          Clear
+                        </button>
+                      )}
                     </div>
                   </div>
-                  {dashboard.recentAudit.length === 0 ? (
-                    <div style={{ color: "var(--ink-4)", fontSize: 14, padding: "40px 0", textAlign: "center" }}>No security entries yet.</div>
-                  ) : (
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>Time</th>
-                          <th>Action</th>
-                          <th>Actor</th>
-                          <th>Target</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {dashboard.recentAudit.map((log) => {
-                          const isAlert = log.action.includes("failed") || log.action.includes("delete");
-                          return (
-                            <tr key={log.id} className={isAlert ? "row-danger" : ""}>
-                              <td className="cell-muted" style={{ fontSize: 12 }}>{formatDate(log.created_at)}</td>
-                              <td>
-                                <span className={`pill-v2 ${isAlert ? "pill-v2-red" : "pill-v2-blue"}`}>{formatActionLabel(log.action)}</span>
-                              </td>
-                              <td className="t-main" style={{ fontWeight: 600 }}>{log.actor_email ?? "system"}</td>
-                              <td className="cell-muted" style={{ fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
-                                {log.target_type}{log.target_id ? ` · ${String(log.target_id).slice(0, 8)}...` : ""}
-                              </td>
+                  {(() => {
+                    const q = auditSearch.toLowerCase();
+                    const filtered = dashboard.recentAudit.filter(log => {
+                      const matchesAction = !auditActionFilter || log.action === auditActionFilter;
+                      const actorUser = log.actor_email ? users.find(u => u.email === log.actor_email) : null;
+                      const fullName = actorUser?.first_name
+                        ? `${actorUser.first_name} ${actorUser.last_name ?? ""}`.trim().toLowerCase()
+                        : (log.actor_email ?? "").toLowerCase();
+                      const matchesSearch = !q || fullName.includes(q) || (log.actor_email ?? "").toLowerCase().includes(q);
+                      return matchesAction && matchesSearch;
+                    });
+                    const totalPages = Math.max(1, Math.ceil(filtered.length / DEFAULT_PAGE_SIZE));
+                    const currentPage = Math.min(dashboardAuditPage, totalPages);
+                    const startIndex = (currentPage - 1) * DEFAULT_PAGE_SIZE;
+                    const pagedLogs = filtered.slice(startIndex, startIndex + DEFAULT_PAGE_SIZE);
+                    if (filtered.length === 0) return (
+                      <div style={{ color: "var(--ink-4)", fontSize: 14, padding: "40px 0", textAlign: "center" }}>
+                        {dashboard.recentAudit.length === 0 ? "No security entries yet." : "No results match your filters."}
+                      </div>
+                    );
+                    return (
+                      <>
+                        <table className="data-table">
+                          <thead>
+                            <tr>
+                              <th>Time</th>
+                              <th>Action</th>
+                              <th>Actor</th>
+                              <th>Target</th>
                             </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  )}
+                          </thead>
+                          <tbody>
+                            {pagedLogs.map((log) => {
+                              const isAlert = log.action.includes("failed") || log.action.includes("delete");
+                              const actorUser = log.actor_email ? users.find(u => u.email === log.actor_email) : null;
+                              const actorName = actorUser?.first_name
+                                ? `${actorUser.first_name} ${actorUser.last_name ?? ""}`.trim()
+                                : log.actor_email
+                                  ? log.actor_email.split("@")[0].replace(/[._-]/g, " ").replace(/\b\w/g, c => c.toUpperCase())
+                                  : "System";
+                              return (
+                                <tr key={log.id} className={isAlert ? "row-danger" : ""}>
+                                  <td className="cell-muted" style={{ fontSize: 12 }}>{formatDate(log.created_at)}</td>
+                                  <td>
+                                    <span className={`pill-v2 ${isAlert ? "pill-v2-red" : "pill-v2-blue"}`}>{formatActionLabel(log.action)}</span>
+                                  </td>
+                                  <td className="t-main" style={{ fontWeight: 600 }}>{actorName}</td>
+                                  <td className="cell-muted" style={{ fontSize: 13 }}>
+                                    {log.target_type
+                                      ? <span style={{ textTransform: "capitalize" }}>{log.target_type}</span>
+                                      : "—"}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "12px 0 0", flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 12, color: "var(--ink-4)" }}>
+                            Showing {startIndex + 1}-{Math.min(startIndex + DEFAULT_PAGE_SIZE, filtered.length)} of {filtered.length}
+                          </span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => setDashboardAuditPage((prev) => Math.max(1, prev - 1))}
+                              disabled={currentPage <= 1}
+                            >
+                              Previous
+                            </button>
+                            <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
+                              Page {currentPage} of {totalPages}
+                            </span>
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => setDashboardAuditPage((prev) => Math.min(totalPages, prev + 1))}
+                              disabled={currentPage >= totalPages}
+                            >
+                              Next
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
               </>
             ) : !isAdmin && userDashboard ? (
@@ -2394,10 +2792,35 @@ export default function App() {
                     <h1>My Dashboard</h1>
                     <p>Live usage and activity for your account.</p>
                   </div>
-                  <div className="time-range-picker" onClick={refreshDashboard}>
+                  <div className="time-range-picker">
                     <CalendarIcon />
-                    <span>Last 7 Days</span>
-                    <ChevronIcon />
+                    <select
+                      value={dashboardRange}
+                      onChange={(event) => setDashboardRange(event.target.value as DashboardRange)}
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        color: "var(--ink-2)",
+                        fontSize: 13,
+                        fontWeight: 600,
+                        outline: "none",
+                        cursor: "pointer"
+                      }}
+                    >
+                      {DASHBOARD_RANGE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      className="btn-ghost"
+                      style={{ padding: "2px 6px" }}
+                      onClick={() => void refreshDashboard()}
+                      title="Refresh dashboard"
+                    >
+                      <RefreshCwIcon size={14} />
+                    </button>
                   </div>
                 </div>
 
@@ -2458,7 +2881,7 @@ export default function App() {
                 <section className="bento-v2-grid">
                   <div className="panel-v2">
                     <div className="panel-v2-header">
-                      <h2>Top Actions (7 Days)</h2>
+                      <h2>Top Actions ({DASHBOARD_RANGE_LABELS[dashboardRange]})</h2>
                       <button className="btn-ghost" style={{ padding: 4 }}><ActivityIcon size={16} /></button>
                     </div>
                     <div className="action-v2-list">
@@ -2526,37 +2949,72 @@ export default function App() {
                   <div className="panel-v2-header">
                     <h2>Recent Activity</h2>
                   </div>
-                  {userDashboard.recentActivity.length === 0 ? (
-                    <div style={{ color: "var(--ink-4)", fontSize: 14, padding: "40px 0", textAlign: "center" }}>No activity entries yet.</div>
-                  ) : (
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>Time</th>
-                          <th>Action</th>
-                          <th>Actor</th>
-                          <th>Target</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {userDashboard.recentActivity.map((log) => {
-                          const isAlert = log.action.includes("failed") || log.action.includes("delete");
-                          return (
-                            <tr key={log.id} className={isAlert ? "row-danger" : ""}>
-                              <td className="cell-muted" style={{ fontSize: 12 }}>{formatDate(log.created_at)}</td>
-                              <td>
-                                <span className={`pill-v2 ${isAlert ? "pill-v2-red" : "pill-v2-blue"}`}>{formatActionLabel(log.action)}</span>
-                              </td>
-                              <td className="t-main" style={{ fontWeight: 600 }}>{log.actor_email ?? session.user.email}</td>
-                              <td className="cell-muted" style={{ fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
-                                {log.target_type}{log.target_id ? ` · ${String(log.target_id).slice(0, 8)}...` : ""}
-                              </td>
+                  {(() => {
+                    const totalPages = Math.max(1, Math.ceil(userDashboard.recentActivity.length / DEFAULT_PAGE_SIZE));
+                    const currentPage = Math.min(userRecentActivityPage, totalPages);
+                    const startIndex = (currentPage - 1) * DEFAULT_PAGE_SIZE;
+                    const pagedLogs = userDashboard.recentActivity.slice(startIndex, startIndex + DEFAULT_PAGE_SIZE);
+                    if (userDashboard.recentActivity.length === 0) {
+                      return (
+                        <div style={{ color: "var(--ink-4)", fontSize: 14, padding: "40px 0", textAlign: "center" }}>No activity entries yet.</div>
+                      );
+                    }
+                    return (
+                      <>
+                        <table className="data-table">
+                          <thead>
+                            <tr>
+                              <th>Time</th>
+                              <th>Action</th>
+                              <th>Actor</th>
+                              <th>Target</th>
                             </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  )}
+                          </thead>
+                          <tbody>
+                            {pagedLogs.map((log) => {
+                              const isAlert = log.action.includes("failed") || log.action.includes("delete");
+                              return (
+                                <tr key={log.id} className={isAlert ? "row-danger" : ""}>
+                                  <td className="cell-muted" style={{ fontSize: 12 }}>{formatDate(log.created_at)}</td>
+                                  <td>
+                                    <span className={`pill-v2 ${isAlert ? "pill-v2-red" : "pill-v2-blue"}`}>{formatActionLabel(log.action)}</span>
+                                  </td>
+                                  <td className="t-main" style={{ fontWeight: 600 }}>{log.actor_email ?? session.user.email}</td>
+                                  <td className="cell-muted" style={{ fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
+                                    {log.target_type}{log.target_id ? ` · ${String(log.target_id).slice(0, 8)}...` : ""}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "12px 0 0", flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 12, color: "var(--ink-4)" }}>
+                            Showing {startIndex + 1}-{Math.min(startIndex + DEFAULT_PAGE_SIZE, userDashboard.recentActivity.length)} of {userDashboard.recentActivity.length}
+                          </span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => setUserRecentActivityPage((prev) => Math.max(1, prev - 1))}
+                              disabled={currentPage <= 1}
+                            >
+                              Previous
+                            </button>
+                            <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
+                              Page {currentPage} of {totalPages}
+                            </span>
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => setUserRecentActivityPage((prev) => Math.min(totalPages, prev + 1))}
+                              disabled={currentPage >= totalPages}
+                            >
+                              Next
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
               </>
             ) : (
@@ -2589,6 +3047,13 @@ export default function App() {
                 {(() => {
                   const adminUsers = users.filter(u => !u.roles || u.roles.length === 0);
                   const regularUsers = users.filter(u => u.roles && u.roles.length > 0);
+                  const orderedUsers = [...adminUsers, ...regularUsers];
+                  const totalPages = Math.max(1, Math.ceil(orderedUsers.length / DEFAULT_PAGE_SIZE));
+                  const currentPage = Math.min(usersPage, totalPages);
+                  const startIndex = (currentPage - 1) * DEFAULT_PAGE_SIZE;
+                  const pagedUsers = orderedUsers.slice(startIndex, startIndex + DEFAULT_PAGE_SIZE);
+                  const pagedAdminUsers = pagedUsers.filter(u => !u.roles || u.roles.length === 0);
+                  const pagedRegularUsers = pagedUsers.filter(u => u.roles && u.roles.length > 0);
 
                   const renderRow = (user: typeof users[0]) => {
                     const isAdminUser = !user.roles || user.roles.length === 0;
@@ -2673,15 +3138,49 @@ export default function App() {
 
                   return (
                     <>
-                      {adminUsers.length > 0 && sectionLabel("Administrators")}
-                      {adminUsers.map(u => renderRow(u))}
-                      {regularUsers.length > 0 && sectionLabel("Users")}
-                      {regularUsers.map(u => renderRow(u))}
+                      {pagedAdminUsers.length > 0 && sectionLabel("Administrators")}
+                      {pagedAdminUsers.map(u => renderRow(u))}
+                      {pagedRegularUsers.length > 0 && sectionLabel("Users")}
+                      {pagedRegularUsers.map(u => renderRow(u))}
                     </>
                   );
                 })()}
               </tbody>
             </table>
+            {(() => {
+              const totalUsers = users.length;
+              const totalPages = Math.max(1, Math.ceil(totalUsers / DEFAULT_PAGE_SIZE));
+              const currentPage = Math.min(usersPage, totalPages);
+              const startIndex = (currentPage - 1) * DEFAULT_PAGE_SIZE;
+              const start = totalUsers === 0 ? 0 : startIndex + 1;
+              const end = Math.min(startIndex + DEFAULT_PAGE_SIZE, totalUsers);
+              return (
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "12px 16px 0", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 12, color: "var(--ink-4)" }}>
+                    Showing {start}-{end} of {totalUsers}
+                  </span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => setUsersPage((prev) => Math.max(1, prev - 1))}
+                      disabled={currentPage <= 1}
+                    >
+                      Previous
+                    </button>
+                    <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
+                      Page {currentPage} of {totalPages}
+                    </span>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => setUsersPage((prev) => Math.min(totalPages, prev + 1))}
+                      disabled={currentPage >= totalPages}
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
 
             {selectedUser && (
               <div className="modal-overlay" onClick={() => setSelectedUser(null)}>
@@ -2761,89 +3260,78 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Role Chips */}
+                    {/* Role Dropdown */}
                     <div>
                       <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12 }}>Manage Access Role</div>
-                      <div style={{ display: "flex", gap: 12 }}>
-                        {roles.filter(r => ["viewer", "editor"].includes(r.name)).map(role => {
-                          const isActive = selectedRoleIds.has(role.id);
-                          return (
-                            <button
-                              key={role.id}
-                              onClick={() => onRequestUserAccessRoleChange(role.id)}
-                              disabled={isBusy || isActive}
-                              style={{
-                                flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-                                padding: "10px 16px", borderRadius: 8, border: `1px solid ${isActive ? "var(--accent)" : "var(--border)"}`,
-                                background: isActive ? "var(--accent-light)" : "var(--surface)",
-                                color: isActive ? "var(--accent)" : "var(--ink-3)",
-                                fontWeight: 500, fontSize: 14, cursor: isActive ? "default" : "pointer",
-                                transition: "all 0.2s", fontFamily: "inherit"
-                              }}
-                            >
-                              <span style={{
-                                width: 18, height: 18, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
-                                background: isActive ? "var(--accent)" : "rgba(255,255,255,0.1)", color: "white", fontSize: 10
-                              }}>
-                                {isActive
-                                  ? <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
-                                  : <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
-                                }
-                              </span>
-                              <span style={{ textTransform: "capitalize" }}>{role.name}</span>
-                            </button>
-                          );
-                        })}
+                      <div className="shad-select-wrapper" style={{ width: "100%" }}>
+                        <select
+                          className="shad-select modal-input"
+                          style={{ width: "100%", margin: 0 }}
+                          value={Array.from(selectedRoleIds)[0] || ""}
+                          onChange={(e) => onRequestUserAccessRoleChange(e.target.value)}
+                          disabled={isBusy}
+                        >
+                          <option value="" disabled>Select a role...</option>
+                          {roles.filter(r => ["viewer", "editor"].includes(r.name)).map(role => (
+                            <option key={role.id} value={role.id}>
+                              {role.name.charAt(0).toUpperCase() + role.name.slice(1)}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronIcon size={16} className="shad-select-caret" />
                       </div>
                     </div>
 
-                    {/* Account Management */}
+                    {/* Account Management Dropdown */}
                     <div>
                       <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12 }}>Account Management</div>
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => onResetPassword(selectedUser.id)}
-                          style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+                      <div className="shad-select-wrapper" style={{ width: "100%" }}>
+                        <select
+                          className="shad-select modal-input"
+                          style={{ width: "100%", margin: 0 }}
+                          value=""
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (val === "reset") onResetPassword(selectedUser.id);
+                            else if (val === "logout") void onForceLogoutUser(selectedUser);
+                            else if (val === "remove") setDeleteUserId(selectedUser.id);
+                            e.target.value = "";
+                          }}
+                          disabled={isBusy}
                         >
-                          <LockIcon size={16} /> Reset Password
-                        </button>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => { void onForceLogoutUser(selectedUser); }}
-                          disabled={isBusy || selectedUser.id === session?.user?.id || !canControlSecurity}
-                          title={!canControlSecurity ? "Requires security control permission" : selectedUser.id === session?.user?.id ? "Cannot logout yourself" : "Force logout this user"}
-                          style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
-                        >
-                          <LogoutIcon size={16} /> Force Logout
-                        </button>
+                          <option value="" disabled>Select an action...</option>
+                          <option value="reset">Reset Password</option>
+
+                          <option
+                            value="logout"
+                            disabled={selectedUser.id === session?.user?.id || !canControlSecurity}
+                          >
+                            Force Logout
+                          </option>
+
+                          {(() => {
+                            const isAdminUser = !selectedUser.roles || selectedUser.roles.length === 0;
+                            const isSelf = selectedUser.id === session?.user?.id;
+                            if (!isAdminUser) {
+                              return <option key="remove" value="remove" disabled={isSelf}>Remove User</option>;
+                            }
+                            return null;
+                          })()}
+                        </select>
+                        <ChevronIcon size={16} className="shad-select-caret" />
                       </div>
 
-                      {/* Remove User */}
-                      <div style={{ marginTop: 12 }}>
-                        {(() => {
-                          const isAdminUser = !selectedUser.roles || selectedUser.roles.length === 0;
-                          const isSelf = selectedUser.id === session?.user?.id;
-                          if (isAdminUser) {
-                            return (
-                              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderRadius: 8, background: "rgba(129,140,248,0.08)", border: "1px solid rgba(129,140,248,0.2)", fontSize: 12, color: "var(--accent)", fontWeight: 600 }}>
-                                <ShieldIcon size={14} /> Admin account — cannot be removed
-                              </div>
-                            );
-                          }
+                      {(() => {
+                        const isAdminUser = !selectedUser.roles || selectedUser.roles.length === 0;
+                        if (isAdminUser) {
                           return (
-                            <button
-                              className="btn btn-danger btn-sm"
-                              onClick={() => setDeleteUserId(selectedUser.id)}
-                              disabled={isBusy || isSelf}
-                              title={isSelf ? "You cannot remove your own account" : "Remove user"}
-                              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
-                            >
-                              <TrashIcon size={16} /> Remove User
-                            </button>
+                            <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderRadius: 8, background: "rgba(129,140,248,0.08)", border: "1px solid rgba(129,140,248,0.2)", fontSize: 12, color: "var(--accent)", fontWeight: 600 }}>
+                              <ShieldIcon size={14} /> Admin account — cannot be removed
+                            </div>
                           );
-                        })()}
-                      </div>
+                        }
+                        return null;
+                      })()}
                     </div>
                   </div>
 
@@ -2855,7 +3343,7 @@ export default function App() {
                       onClick={() => { void onDoneUserDetails(); }}
                       disabled={isBusy || !editUserEmail.trim()}
                     >
-                      {isBusy ? "Saving..." : isUserProfileDirty ? "Save Changes" : "Done"}
+                      {isBusy ? "Saving..." : isUserProfileDirty ? "Save Changes" : "Save"}
                     </button>
                   </footer>
 
@@ -3703,6 +4191,10 @@ export default function App() {
         {/* ---- AUDIT LOGS TAB ---- */}
         {tab === "Audit Logs" && (() => {
           const filteredLogs = auditLogs;
+          const totalPages = Math.max(1, Math.ceil(filteredLogs.length / DEFAULT_PAGE_SIZE));
+          const currentPage = Math.min(auditPage, totalPages);
+          const startIndex = (currentPage - 1) * DEFAULT_PAGE_SIZE;
+          const pagedLogs = filteredLogs.slice(startIndex, startIndex + DEFAULT_PAGE_SIZE);
 
           const dangerCount = filteredLogs.filter(l => getAuditCategory(l.action) === "danger").length;
           const authCount = filteredLogs.filter(l => getAuditCategory(l.action) === "auth").length;
@@ -3710,9 +4202,9 @@ export default function App() {
           const adminCount = filteredLogs.filter(l => getAuditCategory(l.action) === "admin").length;
 
           // Build rows with date-group separators
-          const rows: Array<{ type: "separator"; label: string } | { type: "log"; log: typeof filteredLogs[0] }> = [];
+          const rows: Array<{ type: "separator"; label: string } | { type: "log"; log: AuditLog }> = [];
           let lastGroup = "";
-          for (const log of filteredLogs) {
+          for (const log of pagedLogs) {
             const group = formatDateGroup(log.created_at);
             if (group !== lastGroup) {
               rows.push({ type: "separator", label: group });
@@ -3961,6 +4453,30 @@ export default function App() {
                       })}
                     </tbody>
                   </table>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "12px 0 0", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 12, color: "var(--ink-4)" }}>
+                      Showing {startIndex + 1}-{Math.min(startIndex + DEFAULT_PAGE_SIZE, filteredLogs.length)} of {filteredLogs.length}
+                    </span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => setAuditPage((prev) => Math.max(1, prev - 1))}
+                        disabled={currentPage <= 1}
+                      >
+                        Previous
+                      </button>
+                      <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
+                        Page {currentPage} of {totalPages}
+                      </span>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => setAuditPage((prev) => Math.min(totalPages, prev + 1))}
+                        disabled={currentPage >= totalPages}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

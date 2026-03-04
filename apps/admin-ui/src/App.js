@@ -2,7 +2,7 @@ import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-run
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import { createFile, createFolder, createUser, deleteItem, downloadItem, forceLogoutEveryone, forceLogoutUser, fetchDashboardSummary, getSecurityState, fetchUserDashboardSummary, listAuditLogs, listItems, listPermissions, listRolePermissions, listRoles, listUserRoles, listUsers, login, logout, requestSecurityStepUp, removeUser, resetUserPassword, setUserRole, tapOffService, tapOnService, updateItemName, updateUserInfo, updateRolePermissions, verifySecurityStepUp, verifyOtp } from "./api";
+import { createFile, createFolder, createUser, deleteItem, downloadItem, forceLogoutEveryone, forceLogoutUser, fetchDashboardSummary, fetchMyProfile, getSecurityState, fetchUserDashboardSummary, listAuditLogs, listItems, listPermissions, listRolePermissions, listRoles, listUserRoles, listUsers, login, logout, refreshSession as refreshAuthSession, requestSecurityStepUp, removeUser, resetUserPassword, setUserRole, tapOffService, tapOnService, updateItemName, updateUserInfo, updateRolePermissions, verifySecurityStepUp, verifyOtp } from "./api";
 import "./styles.css";
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 /* =============================================
@@ -48,6 +48,29 @@ const CalendarIcon = ({ size = 14, ...props }) => (_jsxs("svg", { ...svgBase, wi
    Types
    ============================================= */
 const ALL_TABS = ["Dashboard", "Users", "Roles", "Permissions", "Files", "Audit Logs", "Security"];
+const SESSION_STORAGE_KEY = "magnus_session";
+const LAST_EMAIL_STORAGE_KEY = "magnus_last_email";
+const SAVED_EMAILS_STORAGE_KEY = "magnus_saved_emails";
+const REMEMBER_ME_STORAGE_KEY = "magnus_remember";
+const REFRESH_SKEW_MS = 30 * 1000;
+const ACCESS_REFRESH_AHEAD_MS = 60 * 1000;
+const PROFILE_SYNC_INTERVAL_MS = 10 * 1000;
+const parseStoredSession = (raw) => {
+    if (!raw)
+        return null;
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed?.accessToken || !parsed?.refreshToken || !parsed?.refreshExpiresAt) {
+            return null;
+        }
+        return parsed;
+    }
+    catch {
+        return null;
+    }
+};
+const normalizeStringList = (values) => Array.from(new Set(values?.filter((value) => typeof value === "string" && value.length > 0) ?? [])).sort();
+const isSameStringList = (a, b) => a.length === b.length && a.every((value, index) => value === b[index]);
 const formatDate = (value) => {
     const d = new Date(value);
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' · ' +
@@ -170,15 +193,37 @@ const tabDescriptions = {
     "Audit Logs": "View a chronological log of all system activity.",
     Security: "Run emergency controls, force logout sessions, and monitor tap-off state.",
 };
+const DASHBOARD_RANGE_OPTIONS = [
+    { value: "7d", label: "Last 7 Days" },
+    { value: "today", label: "Today" },
+    { value: "yesterday", label: "Yesterday" }
+];
+const DASHBOARD_RANGE_LABELS = {
+    "7d": "Last 7 Days",
+    today: "Today",
+    yesterday: "Yesterday"
+};
+const DEFAULT_PAGE_SIZE = 10;
 const getTabsForRole = (roles, permissions) => {
     const canControlSecurity = permissions.includes("security:control");
+    const canAccessFiles = permissions.some((permission) => ["items:read", "items:write", "items:delete", "items:share"].includes(permission));
     if (roles.includes("admin")) {
         return canControlSecurity ? [...ALL_TABS] : ALL_TABS.filter((tab) => tab !== "Security");
     }
     if (roles.some((role) => ["viewer", "editor"].includes(role))) {
-        return canControlSecurity ? ["Dashboard", "Files", "Security"] : ["Dashboard", "Files"];
+        const tabs = ["Dashboard"];
+        if (canAccessFiles)
+            tabs.push("Files");
+        if (canControlSecurity)
+            tabs.push("Security");
+        return tabs;
     }
-    return canControlSecurity ? ["Files", "Security"] : ["Files"];
+    const tabs = [];
+    if (canAccessFiles)
+        tabs.push("Files");
+    if (canControlSecurity)
+        tabs.push("Security");
+    return tabs.length > 0 ? tabs : ["Dashboard"];
 };
 const normalizeEmail = (value) => value.trim().toLowerCase();
 const formatActionLabel = (action) => action.replace(/\./g, " ").replace(/_/g, " ");
@@ -263,19 +308,106 @@ const getPasswordValidationError = (password) => {
     }
     return null;
 };
-const XSmall = ({ size = 14, ...props }) => (_jsxs("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", ...props, children: [_jsx("line", { x1: "18", y1: "6", x2: "6", y2: "18" }), _jsx("line", { x1: "6", y1: "6", x2: "18", y2: "18" })] }));
-const CheckSmall = ({ size = 14, ...props }) => (_jsx("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2.5, strokeLinecap: "round", strokeLinejoin: "round", ...props, children: _jsx("polyline", { points: "20 6 9 17 4 12" }) }));
-const AlertSmall = ({ size = 14, ...props }) => (_jsxs("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2.5, strokeLinecap: "round", strokeLinejoin: "round", ...props, children: [_jsx("circle", { cx: "12", cy: "12", r: "10" }), _jsx("line", { x1: "12", y1: "8", x2: "12", y2: "12" }), _jsx("line", { x1: "12", y1: "16", x2: "12.01", y2: "16" })] }));
-function ToastContainer({ toasts, onDismiss }) {
-    if (toasts.length === 0)
-        return null;
-    return (_jsx("div", { className: "toast-container", children: toasts.map((t) => (_jsxs("div", { className: `toast toast-${t.type} ${t.leaving ? "leaving" : ""}`, children: [_jsx("div", { className: "toast-icon", children: t.type === "error" ? _jsx(AlertSmall, {}) : _jsx(CheckSmall, {}) }), _jsxs("div", { className: "toast-body", children: [_jsx("div", { className: "toast-title", children: t.title }), _jsx("div", { className: "toast-message", children: t.message })] }), _jsx("button", { className: "toast-close", onClick: () => onDismiss(t.id), children: _jsx(XSmall, {}) }), _jsx("div", { className: "toast-progress" })] }, t.id))) }));
+const TOAST_ICONS = {
+    success: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`,
+    error: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`,
+    warning: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
+    loading: `<svg class="p-toast-spinner" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>`,
+    info: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="8"/><line x1="12" y1="12" x2="12" y2="16"/></svg>`,
+};
+const toastEntries = [];
+let toastIsHovered = false;
+let toastContainerEl = null;
+function getOrCreateToastContainer() {
+    if (toastContainerEl)
+        return toastContainerEl;
+    const el = document.createElement("div");
+    el.id = "premium-toaster";
+    document.body.appendChild(el);
+    el.addEventListener("mouseenter", () => {
+        toastIsHovered = true;
+        renderToasts();
+        toastEntries.forEach(t => { if (t.timeoutId)
+            clearTimeout(t.timeoutId); });
+    });
+    el.addEventListener("mouseleave", () => {
+        toastIsHovered = false;
+        renderToasts();
+        toastEntries.forEach(t => startToastTimer(t));
+    });
+    toastContainerEl = el;
+    return el;
 }
+function renderToasts() {
+    let hoverOffset = 0;
+    toastEntries.forEach((t, index) => {
+        t.el.style.zIndex = String(100 - index);
+        if (toastIsHovered) {
+            t.el.style.transform = `translateY(-${hoverOffset}px) scale(1)`;
+            t.el.style.opacity = "1";
+            t.el.style.pointerEvents = "auto";
+            hoverOffset += t.height + 12;
+        }
+        else {
+            if (index > 2) {
+                t.el.style.opacity = "0";
+                t.el.style.pointerEvents = "none";
+                t.el.style.transform = `translateY(0px) scale(0.8)`;
+            }
+            else {
+                t.el.style.transform = `translateY(${index * -16}px) scale(${1 - index * 0.05})`;
+                t.el.style.pointerEvents = index === 0 ? "auto" : "none";
+                t.el.style.opacity = index === 0 ? "1" : index === 1 ? "0.6" : "0.3";
+            }
+        }
+    });
+}
+function startToastTimer(entry, duration = 4500) {
+    entry.timeoutId = setTimeout(() => dismissToastById(entry.id), duration);
+}
+function dismissToastById(id) {
+    const idx = toastEntries.findIndex(t => t.id === id);
+    if (idx === -1)
+        return;
+    const entry = toastEntries[idx];
+    if (entry.timeoutId)
+        clearTimeout(entry.timeoutId);
+    entry.el.classList.add("p-toast-out");
+    toastEntries.splice(idx, 1);
+    renderToasts();
+    setTimeout(() => entry.el.remove(), 400);
+}
+function pushToast(toast) {
+    const container = getOrCreateToastContainer();
+    const el = document.createElement("div");
+    el.className = "p-toast";
+    el.setAttribute("data-type", toast.type);
+    el.innerHTML = `
+    <div class="p-toast-icon">${TOAST_ICONS[toast.type]}</div>
+    <div class="p-toast-content">
+      <div class="p-toast-title">${toast.title}</div>
+      ${toast.message ? `<div class="p-toast-desc">${toast.message}</div>` : ""}
+    </div>`;
+    el.addEventListener("click", () => dismissToastById(toast.id));
+    container.prepend(el);
+    const entry = { ...toast, el, height: 0, timeoutId: null };
+    toastEntries.unshift(entry);
+    requestAnimationFrame(() => {
+        entry.height = el.offsetHeight;
+        renderToasts();
+        startToastTimer(entry);
+    });
+}
+// Dummy component — actual toasts are DOM-injected imperatively
+function ToastContainer(_) {
+    return null;
+}
+const CheckSmall = ({ size = 14, color = "currentColor" }) => (_jsx("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: color, strokeWidth: 2.5, strokeLinecap: "round", strokeLinejoin: "round", children: _jsx("polyline", { points: "20 6 9 17 4 12" }) }));
 /* =============================================
    App Component
    ============================================= */
 export default function App() {
-    const [email, setEmail] = useState(() => localStorage.getItem("magnus_last_email") ?? "");
+    const [email, setEmail] = useState(() => localStorage.getItem(LAST_EMAIL_STORAGE_KEY) ?? "");
     const [password, setPassword] = useState("");
     const [otp, setOtp] = useState("");
     const [loginStep, setLoginStep] = useState(1);
@@ -328,6 +460,13 @@ export default function App() {
     const [userDashboard, setUserDashboard] = useState(null);
     const [dashboardLoading, setDashboardLoading] = useState(false);
     const [dashboardError, setDashboardError] = useState(null);
+    const [dashboardRange, setDashboardRange] = useState("7d");
+    const [dashboardAuditPage, setDashboardAuditPage] = useState(1);
+    const [userRecentActivityPage, setUserRecentActivityPage] = useState(1);
+    const [auditSearch, setAuditSearch] = useState("");
+    const [auditActionFilter, setAuditActionFilter] = useState("");
+    const [usersPage, setUsersPage] = useState(1);
+    const [auditPage, setAuditPage] = useState(1);
     const [securityState, setSecurityState] = useState(null);
     const [securityLoading, setSecurityLoading] = useState(false);
     const [securityError, setSecurityError] = useState(null);
@@ -346,7 +485,7 @@ export default function App() {
     const [newUserRole, setNewUserRole] = useState("viewer");
     const [newUserFirstName, setNewUserFirstName] = useState("");
     const [newUserLastName, setNewUserLastName] = useState("");
-    const [rememberMe, setRememberMe] = useState(() => localStorage.getItem("magnus_remember") === "true");
+    const [rememberMe, setRememberMe] = useState(() => localStorage.getItem(REMEMBER_ME_STORAGE_KEY) !== "false");
     const [showPassword, setShowPassword] = useState(false);
     const [isLoginSubmitting, setIsLoginSubmitting] = useState(false);
     const [isOtpSubmitting, setIsOtpSubmitting] = useState(false);
@@ -360,7 +499,7 @@ export default function App() {
     const [isSessionChecking, setIsSessionChecking] = useState(true);
     const [savedEmails, setSavedEmails] = useState(() => {
         try {
-            const raw = localStorage.getItem("magnus_saved_emails");
+            const raw = localStorage.getItem(SAVED_EMAILS_STORAGE_KEY);
             return raw ? JSON.parse(raw) : [];
         }
         catch {
@@ -368,6 +507,8 @@ export default function App() {
         }
     });
     const viewerUrlRef = useRef(null);
+    const refreshInFlightRef = useRef(null);
+    const profileSyncInFlightRef = useRef(null);
     const pdfCanvasRef = useRef(null);
     const pdfCanvasWrapRef = useRef(null);
     const pdfRenderTaskRef = useRef(null);
@@ -379,23 +520,85 @@ export default function App() {
     const selectedPdfPage = Math.max(1, Math.min(viewerPdfPage, viewerPdfPages));
     const newUserPasswordError = getPasswordValidationError(newUserPassword);
     const resetPasswordError = getPasswordValidationError(resetNewPassword);
-    // Restore session from localStorage on mount
+    // Restore session on mount and rotate access token if needed.
     useEffect(() => {
-        const saved = localStorage.getItem("magnus_session");
-        if (saved) {
+        let cancelled = false;
+        const bootstrapSession = async () => {
+            const localRaw = localStorage.getItem(SESSION_STORAGE_KEY);
+            const tabRaw = sessionStorage.getItem(SESSION_STORAGE_KEY);
+            const localSession = parseStoredSession(localRaw);
+            const tabSession = parseStoredSession(tabRaw);
+            if (localRaw && !localSession)
+                localStorage.removeItem(SESSION_STORAGE_KEY);
+            if (tabRaw && !tabSession)
+                sessionStorage.removeItem(SESSION_STORAGE_KEY);
+            const candidates = [];
+            if (localSession)
+                candidates.push(localSession);
+            if (tabSession)
+                candidates.push(tabSession);
+            if (candidates.length === 0) {
+                if (!cancelled)
+                    setIsSessionChecking(false);
+                return;
+            }
+            candidates.sort((a, b) => {
+                const aExp = getJwtExpiryTime(a.accessToken) ?? 0;
+                const bExp = getJwtExpiryTime(b.accessToken) ?? 0;
+                return bExp - aExp;
+            });
+            const chosen = candidates[0];
+            const accessExpiry = getJwtExpiryTime(chosen.accessToken);
+            if (accessExpiry && accessExpiry > Date.now() + REFRESH_SKEW_MS) {
+                if (!cancelled) {
+                    setSession(chosen);
+                    setIsSessionChecking(false);
+                }
+                return;
+            }
+            const refreshExpiry = new Date(chosen.refreshExpiresAt).getTime();
+            const refreshStillValid = Number.isFinite(refreshExpiry) && refreshExpiry > Date.now() + REFRESH_SKEW_MS;
+            if (!refreshStillValid) {
+                localStorage.removeItem(SESSION_STORAGE_KEY);
+                sessionStorage.removeItem(SESSION_STORAGE_KEY);
+                if (!cancelled)
+                    setIsSessionChecking(false);
+                return;
+            }
             try {
-                setSession(JSON.parse(saved));
+                const refreshed = await refreshAuthSession(chosen.refreshToken);
+                if (cancelled)
+                    return;
+                setSession(refreshed);
+                sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(refreshed));
+                localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(refreshed));
             }
-            catch (e) {
-                localStorage.removeItem("magnus_session");
+            catch {
+                localStorage.removeItem(SESSION_STORAGE_KEY);
+                sessionStorage.removeItem(SESSION_STORAGE_KEY);
             }
-        }
-        setIsSessionChecking(false);
+            finally {
+                if (!cancelled)
+                    setIsSessionChecking(false);
+            }
+        };
+        void bootstrapSession();
+        return () => {
+            cancelled = true;
+        };
     }, []);
     // Persist rememberMe preference
     useEffect(() => {
-        localStorage.setItem("magnus_remember", String(rememberMe));
+        localStorage.setItem(REMEMBER_ME_STORAGE_KEY, String(rememberMe));
     }, [rememberMe]);
+    // Keep session tokens in storage in sync with in-memory session.
+    // Persist in both storages so refresh/new-tab/window reopen all recover session reliably.
+    useEffect(() => {
+        if (!session)
+            return;
+        sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+        localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+    }, [session]);
     useEffect(() => {
         if (!securityActionExpiresAt)
             return;
@@ -570,15 +773,14 @@ export default function App() {
     const auditActionOptions = useMemo(() => Array.from(new Set(auditLogs.map((log) => log.action))).sort(), [auditLogs]);
     const showToast = useCallback((type, title, message) => {
         const id = ++toastId.current;
+        pushToast({ id, type, title, message });
+        // Keep React state in sync so existing code referencing `toasts` doesn't break
         setToasts((prev) => [...prev, { id, type, title, message }]);
-        setTimeout(() => {
-            setToasts((prev) => prev.map((t) => t.id === id ? { ...t, leaving: true } : t));
-            setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 300);
-        }, 5000);
+        setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 5000);
     }, []);
     const dismissToast = useCallback((id) => {
-        setToasts((prev) => prev.map((t) => t.id === id ? { ...t, leaving: true } : t));
-        setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 300);
+        dismissToastById(id);
+        setToasts((prev) => prev.filter((t) => t.id !== id));
     }, []);
     const accessToken = session?.accessToken;
     const refreshDashboard = async () => {
@@ -588,12 +790,12 @@ export default function App() {
         setDashboardError(null);
         try {
             if (isAdmin) {
-                const data = await fetchDashboardSummary(accessToken);
+                const data = await fetchDashboardSummary(accessToken, dashboardRange);
                 setDashboard(data);
                 setUserDashboard(null);
             }
             else {
-                const data = await fetchUserDashboardSummary(accessToken);
+                const data = await fetchUserDashboardSummary(accessToken, dashboardRange);
                 setUserDashboard(data);
                 setDashboard(null);
             }
@@ -615,7 +817,7 @@ export default function App() {
                     listRoles(accessToken),
                     listPermissions(accessToken),
                     listRolePermissions(accessToken),
-                    fetchDashboardSummary(accessToken)
+                    fetchDashboardSummary(accessToken, dashboardRange)
                 ]);
                 setUsers(usersRes);
                 setRoles(rolesRes);
@@ -627,7 +829,7 @@ export default function App() {
                 setDashboardLoading(false);
             }
             else {
-                const dashboardRes = await fetchUserDashboardSummary(accessToken);
+                const dashboardRes = await fetchUserDashboardSummary(accessToken, dashboardRange);
                 setUserDashboard(dashboardRes);
                 setDashboard(null);
                 setUsers([]);
@@ -651,27 +853,31 @@ export default function App() {
         setItems(data);
     };
     const completeSessionLogin = (data) => {
-        setSession(data);
+        const normalizedSession = {
+            ...data,
+            user: {
+                ...data.user,
+                roles: normalizeStringList(data.user?.roles),
+                permissions: normalizeStringList(data.user?.permissions)
+            }
+        };
+        setSession(normalizedSession);
         setSecurityActionToken(null);
         setSecurityActionExpiresAt(null);
         setSecurityState(null);
         setSecurityError(null);
         if (rememberMe) {
-            localStorage.setItem("magnus_session", JSON.stringify(data));
-            localStorage.setItem("magnus_last_email", email);
+            localStorage.setItem(LAST_EMAIL_STORAGE_KEY, email);
             setSavedEmails((prev) => {
                 const next = [email, ...prev.filter((value) => value !== email)].slice(0, 10);
-                localStorage.setItem("magnus_saved_emails", JSON.stringify(next));
+                localStorage.setItem(SAVED_EMAILS_STORAGE_KEY, JSON.stringify(next));
                 return next;
             });
-        }
-        else {
-            localStorage.removeItem("magnus_session");
         }
         setLoginStep(1);
         setOtp("");
         setPassword("");
-        const userTabs = getTabsForRole(data.user?.roles ?? [], data.user?.permissions ?? []);
+        const userTabs = getTabsForRole(normalizedSession.user?.roles ?? [], normalizedSession.user?.permissions ?? []);
         setTab(userTabs.includes("Dashboard") ? "Dashboard" : "Files");
     };
     const onLogin = async () => {
@@ -720,9 +926,10 @@ export default function App() {
             refreshData();
             refreshItems(null);
         }
-    }, [session?.accessToken]);
+    }, [session?.accessToken, isAdmin]);
     const clearClientSession = useCallback(() => {
-        localStorage.removeItem("magnus_session");
+        localStorage.removeItem(SESSION_STORAGE_KEY);
+        sessionStorage.removeItem(SESSION_STORAGE_KEY);
         if (viewerUrl)
             URL.revokeObjectURL(viewerUrl);
         if (pdfRenderTaskRef.current) {
@@ -778,31 +985,135 @@ export default function App() {
         }
         clearClientSession();
     };
+    const rotateAccessSession = useCallback(async (showExpiryToast = true) => {
+        if (!session?.refreshToken)
+            return false;
+        if (refreshInFlightRef.current)
+            return refreshInFlightRef.current;
+        const refreshExpiry = new Date(session.refreshExpiresAt).getTime();
+        const refreshStillValid = Number.isFinite(refreshExpiry) && refreshExpiry > Date.now() + REFRESH_SKEW_MS;
+        if (!refreshStillValid) {
+            if (showExpiryToast) {
+                showToast("error", "Session expired", "Your session expired. Please sign in again.");
+            }
+            clearClientSession();
+            return false;
+        }
+        const promise = refreshAuthSession(session.refreshToken)
+            .then((next) => {
+            setSession(next);
+            return true;
+        })
+            .catch(() => {
+            if (showExpiryToast) {
+                showToast("error", "Session expired", "Your session expired. Please sign in again.");
+            }
+            clearClientSession();
+            return false;
+        })
+            .finally(() => {
+            refreshInFlightRef.current = null;
+        });
+        refreshInFlightRef.current = promise;
+        return promise;
+    }, [session?.refreshToken, session?.refreshExpiresAt, clearClientSession, showToast]);
+    const syncSessionProfile = useCallback(async () => {
+        if (!accessToken)
+            return;
+        if (profileSyncInFlightRef.current)
+            return profileSyncInFlightRef.current;
+        const promise = (async () => {
+            try {
+                const profile = await fetchMyProfile(accessToken);
+                setSession((prev) => {
+                    if (!prev || prev.user.id !== profile.id)
+                        return prev;
+                    const prevRoles = normalizeStringList(prev.user.roles);
+                    const prevPerms = normalizeStringList(prev.user.permissions);
+                    const nextRoles = normalizeStringList(profile.roles);
+                    const nextPerms = normalizeStringList(profile.permissions);
+                    const changed = prev.user.email !== profile.email ||
+                        prev.user.firstName !== profile.firstName ||
+                        prev.user.lastName !== profile.lastName ||
+                        !isSameStringList(prevRoles, nextRoles) ||
+                        !isSameStringList(prevPerms, nextPerms);
+                    if (!changed)
+                        return prev;
+                    return {
+                        ...prev,
+                        user: {
+                            ...prev.user,
+                            email: profile.email,
+                            firstName: profile.firstName,
+                            lastName: profile.lastName,
+                            roles: nextRoles,
+                            permissions: nextPerms
+                        }
+                    };
+                });
+            }
+            catch {
+                // Ignore transient profile-sync failures; next interval/focus retries.
+            }
+        })().finally(() => {
+            profileSyncInFlightRef.current = null;
+        });
+        profileSyncInFlightRef.current = promise;
+        return promise;
+    }, [accessToken]);
+    // Rotate access token before it expires.
     useEffect(() => {
         if (!session?.accessToken)
             return;
         const expiryMs = getJwtExpiryTime(session.accessToken);
         if (!expiryMs)
             return;
-        const msUntilExpiry = expiryMs - Date.now();
-        const refreshToken = session.refreshToken;
-        if (msUntilExpiry <= 0) {
-            if (refreshToken) {
-                void logout(refreshToken).catch(() => undefined);
-            }
-            showToast("error", "Session expired", "Your session expired. Please sign in again.");
-            clearClientSession();
+        const msUntilRefresh = expiryMs - Date.now() - ACCESS_REFRESH_AHEAD_MS;
+        if (msUntilRefresh <= 0) {
+            void rotateAccessSession(false);
             return;
         }
         const timeoutId = window.setTimeout(() => {
-            if (refreshToken) {
-                void logout(refreshToken).catch(() => undefined);
-            }
-            showToast("error", "Session expired", "Your session expired. Please sign in again.");
-            clearClientSession();
-        }, msUntilExpiry);
+            void rotateAccessSession(false);
+        }, msUntilRefresh);
         return () => window.clearTimeout(timeoutId);
-    }, [session?.accessToken, session?.refreshToken, clearClientSession, showToast]);
+    }, [session?.accessToken, rotateAccessSession]);
+    // If user comes back to the tab near expiry, refresh immediately.
+    useEffect(() => {
+        const onForegroundCheck = () => {
+            if (document.visibilityState === "hidden" || !session?.accessToken)
+                return;
+            const expiryMs = getJwtExpiryTime(session.accessToken);
+            if (!expiryMs)
+                return;
+            if (expiryMs - Date.now() <= ACCESS_REFRESH_AHEAD_MS) {
+                void rotateAccessSession(false);
+            }
+        };
+        window.addEventListener("focus", onForegroundCheck);
+        document.addEventListener("visibilitychange", onForegroundCheck);
+        return () => {
+            window.removeEventListener("focus", onForegroundCheck);
+            document.removeEventListener("visibilitychange", onForegroundCheck);
+        };
+    }, [session?.accessToken, rotateAccessSession]);
+    // Sync auth session across tabs (localStorage-backed sessions).
+    useEffect(() => {
+        const onStorage = (event) => {
+            if (event.key !== SESSION_STORAGE_KEY)
+                return;
+            if (!event.newValue) {
+                clearClientSession();
+                return;
+            }
+            const next = parseStoredSession(event.newValue);
+            if (!next)
+                return;
+            setSession(next);
+        };
+        window.addEventListener("storage", onStorage);
+        return () => window.removeEventListener("storage", onStorage);
+    }, [clearClientSession]);
     const onSelectUser = async (user) => {
         if (!accessToken)
             return;
@@ -869,9 +1180,6 @@ export default function App() {
                     }
                 };
                 setSession(nextSession);
-                if (rememberMe) {
-                    localStorage.setItem("magnus_session", JSON.stringify(nextSession));
-                }
             }
             showToast("success", "User updated", "User profile information has been saved.");
             return true;
@@ -1525,7 +1833,52 @@ export default function App() {
         if (tab === "Dashboard" && accessToken) {
             refreshDashboard();
         }
-    }, [tab, accessToken, isAdmin]);
+    }, [tab, accessToken, isAdmin, dashboardRange]);
+    useEffect(() => {
+        if (!accessToken)
+            return;
+        void syncSessionProfile();
+        const intervalId = window.setInterval(() => {
+            void syncSessionProfile();
+        }, PROFILE_SYNC_INTERVAL_MS);
+        const onFocusOrVisible = () => {
+            if (document.visibilityState === "hidden")
+                return;
+            void syncSessionProfile();
+        };
+        window.addEventListener("focus", onFocusOrVisible);
+        document.addEventListener("visibilitychange", onFocusOrVisible);
+        return () => {
+            window.clearInterval(intervalId);
+            window.removeEventListener("focus", onFocusOrVisible);
+            document.removeEventListener("visibilitychange", onFocusOrVisible);
+        };
+    }, [accessToken, syncSessionProfile]);
+    useEffect(() => {
+        if (!session || visibleTabs.includes(tab))
+            return;
+        const fallbackTab = visibleTabs.includes("Dashboard")
+            ? "Dashboard"
+            : visibleTabs[0] ?? "Files";
+        setTab(fallbackTab);
+    }, [session, tab, visibleTabs]);
+    useEffect(() => {
+        setDashboardAuditPage(1);
+        setUserRecentActivityPage(1);
+    }, [dashboardRange, auditSearch, auditActionFilter]);
+    useEffect(() => {
+        setDashboardAuditPage(1);
+    }, [dashboard?.recentAudit.length]);
+    useEffect(() => {
+        setUserRecentActivityPage(1);
+    }, [userDashboard?.recentActivity.length]);
+    useEffect(() => {
+        setUsersPage(1);
+    }, [users]);
+    useEffect(() => {
+        setAuditPage(1);
+        setAuditExpandedRows(new Set());
+    }, [auditLogs]);
     useEffect(() => {
         if (tab === "Security" &&
             accessToken &&
@@ -1576,7 +1929,12 @@ export default function App() {
     return (_jsxs("div", { className: "app", children: [_jsx(ToastContainer, { toasts: toasts, onDismiss: dismissToast }), _jsxs("aside", { className: "sidebar", children: [_jsxs("div", { className: "sidebar-brand", children: [_jsx("div", { className: "sidebar-brand-icon", children: _jsx(VaultIcon, { size: 22 }) }), _jsx("span", { className: "sidebar-brand-text", children: "Magnus" })] }), _jsxs("div", { className: "sidebar-section", children: [_jsx("div", { className: "sidebar-label", children: "Main menu" }), _jsx("nav", { className: "sidebar-nav", children: visibleTabs.map((t) => {
                                     const Icon = tabIcons[t];
                                     return (_jsxs("button", { className: `sidebar-nav-item ${tab === t ? "active" : ""}`, onClick: () => setTab(t), children: [_jsx("span", { className: "nav-icon", children: _jsx(Icon, {}) }), t] }, t));
-                                }) })] }), _jsx("div", { className: "sidebar-spacer" }), _jsxs("div", { className: "sidebar-profile", children: [_jsx("div", { className: "sidebar-avatar", children: getInitials({ firstName: session.user.firstName, lastName: session.user.lastName, email: session.user.email }) }), _jsxs("div", { className: "sidebar-profile-info", children: [_jsx("div", { className: "sidebar-profile-name", children: session.user.firstName ? `${session.user.firstName} ${session.user.lastName}` : session.user.email.split('@')[0] }), _jsx("div", { className: "sidebar-profile-role", style: { textTransform: "capitalize" }, children: session.user.roles.join(", ") })] }), _jsx("button", { className: "btn-logout", onClick: onLogout, title: "Sign out", style: { marginLeft: "auto", background: "none", border: "none", padding: 8, cursor: "pointer", color: "var(--ink-4)", display: "flex", alignItems: "center", justifyContent: "center" }, children: _jsx(LogoutIcon, {}) })] })] }), _jsxs("main", { className: "content", children: [_jsxs("div", { style: {
+                                }) })] }), _jsx("div", { className: "sidebar-spacer" }), _jsxs("div", { className: "sidebar-profile", children: [_jsx("div", { className: "sidebar-avatar", children: getInitials({ firstName: session.user.firstName, lastName: session.user.lastName, email: session.user.email }) }), _jsxs("div", { className: "sidebar-profile-info", children: [_jsx("div", { className: "sidebar-profile-name", children: session.user.firstName ? `${session.user.firstName} ${session.user.lastName}` : session.user.email.split('@')[0] }), _jsx("div", { className: "sidebar-profile-role", style: { textTransform: "capitalize" }, children: session.user.roles.includes("super_admin")
+                                            ? "Super Admin"
+                                            : session.user.roles
+                                                .filter(r => r !== "super_admin")
+                                                .map(r => r.replace(/_/g, " "))
+                                                .join(", ") })] }), _jsx("button", { className: "btn-logout", onClick: onLogout, title: "Sign out", style: { marginLeft: "auto", background: "none", border: "none", padding: 8, cursor: "pointer", color: "var(--ink-4)", display: "flex", alignItems: "center", justifyContent: "center" }, children: _jsx(LogoutIcon, {}) })] })] }), _jsxs("main", { className: "content", children: [_jsxs("div", { style: {
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "space-between",
@@ -1598,25 +1956,78 @@ export default function App() {
                                     whiteSpace: "nowrap",
                                     flexShrink: 0,
                                     boxShadow: "0 0 0 3px rgba(129,140,248,0.08)"
-                                }, children: [_jsx(ShieldIcon, { size: 13 }), "Admin"] }))] }), tab === "Dashboard" && (_jsx("div", { style: { display: "flex", flexDirection: "column" }, children: dashboardLoading && !(isAdmin ? dashboard : userDashboard) ? (_jsx("div", { className: "panel", style: { textAlign: "center", padding: "56px 0", color: "var(--ink-3)" }, children: "Loading dashboard metrics..." })) : dashboardError && !(isAdmin ? dashboard : userDashboard) ? (_jsx("div", { className: "panel", style: { textAlign: "center", padding: "56px 0", color: "var(--red)" }, children: dashboardError })) : isAdmin && dashboard ? (_jsxs(_Fragment, { children: [_jsxs("div", { className: "dashboard-v2-header", children: [_jsxs("div", { children: [_jsx("h1", { children: "Security Overview" }), _jsx("p", { children: "High-level view of users, files, and system activity." })] }), _jsxs("div", { className: "time-range-picker", onClick: refreshDashboard, children: [_jsx(CalendarIcon, {}), _jsx("span", { children: "Last 7 Days" }), _jsx(ChevronIcon, {})] })] }), _jsxs("section", { className: "metrics-v2-grid", children: [_jsxs("div", { className: "metric-v2-card", style: { transitionDelay: "0.1s" }, children: [_jsxs("div", { className: "m-v2-header", children: [_jsx("span", { className: "m-v2-title", children: "Total Users" }), _jsx(UsersIcon, { size: 16, className: "m-v2-icon" })] }), _jsx("div", { className: "m-v2-value", children: dashboard.users.total.toLocaleString() }), _jsxs("div", { className: "m-v2-footer", children: [_jsxs("span", { className: "text-green", children: [dashboard.users.active, " Active"] }), _jsx("span", { className: "m-divider" }), _jsxs("span", { style: { color: "var(--ink-4)" }, children: [dashboard.users.disabled, " Disabled"] })] })] }), _jsxs("div", { className: "metric-v2-card", style: { transitionDelay: "0.15s" }, children: [_jsxs("div", { className: "m-v2-header", children: [_jsx("span", { className: "m-v2-title", children: "Active Items" }), _jsx(LayersIcon, { size: 16, className: "m-v2-icon" })] }), _jsx("div", { className: "m-v2-value", children: dashboard.items.total_active.toLocaleString() }), _jsxs("div", { className: "m-v2-footer", children: [_jsxs("span", { style: { color: "var(--ink-3)" }, children: [dashboard.items.files, " Files"] }), _jsx("span", { className: "m-divider" }), _jsxs("span", { style: { color: "var(--ink-3)" }, children: [dashboard.items.folders, " Folders"] })] })] }), _jsxs("div", { className: "metric-v2-card", style: { transitionDelay: "0.2s" }, children: [_jsxs("div", { className: "m-v2-header", children: [_jsx("span", { className: "m-v2-title", children: "Role / Permission Sets" }), _jsx(KeyIcon, { size: 16, className: "m-v2-icon" })] }), _jsxs("div", { className: "m-v2-value", children: [dashboard.roles.total, _jsx("span", { style: { color: "var(--ink-4)", fontWeight: 400, margin: "0 4px" }, children: "/" }), dashboard.permissions.total] }), _jsxs("div", { className: "m-v2-footer", children: [_jsxs("span", { style: { color: "var(--ink-3)" }, children: [dashboard.shares.total, " Grants"] }), _jsx("span", { className: "m-divider" }), _jsxs("span", { style: { color: "var(--ink-3)" }, children: [dashboard.items.deleted, " Deleted"] })] })] }), _jsxs("div", { className: "metric-v2-card bg-alert-subtle", style: { border: "1px solid rgba(248, 113, 113, 0.2)", transitionDelay: "0.25s" }, children: [_jsxs("div", { className: "m-v2-header", children: [_jsx("span", { className: "m-v2-title text-alert", children: "Auth Security (24H)" }), _jsx(ShieldAlertIcon, { size: 16, className: "m-v2-icon text-alert" })] }), _jsx("div", { className: "m-v2-value text-alert", children: dashboard.activityLast24h.login_failed }), _jsxs("div", { className: "m-v2-footer", children: [_jsx("span", { className: "badge badge-disabled", style: { padding: "2px 6px", fontSize: 11 }, children: "Failed Logins" }), _jsx("span", { className: "m-divider" }), _jsxs("span", { style: { color: "var(--ink-3)" }, children: [dashboard.activityLast24h.logins, " total"] })] })] })] }), _jsxs("section", { className: "bento-v2-grid", children: [_jsxs("div", { className: "panel-v2", children: [_jsxs("div", { className: "panel-v2-header", children: [_jsx("h2", { children: "Top Actions (7 Days)" }), _jsx("button", { className: "btn-ghost", style: { padding: 4 }, children: _jsx(ActivityIcon, { size: 16 }) })] }), _jsx("div", { className: "action-v2-list", children: dashboard.topActions7d.length === 0 ? (_jsx("div", { style: { color: "var(--ink-4)", fontSize: 14, padding: "20px 0", textAlign: "center" }, children: "No recent activity." })) : (dashboard.topActions7d.map((row) => {
-                                                        const max = Math.max(...dashboard.topActions7d.map((a) => a.count), 1);
-                                                        const width = Math.max(8, Math.round((row.count / max) * 100));
-                                                        const isAlert = row.action.includes("failed") || row.action.includes("delete");
-                                                        return (_jsxs("div", { className: "action-v2-item", children: [_jsxs("div", { className: "a-v2-info", children: [_jsx("span", { className: `a-v2-name ${isAlert ? "text-alert" : ""}`, children: formatActionLabel(row.action) }), _jsx("span", { className: "a-v2-count", children: row.count })] }), _jsx("div", { className: "progress-v2-track", children: _jsx("div", { className: `progress-v2-fill ${isAlert ? "fill-red" : row.action.includes("create") || row.action.includes("upload") ? "fill-accent" : "fill-muted"}`, style: { width: `${width}%` } }) })] }, row.action));
-                                                    })) })] }), _jsxs("div", { className: "panel-v2", children: [_jsxs("div", { className: "panel-v2-header", children: [_jsx("h2", { children: "Activity Snapshot" }), _jsx("span", { className: "badge badge-neutral", style: { fontSize: 11 }, children: "24h" })] }), _jsxs("div", { className: "snapshot-v2-grid", children: [_jsxs("div", { className: "snap-v2-box", children: [_jsx("span", { className: "s-v2-label", children: "Logins" }), _jsx("span", { className: "s-v2-val", children: dashboard.activityLast24h.logins })] }), _jsxs("div", { className: "snap-v2-box bg-alert-subtle", children: [_jsx("span", { className: "s-v2-label text-alert", children: "Login Failed" }), _jsx("span", { className: "s-v2-val text-alert", children: dashboard.activityLast24h.login_failed })] }), _jsxs("div", { className: "snap-v2-box", children: [_jsx("span", { className: "s-v2-label", children: "Uploads" }), _jsx("span", { className: "s-v2-val", children: dashboard.activityLast24h.uploads })] }), _jsxs("div", { className: "snap-v2-box", children: [_jsx("span", { className: "s-v2-label", children: "Downloads" }), _jsx("span", { className: "s-v2-val", children: dashboard.activityLast24h.downloads })] })] })] })] }), _jsxs("div", { className: "panel-v2 table-panel-v2", children: [_jsxs("div", { className: "panel-v2-header", children: [_jsx("h2", { children: "Recent Security Activity" }), _jsxs("div", { style: { display: "flex", gap: 10 }, children: [_jsxs("div", { style: { position: "relative", display: "flex", alignItems: "center" }, children: [_jsx(SearchIcon, { style: { position: "absolute", left: 10, color: "var(--ink-4)" } }), _jsx("input", { type: "text", placeholder: "Search logs...", className: "modal-input", style: { margin: 0, paddingLeft: 34, width: 180, fontSize: 13, height: 34 } })] }), _jsx("button", { className: "btn-ghost", style: { border: "1px solid var(--border)", borderRadius: 8, height: 34, width: 34, padding: 0 }, children: _jsx(FilterIcon, { size: 14 }) })] })] }), dashboard.recentAudit.length === 0 ? (_jsx("div", { style: { color: "var(--ink-4)", fontSize: 14, padding: "40px 0", textAlign: "center" }, children: "No security entries yet." })) : (_jsxs("table", { className: "data-table", children: [_jsx("thead", { children: _jsxs("tr", { children: [_jsx("th", { children: "Time" }), _jsx("th", { children: "Action" }), _jsx("th", { children: "Actor" }), _jsx("th", { children: "Target" })] }) }), _jsx("tbody", { children: dashboard.recentAudit.map((log) => {
-                                                        const isAlert = log.action.includes("failed") || log.action.includes("delete");
-                                                        return (_jsxs("tr", { className: isAlert ? "row-danger" : "", children: [_jsx("td", { className: "cell-muted", style: { fontSize: 12 }, children: formatDate(log.created_at) }), _jsx("td", { children: _jsx("span", { className: `pill-v2 ${isAlert ? "pill-v2-red" : "pill-v2-blue"}`, children: formatActionLabel(log.action) }) }), _jsx("td", { className: "t-main", style: { fontWeight: 600 }, children: log.actor_email ?? "system" }), _jsxs("td", { className: "cell-muted", style: { fontFamily: "ui-monospace, monospace", fontSize: 12 }, children: [log.target_type, log.target_id ? ` · ${String(log.target_id).slice(0, 8)}...` : ""] })] }, log.id));
-                                                    }) })] }))] })] })) : !isAdmin && userDashboard ? (_jsxs(_Fragment, { children: [_jsxs("div", { className: "dashboard-v2-header", children: [_jsxs("div", { children: [_jsx("h1", { children: "My Dashboard" }), _jsx("p", { children: "Live usage and activity for your account." })] }), _jsxs("div", { className: "time-range-picker", onClick: refreshDashboard, children: [_jsx(CalendarIcon, {}), _jsx("span", { children: "Last 7 Days" }), _jsx(ChevronIcon, {})] })] }), _jsxs("section", { className: "metrics-v2-grid", children: [_jsxs("div", { className: "metric-v2-card", style: { transitionDelay: "0.1s" }, children: [_jsxs("div", { className: "m-v2-header", children: [_jsx("span", { className: "m-v2-title", children: "Accessible Items" }), _jsx(LayersIcon, { size: 16, className: "m-v2-icon" })] }), _jsx("div", { className: "m-v2-value", children: userDashboard.items.total_accessible.toLocaleString() }), _jsxs("div", { className: "m-v2-footer", children: [_jsxs("span", { style: { color: "var(--ink-3)" }, children: [userDashboard.items.files, " Files"] }), _jsx("span", { className: "m-divider" }), _jsxs("span", { style: { color: "var(--ink-3)" }, children: [userDashboard.items.folders, " Folders"] })] })] }), _jsxs("div", { className: "metric-v2-card", style: { transitionDelay: "0.15s" }, children: [_jsxs("div", { className: "m-v2-header", children: [_jsx("span", { className: "m-v2-title", children: "Ownership" }), _jsx(UsersIcon, { size: 16, className: "m-v2-icon" })] }), _jsx("div", { className: "m-v2-value", children: userDashboard.items.owned.toLocaleString() }), _jsxs("div", { className: "m-v2-footer", children: [_jsx("span", { style: { color: "var(--ink-3)" }, children: "Owned by you" }), _jsx("span", { className: "m-divider" }), _jsxs("span", { style: { color: "var(--ink-3)" }, children: [userDashboard.items.shared_with_me, " Shared with you"] })] })] }), _jsxs("div", { className: "metric-v2-card", style: { transitionDelay: "0.2s" }, children: [_jsxs("div", { className: "m-v2-header", children: [_jsx("span", { className: "m-v2-title", children: "Current Role" }), _jsx(ShieldIcon, { size: 16, className: "m-v2-icon" })] }), _jsx("div", { className: "m-v2-value", style: { textTransform: "capitalize" }, children: userDashboard.role }), _jsx("div", { className: "m-v2-footer", children: _jsxs("span", { style: { color: "var(--ink-3)" }, children: [userDashboard.permissions.length, " Active permissions"] }) })] }), _jsxs("div", { className: "metric-v2-card", style: { transitionDelay: "0.25s" }, children: [_jsxs("div", { className: "m-v2-header", children: [_jsx("span", { className: "m-v2-title", children: "24H Actions" }), _jsx(ActivityIcon, { size: 16, className: "m-v2-icon" })] }), _jsx("div", { className: "m-v2-value", children: (userDashboard.activityLast24h.uploads + userDashboard.activityLast24h.downloads + userDashboard.activityLast24h.updates + userDashboard.activityLast24h.deletes).toLocaleString() }), _jsxs("div", { className: "m-v2-footer", children: [_jsxs("span", { style: { color: "var(--ink-3)" }, children: [userDashboard.activityLast24h.logins, " Logins"] }), _jsx("span", { className: "m-divider" }), _jsxs("span", { style: { color: "var(--ink-3)" }, children: [userDashboard.activityLast24h.shares, " Shares"] })] })] })] }), _jsxs("section", { className: "bento-v2-grid", children: [_jsxs("div", { className: "panel-v2", children: [_jsxs("div", { className: "panel-v2-header", children: [_jsx("h2", { children: "Top Actions (7 Days)" }), _jsx("button", { className: "btn-ghost", style: { padding: 4 }, children: _jsx(ActivityIcon, { size: 16 }) })] }), _jsx("div", { className: "action-v2-list", children: userDashboard.topActions7d.length === 0 ? (_jsx("div", { style: { color: "var(--ink-4)", fontSize: 14, padding: "20px 0", textAlign: "center" }, children: "No recent activity." })) : (userDashboard.topActions7d.map((row) => {
+                                }, children: [_jsx(ShieldIcon, { size: 13 }), "Admin"] }))] }), tab === "Dashboard" && (_jsx("div", { style: { display: "flex", flexDirection: "column" }, children: dashboardLoading && !(isAdmin ? dashboard : userDashboard) ? (_jsx("div", { className: "panel", style: { textAlign: "center", padding: "56px 0", color: "var(--ink-3)" }, children: "Loading dashboard metrics..." })) : dashboardError && !(isAdmin ? dashboard : userDashboard) ? (_jsx("div", { className: "panel", style: { textAlign: "center", padding: "56px 0", color: "var(--red)" }, children: dashboardError })) : isAdmin && dashboard ? (_jsxs(_Fragment, { children: [_jsxs("div", { className: "dashboard-v2-header", children: [_jsxs("div", { children: [_jsx("h1", { children: "Security Overview" }), _jsx("p", { children: "High-level view of users, files, and system activity." })] }), _jsxs("div", { className: "time-range-picker", children: [_jsx(CalendarIcon, {}), _jsx("select", { value: dashboardRange, onChange: (event) => setDashboardRange(event.target.value), style: {
+                                                        background: "transparent",
+                                                        border: "none",
+                                                        color: "var(--ink-2)",
+                                                        fontSize: 13,
+                                                        fontWeight: 600,
+                                                        outline: "none",
+                                                        cursor: "pointer"
+                                                    }, children: DASHBOARD_RANGE_OPTIONS.map((option) => (_jsx("option", { value: option.value, children: option.label }, option.value))) }), _jsx("button", { className: "btn-ghost", style: { padding: "2px 6px" }, onClick: () => void refreshDashboard(), title: "Refresh dashboard", children: _jsx(RefreshCwIcon, { size: 14 }) })] })] }), _jsxs("section", { className: "metrics-v2-grid", children: [_jsxs("div", { className: "metric-v2-card", style: { transitionDelay: "0.1s" }, children: [_jsxs("div", { className: "m-v2-header", children: [_jsx("span", { className: "m-v2-title", children: "Total Users" }), _jsx(UsersIcon, { size: 16, className: "m-v2-icon" })] }), _jsx("div", { className: "m-v2-value", children: dashboard.users.total.toLocaleString() }), _jsxs("div", { className: "m-v2-footer", children: [_jsxs("span", { className: "text-green", children: [dashboard.users.active, " Active"] }), _jsx("span", { className: "m-divider" }), _jsxs("span", { style: { color: "var(--ink-4)" }, children: [dashboard.users.disabled, " Disabled"] })] })] }), _jsxs("div", { className: "metric-v2-card", style: { transitionDelay: "0.15s" }, children: [_jsxs("div", { className: "m-v2-header", children: [_jsx("span", { className: "m-v2-title", children: "Active Items" }), _jsx(LayersIcon, { size: 16, className: "m-v2-icon" })] }), _jsx("div", { className: "m-v2-value", children: dashboard.items.total_active.toLocaleString() }), _jsxs("div", { className: "m-v2-footer", children: [_jsxs("span", { style: { color: "var(--ink-3)" }, children: [dashboard.items.files, " Files"] }), _jsx("span", { className: "m-divider" }), _jsxs("span", { style: { color: "var(--ink-3)" }, children: [dashboard.items.folders, " Folders"] })] })] }), _jsxs("div", { className: "metric-v2-card", style: { transitionDelay: "0.2s" }, children: [_jsxs("div", { className: "m-v2-header", children: [_jsx("span", { className: "m-v2-title", children: "Role / Permission Sets" }), _jsx(KeyIcon, { size: 16, className: "m-v2-icon" })] }), _jsxs("div", { className: "m-v2-value", children: [dashboard.roles.total, _jsx("span", { style: { color: "var(--ink-4)", fontWeight: 400, margin: "0 4px" }, children: "/" }), dashboard.permissions.total] }), _jsxs("div", { className: "m-v2-footer", children: [_jsxs("span", { style: { color: "var(--ink-3)" }, children: [dashboard.shares.total, " Grants"] }), _jsx("span", { className: "m-divider" }), _jsxs("span", { style: { color: "var(--ink-3)" }, children: [dashboard.items.deleted, " Deleted"] })] })] }), _jsxs("div", { className: "metric-v2-card bg-alert-subtle", style: { border: "1px solid rgba(248, 113, 113, 0.2)", transitionDelay: "0.25s" }, children: [_jsxs("div", { className: "m-v2-header", children: [_jsx("span", { className: "m-v2-title text-alert", children: "Auth Security (24H)" }), _jsx(ShieldAlertIcon, { size: 16, className: "m-v2-icon text-alert" })] }), _jsx("div", { className: "m-v2-value text-alert", children: dashboard.activityLast24h.login_failed }), _jsxs("div", { className: "m-v2-footer", children: [_jsx("span", { className: "badge badge-disabled", style: { padding: "2px 6px", fontSize: 11 }, children: "Failed Logins" }), _jsx("span", { className: "m-divider" }), _jsxs("span", { style: { color: "var(--ink-3)" }, children: [dashboard.activityLast24h.logins, " total"] })] })] })] }), _jsxs("div", { className: "panel-v2 table-panel-v2", children: [_jsxs("div", { className: "panel-v2-header", children: [_jsxs("h2", { children: ["Recent Security Activity (", DASHBOARD_RANGE_LABELS[dashboardRange], ")"] }), _jsxs("div", { style: { display: "flex", gap: 12, alignItems: "center" }, children: [_jsxs("div", { className: "shad-input-wrapper", style: { width: 240 }, children: [_jsx("div", { className: "shad-search-icon", children: _jsx(SearchIcon, { size: 16 }) }), _jsx("input", { type: "text", placeholder: "Search by name or email...", value: auditSearch, onChange: e => setAuditSearch(e.target.value), className: "shad-input shad-input-search" })] }), _jsxs("div", { className: "shad-select-wrapper", style: { width: 160 }, children: [_jsxs("select", { value: auditActionFilter, onChange: e => setAuditActionFilter(e.target.value), className: "shad-select", children: [_jsx("option", { value: "", children: "All actions" }), [...new Set(dashboard.recentAudit.map(l => l.action))].sort().map(action => (_jsx("option", { value: action, children: formatActionLabel(action) }, action)))] }), _jsx("div", { className: "shad-select-caret", children: _jsx(ChevronIcon, { size: 14 }) })] }), (auditSearch || auditActionFilter) && (_jsx("button", { className: "shad-btn-ghost", onClick: () => { setAuditSearch(""); setAuditActionFilter(""); }, children: "Clear" }))] })] }), (() => {
+                                            const q = auditSearch.toLowerCase();
+                                            const filtered = dashboard.recentAudit.filter(log => {
+                                                const matchesAction = !auditActionFilter || log.action === auditActionFilter;
+                                                const actorUser = log.actor_email ? users.find(u => u.email === log.actor_email) : null;
+                                                const fullName = actorUser?.first_name
+                                                    ? `${actorUser.first_name} ${actorUser.last_name ?? ""}`.trim().toLowerCase()
+                                                    : (log.actor_email ?? "").toLowerCase();
+                                                const matchesSearch = !q || fullName.includes(q) || (log.actor_email ?? "").toLowerCase().includes(q);
+                                                return matchesAction && matchesSearch;
+                                            });
+                                            const totalPages = Math.max(1, Math.ceil(filtered.length / DEFAULT_PAGE_SIZE));
+                                            const currentPage = Math.min(dashboardAuditPage, totalPages);
+                                            const startIndex = (currentPage - 1) * DEFAULT_PAGE_SIZE;
+                                            const pagedLogs = filtered.slice(startIndex, startIndex + DEFAULT_PAGE_SIZE);
+                                            if (filtered.length === 0)
+                                                return (_jsx("div", { style: { color: "var(--ink-4)", fontSize: 14, padding: "40px 0", textAlign: "center" }, children: dashboard.recentAudit.length === 0 ? "No security entries yet." : "No results match your filters." }));
+                                            return (_jsxs(_Fragment, { children: [_jsxs("table", { className: "data-table", children: [_jsx("thead", { children: _jsxs("tr", { children: [_jsx("th", { children: "Time" }), _jsx("th", { children: "Action" }), _jsx("th", { children: "Actor" }), _jsx("th", { children: "Target" })] }) }), _jsx("tbody", { children: pagedLogs.map((log) => {
+                                                                    const isAlert = log.action.includes("failed") || log.action.includes("delete");
+                                                                    const actorUser = log.actor_email ? users.find(u => u.email === log.actor_email) : null;
+                                                                    const actorName = actorUser?.first_name
+                                                                        ? `${actorUser.first_name} ${actorUser.last_name ?? ""}`.trim()
+                                                                        : log.actor_email
+                                                                            ? log.actor_email.split("@")[0].replace(/[._-]/g, " ").replace(/\b\w/g, c => c.toUpperCase())
+                                                                            : "System";
+                                                                    return (_jsxs("tr", { className: isAlert ? "row-danger" : "", children: [_jsx("td", { className: "cell-muted", style: { fontSize: 12 }, children: formatDate(log.created_at) }), _jsx("td", { children: _jsx("span", { className: `pill-v2 ${isAlert ? "pill-v2-red" : "pill-v2-blue"}`, children: formatActionLabel(log.action) }) }), _jsx("td", { className: "t-main", style: { fontWeight: 600 }, children: actorName }), _jsx("td", { className: "cell-muted", style: { fontSize: 13 }, children: log.target_type
+                                                                                    ? _jsx("span", { style: { textTransform: "capitalize" }, children: log.target_type })
+                                                                                    : "—" })] }, log.id));
+                                                                }) })] }), _jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "12px 0 0", flexWrap: "wrap" }, children: [_jsxs("span", { style: { fontSize: 12, color: "var(--ink-4)" }, children: ["Showing ", startIndex + 1, "-", Math.min(startIndex + DEFAULT_PAGE_SIZE, filtered.length), " of ", filtered.length] }), _jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [_jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => setDashboardAuditPage((prev) => Math.max(1, prev - 1)), disabled: currentPage <= 1, children: "Previous" }), _jsxs("span", { style: { fontSize: 12, color: "var(--ink-3)" }, children: ["Page ", currentPage, " of ", totalPages] }), _jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => setDashboardAuditPage((prev) => Math.min(totalPages, prev + 1)), disabled: currentPage >= totalPages, children: "Next" })] })] })] }));
+                                        })()] })] })) : !isAdmin && userDashboard ? (_jsxs(_Fragment, { children: [_jsxs("div", { className: "dashboard-v2-header", children: [_jsxs("div", { children: [_jsx("h1", { children: "My Dashboard" }), _jsx("p", { children: "Live usage and activity for your account." })] }), _jsxs("div", { className: "time-range-picker", children: [_jsx(CalendarIcon, {}), _jsx("select", { value: dashboardRange, onChange: (event) => setDashboardRange(event.target.value), style: {
+                                                        background: "transparent",
+                                                        border: "none",
+                                                        color: "var(--ink-2)",
+                                                        fontSize: 13,
+                                                        fontWeight: 600,
+                                                        outline: "none",
+                                                        cursor: "pointer"
+                                                    }, children: DASHBOARD_RANGE_OPTIONS.map((option) => (_jsx("option", { value: option.value, children: option.label }, option.value))) }), _jsx("button", { className: "btn-ghost", style: { padding: "2px 6px" }, onClick: () => void refreshDashboard(), title: "Refresh dashboard", children: _jsx(RefreshCwIcon, { size: 14 }) })] })] }), _jsxs("section", { className: "metrics-v2-grid", children: [_jsxs("div", { className: "metric-v2-card", style: { transitionDelay: "0.1s" }, children: [_jsxs("div", { className: "m-v2-header", children: [_jsx("span", { className: "m-v2-title", children: "Accessible Items" }), _jsx(LayersIcon, { size: 16, className: "m-v2-icon" })] }), _jsx("div", { className: "m-v2-value", children: userDashboard.items.total_accessible.toLocaleString() }), _jsxs("div", { className: "m-v2-footer", children: [_jsxs("span", { style: { color: "var(--ink-3)" }, children: [userDashboard.items.files, " Files"] }), _jsx("span", { className: "m-divider" }), _jsxs("span", { style: { color: "var(--ink-3)" }, children: [userDashboard.items.folders, " Folders"] })] })] }), _jsxs("div", { className: "metric-v2-card", style: { transitionDelay: "0.15s" }, children: [_jsxs("div", { className: "m-v2-header", children: [_jsx("span", { className: "m-v2-title", children: "Ownership" }), _jsx(UsersIcon, { size: 16, className: "m-v2-icon" })] }), _jsx("div", { className: "m-v2-value", children: userDashboard.items.owned.toLocaleString() }), _jsxs("div", { className: "m-v2-footer", children: [_jsx("span", { style: { color: "var(--ink-3)" }, children: "Owned by you" }), _jsx("span", { className: "m-divider" }), _jsxs("span", { style: { color: "var(--ink-3)" }, children: [userDashboard.items.shared_with_me, " Shared with you"] })] })] }), _jsxs("div", { className: "metric-v2-card", style: { transitionDelay: "0.2s" }, children: [_jsxs("div", { className: "m-v2-header", children: [_jsx("span", { className: "m-v2-title", children: "Current Role" }), _jsx(ShieldIcon, { size: 16, className: "m-v2-icon" })] }), _jsx("div", { className: "m-v2-value", style: { textTransform: "capitalize" }, children: userDashboard.role }), _jsx("div", { className: "m-v2-footer", children: _jsxs("span", { style: { color: "var(--ink-3)" }, children: [userDashboard.permissions.length, " Active permissions"] }) })] }), _jsxs("div", { className: "metric-v2-card", style: { transitionDelay: "0.25s" }, children: [_jsxs("div", { className: "m-v2-header", children: [_jsx("span", { className: "m-v2-title", children: "24H Actions" }), _jsx(ActivityIcon, { size: 16, className: "m-v2-icon" })] }), _jsx("div", { className: "m-v2-value", children: (userDashboard.activityLast24h.uploads + userDashboard.activityLast24h.downloads + userDashboard.activityLast24h.updates + userDashboard.activityLast24h.deletes).toLocaleString() }), _jsxs("div", { className: "m-v2-footer", children: [_jsxs("span", { style: { color: "var(--ink-3)" }, children: [userDashboard.activityLast24h.logins, " Logins"] }), _jsx("span", { className: "m-divider" }), _jsxs("span", { style: { color: "var(--ink-3)" }, children: [userDashboard.activityLast24h.shares, " Shares"] })] })] })] }), _jsxs("section", { className: "bento-v2-grid", children: [_jsxs("div", { className: "panel-v2", children: [_jsxs("div", { className: "panel-v2-header", children: [_jsxs("h2", { children: ["Top Actions (", DASHBOARD_RANGE_LABELS[dashboardRange], ")"] }), _jsx("button", { className: "btn-ghost", style: { padding: 4 }, children: _jsx(ActivityIcon, { size: 16 }) })] }), _jsx("div", { className: "action-v2-list", children: userDashboard.topActions7d.length === 0 ? (_jsx("div", { style: { color: "var(--ink-4)", fontSize: 14, padding: "20px 0", textAlign: "center" }, children: "No recent activity." })) : (userDashboard.topActions7d.map((row) => {
                                                         const max = Math.max(...userDashboard.topActions7d.map((a) => a.count), 1);
                                                         const width = Math.max(8, Math.round((row.count / max) * 100));
                                                         const isAlert = row.action.includes("failed") || row.action.includes("delete");
                                                         return (_jsxs("div", { className: "action-v2-item", children: [_jsxs("div", { className: "a-v2-info", children: [_jsx("span", { className: `a-v2-name ${isAlert ? "text-alert" : ""}`, children: formatActionLabel(row.action) }), _jsx("span", { className: "a-v2-count", children: row.count })] }), _jsx("div", { className: "progress-v2-track", children: _jsx("div", { className: `progress-v2-fill ${isAlert ? "fill-red" : row.action.includes("create") || row.action.includes("upload") ? "fill-accent" : "fill-muted"}`, style: { width: `${width}%` } }) })] }, row.action));
-                                                    })) })] }), _jsxs("div", { className: "panel-v2", children: [_jsxs("div", { className: "panel-v2-header", children: [_jsx("h2", { children: "Activity Snapshot" }), _jsx("span", { className: "badge badge-neutral", style: { fontSize: 11 }, children: "24h" })] }), _jsxs("div", { className: "snapshot-v2-grid", children: [_jsxs("div", { className: "snap-v2-box", children: [_jsx("span", { className: "s-v2-label", children: "Logins" }), _jsx("span", { className: "s-v2-val", children: userDashboard.activityLast24h.logins })] }), _jsxs("div", { className: "snap-v2-box", children: [_jsx("span", { className: "s-v2-label", children: "Uploads" }), _jsx("span", { className: "s-v2-val", children: userDashboard.activityLast24h.uploads })] }), _jsxs("div", { className: "snap-v2-box", children: [_jsx("span", { className: "s-v2-label", children: "Downloads" }), _jsx("span", { className: "s-v2-val", children: userDashboard.activityLast24h.downloads })] }), _jsxs("div", { className: "snap-v2-box", children: [_jsx("span", { className: "s-v2-label", children: "Updates" }), _jsx("span", { className: "s-v2-val", children: userDashboard.activityLast24h.updates })] }), _jsxs("div", { className: "snap-v2-box bg-alert-subtle", children: [_jsx("span", { className: "s-v2-label text-alert", children: "Deletes" }), _jsx("span", { className: "s-v2-val text-alert", children: userDashboard.activityLast24h.deletes })] }), _jsxs("div", { className: "snap-v2-box", children: [_jsx("span", { className: "s-v2-label", children: "Shares" }), _jsx("span", { className: "s-v2-val", children: userDashboard.activityLast24h.shares })] })] })] })] }), _jsxs("div", { className: "panel-v2 table-panel-v2", children: [_jsx("div", { className: "panel-v2-header", children: _jsx("h2", { children: "Recent Activity" }) }), userDashboard.recentActivity.length === 0 ? (_jsx("div", { style: { color: "var(--ink-4)", fontSize: 14, padding: "40px 0", textAlign: "center" }, children: "No activity entries yet." })) : (_jsxs("table", { className: "data-table", children: [_jsx("thead", { children: _jsxs("tr", { children: [_jsx("th", { children: "Time" }), _jsx("th", { children: "Action" }), _jsx("th", { children: "Actor" }), _jsx("th", { children: "Target" })] }) }), _jsx("tbody", { children: userDashboard.recentActivity.map((log) => {
-                                                        const isAlert = log.action.includes("failed") || log.action.includes("delete");
-                                                        return (_jsxs("tr", { className: isAlert ? "row-danger" : "", children: [_jsx("td", { className: "cell-muted", style: { fontSize: 12 }, children: formatDate(log.created_at) }), _jsx("td", { children: _jsx("span", { className: `pill-v2 ${isAlert ? "pill-v2-red" : "pill-v2-blue"}`, children: formatActionLabel(log.action) }) }), _jsx("td", { className: "t-main", style: { fontWeight: 600 }, children: log.actor_email ?? session.user.email }), _jsxs("td", { className: "cell-muted", style: { fontFamily: "ui-monospace, monospace", fontSize: 12 }, children: [log.target_type, log.target_id ? ` · ${String(log.target_id).slice(0, 8)}...` : ""] })] }, log.id));
-                                                    }) })] }))] })] })) : (_jsx("div", { className: "panel", style: { textAlign: "center", padding: "56px 0", color: "var(--ink-3)" }, children: "Dashboard data is unavailable." })) })), tab === "Users" && (_jsxs("div", { className: "panel", children: [_jsx("div", { style: { display: "flex", justifyContent: "flex-end", padding: "12px 16px", borderBottom: "1px solid var(--border)" }, children: _jsxs("button", { className: "btn btn-primary btn-sm", onClick: () => setShowCreateUser(true), children: [_jsx(PlusIcon, {}), " Create User"] }) }), _jsxs("table", { className: "data-table", children: [_jsx("thead", { children: _jsxs("tr", { children: [_jsx("th", { children: "User / Name" }), _jsx("th", { children: "Roles" }), _jsx("th", { children: "Status" }), _jsx("th", { children: "Created" }), _jsx("th", { children: "Actions" })] }) }), _jsx("tbody", { children: (() => {
+                                                    })) })] }), _jsxs("div", { className: "panel-v2", children: [_jsxs("div", { className: "panel-v2-header", children: [_jsx("h2", { children: "Activity Snapshot" }), _jsx("span", { className: "badge badge-neutral", style: { fontSize: 11 }, children: "24h" })] }), _jsxs("div", { className: "snapshot-v2-grid", children: [_jsxs("div", { className: "snap-v2-box", children: [_jsx("span", { className: "s-v2-label", children: "Logins" }), _jsx("span", { className: "s-v2-val", children: userDashboard.activityLast24h.logins })] }), _jsxs("div", { className: "snap-v2-box", children: [_jsx("span", { className: "s-v2-label", children: "Uploads" }), _jsx("span", { className: "s-v2-val", children: userDashboard.activityLast24h.uploads })] }), _jsxs("div", { className: "snap-v2-box", children: [_jsx("span", { className: "s-v2-label", children: "Downloads" }), _jsx("span", { className: "s-v2-val", children: userDashboard.activityLast24h.downloads })] }), _jsxs("div", { className: "snap-v2-box", children: [_jsx("span", { className: "s-v2-label", children: "Updates" }), _jsx("span", { className: "s-v2-val", children: userDashboard.activityLast24h.updates })] }), _jsxs("div", { className: "snap-v2-box bg-alert-subtle", children: [_jsx("span", { className: "s-v2-label text-alert", children: "Deletes" }), _jsx("span", { className: "s-v2-val text-alert", children: userDashboard.activityLast24h.deletes })] }), _jsxs("div", { className: "snap-v2-box", children: [_jsx("span", { className: "s-v2-label", children: "Shares" }), _jsx("span", { className: "s-v2-val", children: userDashboard.activityLast24h.shares })] })] })] })] }), _jsxs("div", { className: "panel-v2 table-panel-v2", children: [_jsx("div", { className: "panel-v2-header", children: _jsx("h2", { children: "Recent Activity" }) }), (() => {
+                                            const totalPages = Math.max(1, Math.ceil(userDashboard.recentActivity.length / DEFAULT_PAGE_SIZE));
+                                            const currentPage = Math.min(userRecentActivityPage, totalPages);
+                                            const startIndex = (currentPage - 1) * DEFAULT_PAGE_SIZE;
+                                            const pagedLogs = userDashboard.recentActivity.slice(startIndex, startIndex + DEFAULT_PAGE_SIZE);
+                                            if (userDashboard.recentActivity.length === 0) {
+                                                return (_jsx("div", { style: { color: "var(--ink-4)", fontSize: 14, padding: "40px 0", textAlign: "center" }, children: "No activity entries yet." }));
+                                            }
+                                            return (_jsxs(_Fragment, { children: [_jsxs("table", { className: "data-table", children: [_jsx("thead", { children: _jsxs("tr", { children: [_jsx("th", { children: "Time" }), _jsx("th", { children: "Action" }), _jsx("th", { children: "Actor" }), _jsx("th", { children: "Target" })] }) }), _jsx("tbody", { children: pagedLogs.map((log) => {
+                                                                    const isAlert = log.action.includes("failed") || log.action.includes("delete");
+                                                                    return (_jsxs("tr", { className: isAlert ? "row-danger" : "", children: [_jsx("td", { className: "cell-muted", style: { fontSize: 12 }, children: formatDate(log.created_at) }), _jsx("td", { children: _jsx("span", { className: `pill-v2 ${isAlert ? "pill-v2-red" : "pill-v2-blue"}`, children: formatActionLabel(log.action) }) }), _jsx("td", { className: "t-main", style: { fontWeight: 600 }, children: log.actor_email ?? session.user.email }), _jsxs("td", { className: "cell-muted", style: { fontFamily: "ui-monospace, monospace", fontSize: 12 }, children: [log.target_type, log.target_id ? ` · ${String(log.target_id).slice(0, 8)}...` : ""] })] }, log.id));
+                                                                }) })] }), _jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "12px 0 0", flexWrap: "wrap" }, children: [_jsxs("span", { style: { fontSize: 12, color: "var(--ink-4)" }, children: ["Showing ", startIndex + 1, "-", Math.min(startIndex + DEFAULT_PAGE_SIZE, userDashboard.recentActivity.length), " of ", userDashboard.recentActivity.length] }), _jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [_jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => setUserRecentActivityPage((prev) => Math.max(1, prev - 1)), disabled: currentPage <= 1, children: "Previous" }), _jsxs("span", { style: { fontSize: 12, color: "var(--ink-3)" }, children: ["Page ", currentPage, " of ", totalPages] }), _jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => setUserRecentActivityPage((prev) => Math.min(totalPages, prev + 1)), disabled: currentPage >= totalPages, children: "Next" })] })] })] }));
+                                        })()] })] })) : (_jsx("div", { className: "panel", style: { textAlign: "center", padding: "56px 0", color: "var(--ink-3)" }, children: "Dashboard data is unavailable." })) })), tab === "Users" && (_jsxs("div", { className: "panel", children: [_jsx("div", { style: { display: "flex", justifyContent: "flex-end", padding: "12px 16px", borderBottom: "1px solid var(--border)" }, children: _jsxs("button", { className: "btn btn-primary btn-sm", onClick: () => setShowCreateUser(true), children: [_jsx(PlusIcon, {}), " Create User"] }) }), _jsxs("table", { className: "data-table", children: [_jsx("thead", { children: _jsxs("tr", { children: [_jsx("th", { children: "User / Name" }), _jsx("th", { children: "Roles" }), _jsx("th", { children: "Status" }), _jsx("th", { children: "Created" }), _jsx("th", { children: "Actions" })] }) }), _jsx("tbody", { children: (() => {
                                             const adminUsers = users.filter(u => !u.roles || u.roles.length === 0);
                                             const regularUsers = users.filter(u => u.roles && u.roles.length > 0);
+                                            const orderedUsers = [...adminUsers, ...regularUsers];
+                                            const totalPages = Math.max(1, Math.ceil(orderedUsers.length / DEFAULT_PAGE_SIZE));
+                                            const currentPage = Math.min(usersPage, totalPages);
+                                            const startIndex = (currentPage - 1) * DEFAULT_PAGE_SIZE;
+                                            const pagedUsers = orderedUsers.slice(startIndex, startIndex + DEFAULT_PAGE_SIZE);
+                                            const pagedAdminUsers = pagedUsers.filter(u => !u.roles || u.roles.length === 0);
+                                            const pagedRegularUsers = pagedUsers.filter(u => u.roles && u.roles.length > 0);
                                             const renderRow = (user) => {
                                                 const isAdminUser = !user.roles || user.roles.length === 0;
                                                 return (_jsxs("tr", { onClick: () => !isAdminUser && onSelectUser(user), style: {
@@ -1636,36 +2047,44 @@ export default function App() {
                                                                     : "Logout this user from all active sessions", children: "Logout user" })) : (_jsx("span", { className: "cell-muted", children: "-" })) })] }, user.id));
                                             };
                                             const sectionLabel = (label) => (_jsx("tr", { style: { pointerEvents: "none" }, children: _jsx("td", { colSpan: 5, style: { padding: "8px 16px 4px", background: "var(--bg)" }, children: _jsx("span", { style: { fontSize: 11, fontWeight: 700, color: "var(--ink-4)", letterSpacing: "0.6px", textTransform: "uppercase" }, children: label }) }) }, `section-${label}`));
-                                            return (_jsxs(_Fragment, { children: [adminUsers.length > 0 && sectionLabel("Administrators"), adminUsers.map(u => renderRow(u)), regularUsers.length > 0 && sectionLabel("Users"), regularUsers.map(u => renderRow(u))] }));
-                                        })() })] }), selectedUser && (_jsx("div", { className: "modal-overlay", onClick: () => setSelectedUser(null), children: _jsxs("div", { className: "modal", onClick: (e) => e.stopPropagation(), style: { maxWidth: 440 }, children: [_jsxs("div", { className: "user-detail-header", children: [_jsx("div", { className: "user-detail-avatar", children: getInitials({ firstName: selectedUser.first_name, lastName: selectedUser.last_name, email: selectedUser.email }) }), _jsxs("div", { children: [_jsx("div", { className: "user-detail-name", children: selectedUser.first_name ? `${selectedUser.first_name} ${selectedUser.last_name}` : "System User" }), _jsxs("div", { className: "user-detail-sub", children: [_jsx("span", { children: selectedUser.email }), _jsx("span", { className: `badge ${selectedUser.status === "active" ? "badge-active" : "badge-disabled"}`, style: { marginLeft: 8 }, children: selectedUser.status })] })] })] }), _jsx("div", { className: "user-detail-section-title", children: "Edit User Details" }), _jsxs("div", { style: { display: "grid", gap: 10 }, children: [_jsx("input", { className: "modal-input", type: "text", placeholder: "First Name", value: editUserFirstName, onChange: (e) => setEditUserFirstName(e.target.value), style: { margin: 0 } }), _jsx("input", { className: "modal-input", type: "text", placeholder: "Last Name", value: editUserLastName, onChange: (e) => setEditUserLastName(e.target.value), style: { margin: 0 } }), _jsx("input", { className: "modal-input", type: "email", placeholder: "Email address", value: editUserEmail, onChange: (e) => setEditUserEmail(e.target.value), style: { margin: 0 } })] }), _jsx("div", { style: { display: "flex", marginTop: 12, marginBottom: 12 }, children: _jsx("button", { className: "btn btn-primary btn-sm", onClick: onSaveUserProfile, disabled: isBusy || !editUserEmail.trim(), style: { width: "100%" }, children: isBusy ? "Saving..." : "Save Details" }) }), _jsx("div", { className: "user-detail-section-title", children: "Manage Access Roles" }), _jsx("div", { className: "role-grid", children: roles
-                                                .filter((role) => ["viewer", "editor"].includes(role.name))
-                                                .map((role) => (_jsxs("div", { className: `role-chip ${selectedRoleIds.has(role.id) ? "assigned" : ""}`, style: { padding: "12px 16px", borderRadius: 12, border: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center", background: selectedRoleIds.has(role.id) ? "var(--accent-light)" : "transparent" }, children: [_jsx("span", { style: { fontWeight: 600, color: "var(--ink-1)", textTransform: "capitalize" }, children: role.name }), _jsx("button", { onClick: () => onRequestUserAccessRoleChange(role.id), disabled: isBusy || selectedRoleIds.has(role.id), title: selectedRoleIds.has(role.id) ? "Current role" : "Set role", style: { background: selectedRoleIds.has(role.id) ? "var(--green)" : "var(--accent)", color: "white", border: "none", width: 20, height: 20, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 16, opacity: isBusy ? 0.6 : 1 }, children: selectedRoleIds.has(role.id) ? "✓" : "+" })] }, role.id))) }), _jsxs("div", { className: "user-detail-actions", style: { display: "grid", gridTemplateColumns: "1fr", gap: 12, marginTop: 24 }, children: [_jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => onResetPassword(selectedUser.id), children: "Reset Password" }), _jsx("button", { className: "btn btn-ghost btn-sm", onClick: () => {
-                                                        void onForceLogoutUser(selectedUser);
-                                                    }, disabled: isBusy || selectedUser.id === session?.user?.id || !canControlSecurity, title: !canControlSecurity
-                                                        ? "Requires security control permission"
-                                                        : selectedUser.id === session?.user?.id
-                                                            ? "Use 'Logout everyone' if you need to clear your own session"
-                                                            : "Logout this user from all active sessions", children: "Logout User" }), (() => {
-                                                    const isAdminUser = !selectedUser.roles || selectedUser.roles.length === 0;
-                                                    const isSelf = selectedUser.id === session?.user?.id;
-                                                    if (isAdminUser) {
-                                                        return (_jsxs("div", { style: {
-                                                                display: "flex",
-                                                                alignItems: "center",
-                                                                gap: 8,
-                                                                padding: "8px 14px",
-                                                                borderRadius: 8,
-                                                                background: "rgba(129,140,248,0.08)",
-                                                                border: "1px solid rgba(129,140,248,0.2)",
-                                                                fontSize: 12,
-                                                                color: "var(--accent)",
-                                                                fontWeight: 600
-                                                            }, children: [_jsx(ShieldIcon, { size: 14 }), "Admin account \u2014 cannot be removed"] }));
-                                                    }
-                                                    return (_jsx("button", { className: "btn btn-danger btn-sm", onClick: () => setDeleteUserId(selectedUser.id), disabled: isBusy || isSelf, title: isSelf ? "You cannot remove your own account" : "Remove user", children: "Remove User" }));
-                                                })()] }), _jsx("div", { style: { marginTop: 24, paddingTop: 20, borderTop: "1px solid var(--border)" }, children: _jsx("button", { className: "btn btn-primary", onClick: () => {
-                                                    void onDoneUserDetails();
-                                                }, disabled: isBusy, style: { width: "100%" }, children: isBusy ? "Saving..." : isUserProfileDirty ? "Save & Done" : "Done" }) })] }) })), resetUserId && (_jsx("div", { className: "modal-overlay", onClick: () => setResetUserId(null), children: _jsxs("div", { className: "modal", onClick: (e) => e.stopPropagation(), style: { maxWidth: 400 }, children: [_jsx("div", { className: "modal-title", children: "Reset Password" }), _jsx("div", { className: "modal-desc", children: "Enter a new password for this user." }), _jsxs("div", { style: { fontSize: 12, color: "var(--ink-4)", marginBottom: 14, padding: "10px 14px", background: "var(--surface)", borderRadius: 10, lineHeight: 1.6 }, children: ["\uD83D\uDD12 Must be ", _jsx("strong", { children: "8+ characters" }), " with uppercase, lowercase, number and special character (e.g. ", _jsx("code", { children: "Secure@123" }), ")."] }), _jsxs("div", { className: "input-group", style: { marginBottom: 20 }, children: [_jsx("span", { className: "input-icon", children: _jsx(LockIcon, {}) }), _jsx("input", { type: showResetPassword ? "text" : "password", placeholder: "New password", value: resetNewPassword, onChange: (e) => setResetNewPassword(e.target.value), required: true, autoFocus: true }), _jsx("button", { type: "button", className: "input-action-btn", onClick: () => setShowResetPassword(!showResetPassword), children: showResetPassword ? _jsx(EyeOffIcon, { size: 18 }) : _jsx(EyeIcon, { size: 18 }) })] }), _jsxs("div", { style: { display: "flex", gap: 12 }, children: [_jsx("button", { className: "btn btn-secondary", onClick: () => setResetUserId(null), style: { flex: 1 }, children: "Cancel" }), _jsx("button", { className: "btn btn-primary", onClick: onConfirmResetPassword, disabled: isBusy || Boolean(resetPasswordError), style: { flex: 1 }, children: isBusy ? "Resetting..." : "Reset Password" })] })] }) })), pendingRoleChange && selectedUser && (_jsx("div", { className: "modal-overlay", onClick: () => (!isBusy ? setPendingRoleChange(null) : undefined), children: _jsxs("div", { className: "modal", onClick: (e) => e.stopPropagation(), style: { maxWidth: 420 }, children: [_jsx("div", { className: "modal-title", children: "Confirm role change" }), _jsxs("div", { className: "modal-desc", style: { lineHeight: 1.6 }, children: ["Change ", _jsx("strong", { children: selectedUser.email }), " from", " ", _jsx("strong", { children: pendingRoleChange.currentRoleName ?? "no role" }), " to", " ", _jsx("strong", { children: pendingRoleChange.roleName }), "?"] }), _jsxs("div", { style: { display: "flex", gap: 12 }, children: [_jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => setPendingRoleChange(null), disabled: isBusy, style: { flex: 1 }, children: "Cancel" }), _jsx("button", { className: "btn btn-primary btn-sm", onClick: () => {
+                                            return (_jsxs(_Fragment, { children: [pagedAdminUsers.length > 0 && sectionLabel("Administrators"), pagedAdminUsers.map(u => renderRow(u)), pagedRegularUsers.length > 0 && sectionLabel("Users"), pagedRegularUsers.map(u => renderRow(u))] }));
+                                        })() })] }), (() => {
+                                const totalUsers = users.length;
+                                const totalPages = Math.max(1, Math.ceil(totalUsers / DEFAULT_PAGE_SIZE));
+                                const currentPage = Math.min(usersPage, totalPages);
+                                const startIndex = (currentPage - 1) * DEFAULT_PAGE_SIZE;
+                                const start = totalUsers === 0 ? 0 : startIndex + 1;
+                                const end = Math.min(startIndex + DEFAULT_PAGE_SIZE, totalUsers);
+                                return (_jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "12px 16px 0", flexWrap: "wrap" }, children: [_jsxs("span", { style: { fontSize: 12, color: "var(--ink-4)" }, children: ["Showing ", start, "-", end, " of ", totalUsers] }), _jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [_jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => setUsersPage((prev) => Math.max(1, prev - 1)), disabled: currentPage <= 1, children: "Previous" }), _jsxs("span", { style: { fontSize: 12, color: "var(--ink-3)" }, children: ["Page ", currentPage, " of ", totalPages] }), _jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => setUsersPage((prev) => Math.min(totalPages, prev + 1)), disabled: currentPage >= totalPages, children: "Next" })] })] }));
+                            })(), selectedUser && (_jsx("div", { className: "modal-overlay", onClick: () => setSelectedUser(null), children: _jsxs("div", { className: "modal", onClick: (e) => e.stopPropagation(), style: { maxWidth: 480, padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" }, children: [_jsxs("header", { style: { padding: "24px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "flex-start", justifyContent: "space-between" }, children: [_jsxs("div", { style: { display: "flex", alignItems: "center", gap: 16 }, children: [_jsx("div", { style: {
+                                                                width: 56, height: 56, borderRadius: "50%",
+                                                                background: "linear-gradient(135deg, #4f46e5, #818cf8)",
+                                                                color: "white", display: "flex", alignItems: "center", justifyContent: "center",
+                                                                fontSize: 20, fontWeight: 700, flexShrink: 0,
+                                                                boxShadow: "0 4px 10px rgba(99,102,241,0.3)"
+                                                            }, children: getInitials({ firstName: selectedUser.first_name, lastName: selectedUser.last_name, email: selectedUser.email }) }), _jsxs("div", { children: [_jsxs("div", { style: { fontSize: 18, fontWeight: 600, color: "var(--ink-1)", display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }, children: [selectedUser.first_name ? `${selectedUser.first_name} ${selectedUser.last_name}` : "System User", _jsx("span", { className: `badge ${selectedUser.status === "active" ? "badge-active" : "badge-disabled"}`, style: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px" }, children: selectedUser.status })] }), _jsx("div", { style: { fontSize: 14, color: "var(--ink-3)" }, children: selectedUser.email })] })] }), _jsx("button", { onClick: () => setSelectedUser(null), style: { background: "transparent", border: "none", color: "var(--ink-3)", cursor: "pointer", padding: 4, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center" }, onMouseEnter: e => { e.currentTarget.style.background = "var(--surface)"; e.currentTarget.style.color = "var(--ink-1)"; }, onMouseLeave: e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--ink-3)"; }, children: _jsxs("svg", { width: "20", height: "20", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", children: [_jsx("line", { x1: "18", y1: "6", x2: "6", y2: "18" }), _jsx("line", { x1: "6", y1: "6", x2: "18", y2: "18" })] }) })] }), _jsxs("div", { style: { padding: "24px", display: "flex", flexDirection: "column", gap: 24, overflowY: "auto", maxHeight: "65vh" }, children: [_jsxs("div", { children: [_jsx("div", { style: { fontSize: 12, fontWeight: 600, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12 }, children: "Edit User Details" }), _jsxs("div", { style: { display: "flex", gap: 16, marginBottom: 16 }, children: [_jsxs("div", { style: { flex: 1, display: "flex", flexDirection: "column", gap: 6 }, children: [_jsx("label", { style: { fontSize: 13, fontWeight: 500, color: "var(--ink-2)" }, children: "First Name" }), _jsx("input", { className: "modal-input", type: "text", placeholder: "First Name", value: editUserFirstName, onChange: (e) => setEditUserFirstName(e.target.value), style: { margin: 0 } })] }), _jsxs("div", { style: { flex: 1, display: "flex", flexDirection: "column", gap: 6 }, children: [_jsx("label", { style: { fontSize: 13, fontWeight: 500, color: "var(--ink-2)" }, children: "Last Name" }), _jsx("input", { className: "modal-input", type: "text", placeholder: "Last Name", value: editUserLastName, onChange: (e) => setEditUserLastName(e.target.value), style: { margin: 0 } })] })] }), _jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 6 }, children: [_jsx("label", { style: { fontSize: 13, fontWeight: 500, color: "var(--ink-2)" }, children: "Email Address" }), _jsx("input", { className: "modal-input", type: "email", placeholder: "Email address", value: editUserEmail, onChange: (e) => setEditUserEmail(e.target.value), style: { margin: 0 } })] })] }), _jsxs("div", { children: [_jsx("div", { style: { fontSize: 12, fontWeight: 600, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12 }, children: "Manage Access Role" }), _jsxs("div", { className: "shad-select-wrapper", style: { width: "100%" }, children: [_jsxs("select", { className: "shad-select modal-input", style: { width: "100%", margin: 0 }, value: Array.from(selectedRoleIds)[0] || "", onChange: (e) => onRequestUserAccessRoleChange(e.target.value), disabled: isBusy, children: [_jsx("option", { value: "", disabled: true, children: "Select a role..." }), roles.filter(r => ["viewer", "editor"].includes(r.name)).map(role => (_jsx("option", { value: role.id, children: role.name.charAt(0).toUpperCase() + role.name.slice(1) }, role.id)))] }), _jsx(ChevronIcon, { size: 16, className: "shad-select-caret" })] })] }), _jsxs("div", { children: [_jsx("div", { style: { fontSize: 12, fontWeight: 600, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12 }, children: "Account Management" }), _jsxs("div", { className: "shad-select-wrapper", style: { width: "100%" }, children: [_jsxs("select", { className: "shad-select modal-input", style: { width: "100%", margin: 0 }, value: "", onChange: (e) => {
+                                                                        const val = e.target.value;
+                                                                        if (val === "reset")
+                                                                            onResetPassword(selectedUser.id);
+                                                                        else if (val === "logout")
+                                                                            void onForceLogoutUser(selectedUser);
+                                                                        else if (val === "remove")
+                                                                            setDeleteUserId(selectedUser.id);
+                                                                        e.target.value = "";
+                                                                    }, disabled: isBusy, children: [_jsx("option", { value: "", disabled: true, children: "Select an action..." }), _jsx("option", { value: "reset", children: "Reset Password" }), _jsx("option", { value: "logout", disabled: selectedUser.id === session?.user?.id || !canControlSecurity, children: "Force Logout" }), (() => {
+                                                                            const isAdminUser = !selectedUser.roles || selectedUser.roles.length === 0;
+                                                                            const isSelf = selectedUser.id === session?.user?.id;
+                                                                            if (!isAdminUser) {
+                                                                                return _jsx("option", { value: "remove", disabled: isSelf, children: "Remove User" }, "remove");
+                                                                            }
+                                                                            return null;
+                                                                        })()] }), _jsx(ChevronIcon, { size: 16, className: "shad-select-caret" })] }), (() => {
+                                                            const isAdminUser = !selectedUser.roles || selectedUser.roles.length === 0;
+                                                            if (isAdminUser) {
+                                                                return (_jsxs("div", { style: { marginTop: 12, display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderRadius: 8, background: "rgba(129,140,248,0.08)", border: "1px solid rgba(129,140,248,0.2)", fontSize: 12, color: "var(--accent)", fontWeight: 600 }, children: [_jsx(ShieldIcon, { size: 14 }), " Admin account \u2014 cannot be removed"] }));
+                                                            }
+                                                            return null;
+                                                        })()] })] }), _jsxs("footer", { style: { padding: "16px 24px", borderTop: "1px solid var(--border)", background: "var(--panel-bg)", display: "flex", justifyContent: "flex-end", gap: 12 }, children: [_jsx("button", { className: "btn btn-ghost", onClick: () => setSelectedUser(null), children: "Cancel" }), _jsx("button", { className: "btn btn-primary", onClick: () => { void onDoneUserDetails(); }, disabled: isBusy || !editUserEmail.trim(), children: isBusy ? "Saving..." : isUserProfileDirty ? "Save Changes" : "Save" })] })] }) })), resetUserId && (_jsx("div", { className: "modal-overlay", onClick: () => setResetUserId(null), children: _jsxs("div", { className: "modal", onClick: (e) => e.stopPropagation(), style: { maxWidth: 400 }, children: [_jsx("div", { className: "modal-title", children: "Reset Password" }), _jsx("div", { className: "modal-desc", children: "Enter a new password for this user." }), _jsxs("div", { style: { fontSize: 12, color: "var(--ink-4)", marginBottom: 14, padding: "10px 14px", background: "var(--surface)", borderRadius: 10, lineHeight: 1.6 }, children: ["\uD83D\uDD12 Must be ", _jsx("strong", { children: "8+ characters" }), " with uppercase, lowercase, number and special character (e.g. ", _jsx("code", { children: "Secure@123" }), ")."] }), _jsxs("div", { className: "input-group", style: { marginBottom: 20 }, children: [_jsx("span", { className: "input-icon", children: _jsx(LockIcon, {}) }), _jsx("input", { type: showResetPassword ? "text" : "password", placeholder: "New password", value: resetNewPassword, onChange: (e) => setResetNewPassword(e.target.value), required: true, autoFocus: true }), _jsx("button", { type: "button", className: "input-action-btn", onClick: () => setShowResetPassword(!showResetPassword), children: showResetPassword ? _jsx(EyeOffIcon, { size: 18 }) : _jsx(EyeIcon, { size: 18 }) })] }), _jsxs("div", { style: { display: "flex", gap: 12 }, children: [_jsx("button", { className: "btn btn-secondary", onClick: () => setResetUserId(null), style: { flex: 1 }, children: "Cancel" }), _jsx("button", { className: "btn btn-primary", onClick: onConfirmResetPassword, disabled: isBusy || Boolean(resetPasswordError), style: { flex: 1 }, children: isBusy ? "Resetting..." : "Reset Password" })] })] }) })), pendingRoleChange && selectedUser && (_jsx("div", { className: "modal-overlay", onClick: () => (!isBusy ? setPendingRoleChange(null) : undefined), children: _jsxs("div", { className: "modal", onClick: (e) => e.stopPropagation(), style: { maxWidth: 420 }, children: [_jsx("div", { className: "modal-title", children: "Confirm role change" }), _jsxs("div", { className: "modal-desc", style: { lineHeight: 1.6 }, children: ["Change ", _jsx("strong", { children: selectedUser.email }), " from", " ", _jsx("strong", { children: pendingRoleChange.currentRoleName ?? "no role" }), " to", " ", _jsx("strong", { children: pendingRoleChange.roleName }), "?"] }), _jsxs("div", { style: { display: "flex", gap: 12 }, children: [_jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => setPendingRoleChange(null), disabled: isBusy, style: { flex: 1 }, children: "Cancel" }), _jsx("button", { className: "btn btn-primary btn-sm", onClick: () => {
                                                         void onConfirmUserAccessRoleChange();
                                                     }, disabled: isBusy, style: { flex: 1 }, children: isBusy ? "Updating..." : "Confirm" })] })] }) })), deleteUserId && (_jsx("div", { className: "modal-overlay", onClick: () => (!isBusy ? setDeleteUserId(null) : undefined), children: _jsxs("div", { className: "modal", onClick: (e) => e.stopPropagation(), style: { maxWidth: 420 }, children: [_jsx("div", { className: "modal-title", children: "Remove user" }), _jsxs("div", { className: "modal-desc", style: { lineHeight: 1.6 }, children: ["This will permanently remove ", _jsx("strong", { children: deleteUserTarget?.email ?? "this user" }), " and all owned data. This action cannot be undone."] }), _jsxs("div", { style: { display: "flex", gap: 12 }, children: [_jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => setDeleteUserId(null), disabled: isBusy, style: { flex: 1 }, children: "Cancel" }), _jsx("button", { className: "btn btn-danger btn-sm", onClick: onConfirmRemoveUser, disabled: isBusy, style: { flex: 1 }, children: isBusy ? "Removing..." : "Remove User" })] })] }) }))] })), tab === "Roles" && (() => {
                         const ROLE_META = {
@@ -1830,6 +2249,10 @@ export default function App() {
                                                             .filter((user) => user.id !== session?.user?.id)
                                                             .map((user) => (_jsx("option", { value: user.id, children: user.email }, user.id)))] }), _jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => void onForceLogoutSelectedUser(), disabled: isBusy || !securityTargetUserId, children: "Logout Selected User" })] })] }), _jsxs("div", { style: { display: "flex", gap: 10, flexWrap: "wrap" }, children: [_jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => void onForceLogoutEveryone(), disabled: isBusy, children: "Logout Everyone" }), _jsx("button", { className: "btn btn-danger btn-sm", onClick: () => void onTapOff(), disabled: isBusy || Boolean(securityState?.tapOffActive), children: "Activate Tap-Off" }), _jsx("button", { className: "btn btn-primary btn-sm", onClick: () => void onTapOn(), disabled: isBusy || !securityState?.tapOffActive, children: "Restore Service" })] }), _jsxs("div", { style: { marginTop: 16, fontSize: 12, color: "var(--ink-4)" }, children: ["Tip: Use the ", _jsx("strong", { children: "Logout user" }), " action in the Users tab for targeted session revocation."] })] })) })), tab === "Audit Logs" && (() => {
                         const filteredLogs = auditLogs;
+                        const totalPages = Math.max(1, Math.ceil(filteredLogs.length / DEFAULT_PAGE_SIZE));
+                        const currentPage = Math.min(auditPage, totalPages);
+                        const startIndex = (currentPage - 1) * DEFAULT_PAGE_SIZE;
+                        const pagedLogs = filteredLogs.slice(startIndex, startIndex + DEFAULT_PAGE_SIZE);
                         const dangerCount = filteredLogs.filter(l => getAuditCategory(l.action) === "danger").length;
                         const authCount = filteredLogs.filter(l => getAuditCategory(l.action) === "auth").length;
                         const fileCount = filteredLogs.filter(l => getAuditCategory(l.action) === "file").length;
@@ -1837,7 +2260,7 @@ export default function App() {
                         // Build rows with date-group separators
                         const rows = [];
                         let lastGroup = "";
-                        for (const log of filteredLogs) {
+                        for (const log of pagedLogs) {
                             const group = formatDateGroup(log.created_at);
                             if (group !== lastGroup) {
                                 rows.push({ type: "separator", label: group });
@@ -1845,81 +2268,81 @@ export default function App() {
                             }
                             rows.push({ type: "log", log });
                         }
-                        return (_jsxs("div", { className: "panel", children: [_jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: 20, flexWrap: "wrap" }, children: [_jsxs("div", { children: [_jsx("h2", { style: { margin: 0, fontSize: 20, fontWeight: 800, color: "var(--ink-1)" }, children: "Audit Activity" }), _jsx("p", { style: { margin: "6px 0 0", fontSize: 14, color: "var(--ink-3)" }, children: "Track who did what, when, and on which target." })] }), _jsxs("button", { className: "btn btn-secondary btn-sm", onClick: () => void refreshAuditLogs(), disabled: auditLoading, children: [_jsx(RefreshCwIcon, { size: 14, style: { marginRight: 4 } }), auditLoading ? "Refreshing..." : "Refresh"] })] }), filteredLogs.length > 0 && (_jsxs("div", { style: { display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }, children: [_jsxs("span", { style: { fontSize: 12, color: "var(--ink-4)", fontWeight: 600 }, children: [filteredLogs.length, " event", filteredLogs.length !== 1 ? "s" : ""] }), dangerCount > 0 && (_jsxs("span", { className: "audit-stat-chip audit-stat-chip-danger", children: [dangerCount, " danger"] })), authCount > 0 && (_jsxs("span", { className: "audit-stat-chip audit-stat-chip-auth", children: [authCount, " auth"] })), fileCount > 0 && (_jsxs("span", { className: "audit-stat-chip audit-stat-chip-file", children: [fileCount, " file"] })), adminCount > 0 && (_jsxs("span", { className: "audit-stat-chip audit-stat-chip-admin", children: [adminCount, " admin"] }))] })), auditError ? (_jsxs("div", { style: { color: "var(--red)", textAlign: "center", padding: "32px 0", fontSize: 14 }, children: ["\u26A0 ", auditError] })) : auditLoading && auditLogs.length === 0 ? (_jsxs("div", { style: { color: "var(--ink-3)", textAlign: "center", padding: "40px 0", fontSize: 14 }, children: [_jsx("div", { style: { marginBottom: 8, opacity: 0.5 }, children: "\u23F3" }), "Loading activity logs\u2026"] })) : filteredLogs.length === 0 ? (_jsxs("div", { style: { color: "var(--ink-3)", textAlign: "center", padding: "40px 0", fontSize: 14 }, children: [_jsx("div", { style: { fontSize: 28, marginBottom: 8 }, children: "\uD83D\uDD0D" }), "No activity found for the selected filters."] })) : (_jsx("div", { style: { overflowX: "auto" }, children: _jsxs("table", { className: "data-table", children: [_jsx("thead", { children: _jsxs("tr", { children: [_jsx("th", { style: { minWidth: 160 }, children: "Time" }), _jsx("th", { style: { minWidth: 200 }, children: "User / Actor" }), _jsx("th", { style: { minWidth: 170 }, children: "Action" }), _jsx("th", { style: { minWidth: 150 }, children: "Target" }), _jsx("th", { children: "Details" }), _jsx("th", { style: { width: 36 } })] }) }), _jsx("tbody", { children: rows.map((row, idx) => {
-                                                    if (row.type === "separator") {
-                                                        return (_jsx("tr", { className: "date-separator", children: _jsx("td", { colSpan: 6, children: row.label }) }, `sep-${idx}`));
-                                                    }
-                                                    const { log } = row;
-                                                    const cat = getAuditCategory(log.action);
-                                                    const catStyle = AUDIT_CATEGORY_STYLES[cat];
-                                                    const isExpanded = auditExpandedRows.has(log.id);
-                                                    const hasMetadata = log.metadata && Object.keys(log.metadata).length > 0;
-                                                    const isDanger = cat === "danger";
-                                                    return (_jsxs(_Fragment, { children: [_jsxs("tr", { className: `audit-row-hover${isDanger ? " bg-alert-subtle" : ""}`, style: { cursor: hasMetadata ? "pointer" : "default" }, onClick: () => {
-                                                                    if (!hasMetadata)
-                                                                        return;
-                                                                    setAuditExpandedRows((prev) => {
-                                                                        const next = new Set(prev);
-                                                                        next.has(log.id) ? next.delete(log.id) : next.add(log.id);
-                                                                        return next;
-                                                                    });
-                                                                }, children: [_jsxs("td", { className: "cell-muted", style: { whiteSpace: "nowrap", fontSize: 12 }, children: [_jsx(CalendarIcon, { size: 12, style: { marginRight: 4, opacity: 0.5, verticalAlign: "middle" } }), formatDate(log.created_at)] }), _jsx("td", { children: log.actor_email ? (_jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [_jsx("div", { style: {
-                                                                                        width: 28,
-                                                                                        height: 28,
-                                                                                        borderRadius: "50%",
-                                                                                        background: "var(--accent-light)",
-                                                                                        color: "var(--accent)",
-                                                                                        display: "flex",
-                                                                                        alignItems: "center",
-                                                                                        justifyContent: "center",
-                                                                                        fontSize: 11,
-                                                                                        fontWeight: 700,
-                                                                                        flexShrink: 0
-                                                                                    }, children: log.actor_email.slice(0, 2).toUpperCase() }), _jsx("span", { style: { fontSize: 13, fontWeight: 600, color: "var(--ink-2)" }, children: log.actor_email })] })) : (_jsx("span", { style: { fontSize: 12, color: "var(--ink-4)", fontStyle: "italic" }, children: "System" })) }), _jsx("td", { children: _jsx("span", { style: {
-                                                                                display: "inline-flex",
-                                                                                padding: "3px 9px",
-                                                                                borderRadius: 6,
-                                                                                fontSize: 11,
-                                                                                fontWeight: 600,
-                                                                                fontFamily: "ui-monospace, monospace",
-                                                                                background: catStyle.bg,
-                                                                                color: catStyle.color,
-                                                                                border: `1px solid ${catStyle.border}`,
-                                                                                letterSpacing: "0.01em"
-                                                                            }, children: formatActionLabel(log.action) }) }), _jsx("td", { className: "cell-muted", style: { fontSize: 12 }, children: log.target_type === "item" && log.target_id ? (() => {
-                                                                            const fileName = log.metadata?.name;
-                                                                            const isFolder = log.action.includes("folder") || log.metadata?.type === "folder";
-                                                                            const icon = isFolder ? "📁" : "📄";
-                                                                            return (_jsxs("button", { title: "Go to Files tab", onClick: (e) => {
-                                                                                    e.stopPropagation();
-                                                                                    setTab("Files");
-                                                                                    setPath([]);
-                                                                                }, style: {
-                                                                                    background: "none",
-                                                                                    border: "none",
-                                                                                    padding: "2px 6px",
-                                                                                    borderRadius: 6,
-                                                                                    cursor: "pointer",
+                        return (_jsxs("div", { className: "panel", children: [_jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: 20, flexWrap: "wrap" }, children: [_jsxs("div", { children: [_jsx("h2", { style: { margin: 0, fontSize: 20, fontWeight: 800, color: "var(--ink-1)" }, children: "Audit Activity" }), _jsx("p", { style: { margin: "6px 0 0", fontSize: 14, color: "var(--ink-3)" }, children: "Track who did what, when, and on which target." })] }), _jsxs("button", { className: "btn btn-secondary btn-sm", onClick: () => void refreshAuditLogs(), disabled: auditLoading, children: [_jsx(RefreshCwIcon, { size: 14, style: { marginRight: 4 } }), auditLoading ? "Refreshing..." : "Refresh"] })] }), filteredLogs.length > 0 && (_jsxs("div", { style: { display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }, children: [_jsxs("span", { style: { fontSize: 12, color: "var(--ink-4)", fontWeight: 600 }, children: [filteredLogs.length, " event", filteredLogs.length !== 1 ? "s" : ""] }), dangerCount > 0 && (_jsxs("span", { className: "audit-stat-chip audit-stat-chip-danger", children: [dangerCount, " danger"] })), authCount > 0 && (_jsxs("span", { className: "audit-stat-chip audit-stat-chip-auth", children: [authCount, " auth"] })), fileCount > 0 && (_jsxs("span", { className: "audit-stat-chip audit-stat-chip-file", children: [fileCount, " file"] })), adminCount > 0 && (_jsxs("span", { className: "audit-stat-chip audit-stat-chip-admin", children: [adminCount, " admin"] }))] })), auditError ? (_jsxs("div", { style: { color: "var(--red)", textAlign: "center", padding: "32px 0", fontSize: 14 }, children: ["\u26A0 ", auditError] })) : auditLoading && auditLogs.length === 0 ? (_jsxs("div", { style: { color: "var(--ink-3)", textAlign: "center", padding: "40px 0", fontSize: 14 }, children: [_jsx("div", { style: { marginBottom: 8, opacity: 0.5 }, children: "\u23F3" }), "Loading activity logs\u2026"] })) : filteredLogs.length === 0 ? (_jsxs("div", { style: { color: "var(--ink-3)", textAlign: "center", padding: "40px 0", fontSize: 14 }, children: [_jsx("div", { style: { fontSize: 28, marginBottom: 8 }, children: "\uD83D\uDD0D" }), "No activity found for the selected filters."] })) : (_jsxs("div", { style: { overflowX: "auto" }, children: [_jsxs("table", { className: "data-table", children: [_jsx("thead", { children: _jsxs("tr", { children: [_jsx("th", { style: { minWidth: 160 }, children: "Time" }), _jsx("th", { style: { minWidth: 200 }, children: "User / Actor" }), _jsx("th", { style: { minWidth: 170 }, children: "Action" }), _jsx("th", { style: { minWidth: 150 }, children: "Target" }), _jsx("th", { children: "Details" }), _jsx("th", { style: { width: 36 } })] }) }), _jsx("tbody", { children: rows.map((row, idx) => {
+                                                        if (row.type === "separator") {
+                                                            return (_jsx("tr", { className: "date-separator", children: _jsx("td", { colSpan: 6, children: row.label }) }, `sep-${idx}`));
+                                                        }
+                                                        const { log } = row;
+                                                        const cat = getAuditCategory(log.action);
+                                                        const catStyle = AUDIT_CATEGORY_STYLES[cat];
+                                                        const isExpanded = auditExpandedRows.has(log.id);
+                                                        const hasMetadata = log.metadata && Object.keys(log.metadata).length > 0;
+                                                        const isDanger = cat === "danger";
+                                                        return (_jsxs(_Fragment, { children: [_jsxs("tr", { className: `audit-row-hover${isDanger ? " bg-alert-subtle" : ""}`, style: { cursor: hasMetadata ? "pointer" : "default" }, onClick: () => {
+                                                                        if (!hasMetadata)
+                                                                            return;
+                                                                        setAuditExpandedRows((prev) => {
+                                                                            const next = new Set(prev);
+                                                                            next.has(log.id) ? next.delete(log.id) : next.add(log.id);
+                                                                            return next;
+                                                                        });
+                                                                    }, children: [_jsxs("td", { className: "cell-muted", style: { whiteSpace: "nowrap", fontSize: 12 }, children: [_jsx(CalendarIcon, { size: 12, style: { marginRight: 4, opacity: 0.5, verticalAlign: "middle" } }), formatDate(log.created_at)] }), _jsx("td", { children: log.actor_email ? (_jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [_jsx("div", { style: {
+                                                                                            width: 28,
+                                                                                            height: 28,
+                                                                                            borderRadius: "50%",
+                                                                                            background: "var(--accent-light)",
+                                                                                            color: "var(--accent)",
+                                                                                            display: "flex",
+                                                                                            alignItems: "center",
+                                                                                            justifyContent: "center",
+                                                                                            fontSize: 11,
+                                                                                            fontWeight: 700,
+                                                                                            flexShrink: 0
+                                                                                        }, children: log.actor_email.slice(0, 2).toUpperCase() }), _jsx("span", { style: { fontSize: 13, fontWeight: 600, color: "var(--ink-2)" }, children: log.actor_email })] })) : (_jsx("span", { style: { fontSize: 12, color: "var(--ink-4)", fontStyle: "italic" }, children: "System" })) }), _jsx("td", { children: _jsx("span", { style: {
                                                                                     display: "inline-flex",
-                                                                                    alignItems: "center",
-                                                                                    gap: 5,
-                                                                                    color: "var(--accent)",
+                                                                                    padding: "3px 9px",
+                                                                                    borderRadius: 6,
+                                                                                    fontSize: 11,
                                                                                     fontWeight: 600,
-                                                                                    fontSize: 12,
-                                                                                    textDecoration: "underline",
-                                                                                    textUnderlineOffset: 2,
-                                                                                    transition: "opacity 150ms"
-                                                                                }, onMouseEnter: e => (e.currentTarget.style.opacity = "0.75"), onMouseLeave: e => (e.currentTarget.style.opacity = "1"), children: [_jsx("span", { children: icon }), _jsx("span", { children: fileName ?? `item #${String(log.target_id).slice(0, 8)}` })] }));
-                                                                        })() : log.target_type ? (_jsxs("span", { children: [_jsx("span", { style: { fontWeight: 600, color: "var(--ink-3)" }, children: log.target_type }), log.target_id && (_jsxs("span", { style: { fontFamily: "ui-monospace, monospace", fontSize: 11, marginLeft: 6, color: "var(--ink-4)" }, children: ["#", String(log.target_id).slice(0, 8)] }))] })) : (_jsx("span", { style: { color: "var(--ink-4)" }, children: "\u2014" })) }), _jsx("td", { style: { fontSize: 12, color: "var(--ink-4)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: hasMetadata ? summarizeAuditMetadata(log.metadata) : _jsx("span", { style: { color: "var(--ink-4)" }, children: "\u2014" }) }), _jsx("td", { style: { textAlign: "center" }, children: hasMetadata && (_jsx("span", { style: { color: "var(--ink-4)", fontSize: 12, transition: "transform 200ms", display: "inline-block", transform: isExpanded ? "rotate(90deg)" : "none" }, children: _jsx(ChevronIcon, { size: 14 }) })) })] }, log.id), isExpanded && hasMetadata && (_jsx("tr", { style: { background: "var(--bg)" }, children: _jsx("td", { colSpan: 6, style: { padding: "0 16px 16px 56px" }, children: _jsx("div", { style: {
-                                                                            marginTop: 10,
-                                                                            background: "var(--sidebar-bg)",
-                                                                            border: "1px solid var(--border)",
-                                                                            borderRadius: 10,
-                                                                            padding: "14px 18px",
-                                                                            display: "grid",
-                                                                            gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
-                                                                            gap: "10px 24px"
-                                                                        }, children: Object.entries(log.metadata).map(([key, val]) => (_jsxs("div", { children: [_jsx("div", { style: { fontSize: 11, fontWeight: 700, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.6px", marginBottom: 3 }, children: formatActionLabel(key) }), _jsx("div", { style: { fontSize: 13, color: "var(--ink-2)", fontFamily: typeof val === "string" || typeof val === "number" ? "inherit" : "ui-monospace, monospace", wordBreak: "break-word" }, children: formatAuditMetadataValue(val) })] }, key))) }) }) }, `${log.id}-detail`))] }));
-                                                }) })] }) }))] }));
+                                                                                    fontFamily: "ui-monospace, monospace",
+                                                                                    background: catStyle.bg,
+                                                                                    color: catStyle.color,
+                                                                                    border: `1px solid ${catStyle.border}`,
+                                                                                    letterSpacing: "0.01em"
+                                                                                }, children: formatActionLabel(log.action) }) }), _jsx("td", { className: "cell-muted", style: { fontSize: 12 }, children: log.target_type === "item" && log.target_id ? (() => {
+                                                                                const fileName = log.metadata?.name;
+                                                                                const isFolder = log.action.includes("folder") || log.metadata?.type === "folder";
+                                                                                const icon = isFolder ? "📁" : "📄";
+                                                                                return (_jsxs("button", { title: "Go to Files tab", onClick: (e) => {
+                                                                                        e.stopPropagation();
+                                                                                        setTab("Files");
+                                                                                        setPath([]);
+                                                                                    }, style: {
+                                                                                        background: "none",
+                                                                                        border: "none",
+                                                                                        padding: "2px 6px",
+                                                                                        borderRadius: 6,
+                                                                                        cursor: "pointer",
+                                                                                        display: "inline-flex",
+                                                                                        alignItems: "center",
+                                                                                        gap: 5,
+                                                                                        color: "var(--accent)",
+                                                                                        fontWeight: 600,
+                                                                                        fontSize: 12,
+                                                                                        textDecoration: "underline",
+                                                                                        textUnderlineOffset: 2,
+                                                                                        transition: "opacity 150ms"
+                                                                                    }, onMouseEnter: e => (e.currentTarget.style.opacity = "0.75"), onMouseLeave: e => (e.currentTarget.style.opacity = "1"), children: [_jsx("span", { children: icon }), _jsx("span", { children: fileName ?? `item #${String(log.target_id).slice(0, 8)}` })] }));
+                                                                            })() : log.target_type ? (_jsxs("span", { children: [_jsx("span", { style: { fontWeight: 600, color: "var(--ink-3)" }, children: log.target_type }), log.target_id && (_jsxs("span", { style: { fontFamily: "ui-monospace, monospace", fontSize: 11, marginLeft: 6, color: "var(--ink-4)" }, children: ["#", String(log.target_id).slice(0, 8)] }))] })) : (_jsx("span", { style: { color: "var(--ink-4)" }, children: "\u2014" })) }), _jsx("td", { style: { fontSize: 12, color: "var(--ink-4)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: hasMetadata ? summarizeAuditMetadata(log.metadata) : _jsx("span", { style: { color: "var(--ink-4)" }, children: "\u2014" }) }), _jsx("td", { style: { textAlign: "center" }, children: hasMetadata && (_jsx("span", { style: { color: "var(--ink-4)", fontSize: 12, transition: "transform 200ms", display: "inline-block", transform: isExpanded ? "rotate(90deg)" : "none" }, children: _jsx(ChevronIcon, { size: 14 }) })) })] }, log.id), isExpanded && hasMetadata && (_jsx("tr", { style: { background: "var(--bg)" }, children: _jsx("td", { colSpan: 6, style: { padding: "0 16px 16px 56px" }, children: _jsx("div", { style: {
+                                                                                marginTop: 10,
+                                                                                background: "var(--sidebar-bg)",
+                                                                                border: "1px solid var(--border)",
+                                                                                borderRadius: 10,
+                                                                                padding: "14px 18px",
+                                                                                display: "grid",
+                                                                                gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+                                                                                gap: "10px 24px"
+                                                                            }, children: Object.entries(log.metadata).map(([key, val]) => (_jsxs("div", { children: [_jsx("div", { style: { fontSize: 11, fontWeight: 700, color: "var(--ink-4)", textTransform: "uppercase", letterSpacing: "0.6px", marginBottom: 3 }, children: formatActionLabel(key) }), _jsx("div", { style: { fontSize: 13, color: "var(--ink-2)", fontFamily: typeof val === "string" || typeof val === "number" ? "inherit" : "ui-monospace, monospace", wordBreak: "break-word" }, children: formatAuditMetadataValue(val) })] }, key))) }) }) }, `${log.id}-detail`))] }));
+                                                    }) })] }), _jsxs("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "12px 0 0", flexWrap: "wrap" }, children: [_jsxs("span", { style: { fontSize: 12, color: "var(--ink-4)" }, children: ["Showing ", startIndex + 1, "-", Math.min(startIndex + DEFAULT_PAGE_SIZE, filteredLogs.length), " of ", filteredLogs.length] }), _jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8 }, children: [_jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => setAuditPage((prev) => Math.max(1, prev - 1)), disabled: currentPage <= 1, children: "Previous" }), _jsxs("span", { style: { fontSize: 12, color: "var(--ink-3)" }, children: ["Page ", currentPage, " of ", totalPages] }), _jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => setAuditPage((prev) => Math.min(totalPages, prev + 1)), disabled: currentPage >= totalPages, children: "Next" })] })] })] }))] }));
                     })(), showSecurityStepUpModal && (_jsx("div", { className: "modal-overlay", onClick: () => (!stepUpBusy ? setShowSecurityStepUpModal(false) : undefined), children: _jsxs("div", { className: "modal", onClick: (event) => event.stopPropagation(), style: { maxWidth: 420 }, children: [_jsx("div", { className: "modal-title", children: "Verify identity" }), _jsx("div", { className: "modal-desc", children: "Confirm your password and OTP to unlock security controls." }), _jsxs("div", { className: "input-group", style: { marginBottom: 12 }, children: [_jsx("span", { className: "input-icon", children: _jsx(LockIcon, {}) }), _jsx("input", { type: "password", placeholder: "Current password", value: stepUpPassword, onChange: (event) => setStepUpPassword(event.target.value), disabled: stepUpBusy })] }), !stepUpOtpRequested ? (_jsx("button", { className: "btn btn-primary", onClick: () => void onRequestSecurityStepUpOtp(), disabled: stepUpBusy || !stepUpPassword, style: { width: "100%", marginBottom: 12 }, children: stepUpBusy ? "Requesting..." : "Send OTP" })) : (_jsxs(_Fragment, { children: [_jsxs("div", { className: "input-group", style: { marginBottom: 12 }, children: [_jsx("span", { className: "input-icon", children: _jsx(MailIcon, {}) }), _jsx("input", { type: "text", placeholder: "Enter 6-digit OTP", value: stepUpOtp, onChange: (event) => setStepUpOtp(event.target.value), disabled: stepUpBusy, maxLength: 6 })] }), _jsx("button", { className: "btn btn-primary", onClick: () => void onVerifySecurityStepUpOtp(), disabled: stepUpBusy || !stepUpOtp, style: { width: "100%", marginBottom: 10 }, children: stepUpBusy ? "Verifying..." : "Verify & Unlock" }), _jsx("button", { className: "btn btn-secondary btn-sm", onClick: () => void onRequestSecurityStepUpOtp(), disabled: stepUpBusy, style: { width: "100%" }, children: "Resend OTP" })] }))] }) })), showCreateUser && (_jsx("div", { className: "modal-overlay", onClick: () => setShowCreateUser(false), children: _jsxs("div", { className: "modal", onClick: (e) => e.stopPropagation(), children: [_jsx("div", { className: "modal-icon modal-icon-folder", children: _jsx(UsersIcon, {}) }), _jsx("div", { className: "modal-title", children: "Create new user" }), _jsx("div", { className: "modal-desc", children: "Add a new user to the system with their personal details and role." }), _jsxs("form", { onSubmit: (e) => { e.preventDefault(); onCreateUserSubmit(); }, children: [_jsxs("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }, children: [_jsx("input", { className: "modal-input", type: "text", placeholder: "First Name", value: newUserFirstName, onChange: (e) => setNewUserFirstName(e.target.value), required: true, style: { margin: 0 } }), _jsx("input", { className: "modal-input", type: "text", placeholder: "Last Name", value: newUserLastName, onChange: (e) => setNewUserLastName(e.target.value), required: true, style: { margin: 0 } })] }), _jsx("input", { className: "modal-input", type: "email", placeholder: "Email address", value: newUserEmail, onChange: (e) => setNewUserEmail(e.target.value), required: true, style: { marginBottom: 12 } }), _jsxs("div", { style: { position: "relative", marginBottom: 6 }, children: [_jsx("input", { className: "modal-input", type: showNewUserPassword ? "text" : "password", placeholder: "Password", value: newUserPassword, onChange: (e) => setNewUserPassword(e.target.value), required: true, minLength: 8, style: { margin: 0, paddingRight: 40 } }), _jsx("button", { type: "button", onClick: () => setShowNewUserPassword(!showNewUserPassword), style: { position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "var(--ink-4)", cursor: "pointer", display: "flex", alignItems: "center" }, children: showNewUserPassword ? _jsx(EyeOffIcon, { size: 18 }) : _jsx(EyeIcon, { size: 18 }) })] }), _jsxs("div", { style: { fontSize: 12, color: "var(--ink-4)", marginBottom: 12, padding: "8px 12px", background: "var(--surface)", borderRadius: 10, lineHeight: 1.6 }, children: ["\uD83D\uDD12 Min 8 chars \u00B7 Uppercase \u00B7 Lowercase \u00B7 Number \u00B7 Special char", _jsx("br", {}), _jsxs("span", { style: { color: "var(--ink-3)" }, children: ["e.g. ", _jsx("code", { children: "Secure@123" })] })] }), _jsxs("select", { className: "modal-input", value: newUserRole, onChange: (e) => setNewUserRole(e.target.value), style: { marginBottom: 12 }, children: [_jsx("option", { value: "viewer", children: "Viewer (read-only)" }), _jsx("option", { value: "editor", children: "Editor (read/write)" })] }), _jsxs("div", { className: "modal-actions", children: [_jsx("button", { type: "button", className: "btn btn-secondary btn-sm", onClick: () => setShowCreateUser(false), children: "Cancel" }), _jsx("button", { type: "submit", className: "btn btn-primary btn-sm", disabled: !newUserEmail.trim() || Boolean(newUserPasswordError) || isBusy, children: isBusy ? "Creating..." : "Create User" })] })] })] }) }))] }, tab)] }));
 }
