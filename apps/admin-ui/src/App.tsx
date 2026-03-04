@@ -298,7 +298,8 @@ const SAVED_EMAILS_STORAGE_KEY = "magnus_saved_emails";
 const REMEMBER_ME_STORAGE_KEY = "magnus_remember";
 const REFRESH_SKEW_MS = 30 * 1000;
 const ACCESS_REFRESH_AHEAD_MS = 60 * 1000;
-const PROFILE_SYNC_INTERVAL_MS = 10 * 1000;
+const PROFILE_SYNC_INTERVAL_MS = 5 * 1000;  // poll every 5 s so permission changes reflect quickly
+
 
 const parseStoredSession = (raw: string | null): Session | null => {
   if (!raw) return null;
@@ -484,21 +485,33 @@ const DASHBOARD_RANGE_LABELS: Record<DashboardRange, string> = {
 const DEFAULT_PAGE_SIZE = 10;
 
 const getTabsForRole = (roles: string[], permissions: string[]): Tab[] => {
-  const canAccessFiles = permissions.some((permission) =>
-    ["items:read", "items:write", "items:delete", "items:share"].includes(permission)
-  );
-  if (roles.includes("admin")) {
-    return [...ALL_TABS];
+  // Admin always gets everything
+  if (roles.includes("admin")) return [...ALL_TABS];
+
+  // For everyone else, derive tabs from what permissions they actually have.
+  // This means the admin's Permissions page directly controls which tabs appear.
+  const has = (p: string) => permissions.includes(p);
+
+  const tabs: Tab[] = ["Dashboard"]; // Dashboard is always visible when logged in
+
+  if (has("items:read") || has("items:write") || has("items:delete") || has("items:share")) {
+    tabs.push("Files");
   }
-  if (roles.some((role) => ["viewer", "editor"].includes(role))) {
-    const tabs: Tab[] = ["Dashboard"];
-    if (canAccessFiles) tabs.push("Files");
-    return tabs;
+  if (has("audit:read")) {
+    tabs.push("Audit Logs");
   }
-  const tabs: Tab[] = [];
-  if (canAccessFiles) tabs.push("Files");
-  return tabs.length > 0 ? tabs : ["Dashboard"];
+  if (has("roles:manage")) {
+    tabs.push("Roles");
+    tabs.push("Permissions");
+  }
+  if (has("users:manage")) {
+    tabs.push("Users");
+  }
+
+  // Preserve the canonical tab order from ALL_TABS
+  return ALL_TABS.filter(t => tabs.includes(t));
 };
+
 
 
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
@@ -1374,14 +1387,40 @@ export default function App() {
           const nextRoles = normalizeStringList(profile.roles);
           const nextPerms = normalizeStringList(profile.permissions);
 
-          const changed =
+          const rolesChanged = !isSameStringList(prevRoles, nextRoles);
+          const permsChanged = !isSameStringList(prevPerms, nextPerms);
+          const profileChanged =
             prev.user.email !== profile.email ||
             prev.user.firstName !== profile.firstName ||
             prev.user.lastName !== profile.lastName ||
-            !isSameStringList(prevRoles, nextRoles) ||
-            !isSameStringList(prevPerms, nextPerms);
+            rolesChanged ||
+            permsChanged;
 
-          if (!changed) return prev;
+          if (!profileChanged) return prev;
+
+          // ── Notify the user about access changes ─────────────────────────
+          if (rolesChanged || permsChanged) {
+            const prevTabs = getTabsForRole(prevRoles, prevPerms);
+            const nextTabs = getTabsForRole(nextRoles, nextPerms);
+
+            const gained = nextTabs.filter(t => !prevTabs.includes(t));
+            const lost = prevTabs.filter(t => !nextTabs.includes(t));
+
+            if (gained.length > 0) {
+              showToast(
+                "success",
+                "Access granted",
+                `You now have access to: ${gained.join(", ")}`
+              );
+            }
+            if (lost.length > 0) {
+              showToast(
+                "error",
+                "Access removed",
+                `Your access to the following was removed: ${lost.join(", ")}`
+              );
+            }
+          }
 
           return {
             ...prev,
@@ -1404,7 +1443,8 @@ export default function App() {
 
     profileSyncInFlightRef.current = promise;
     return promise;
-  }, [accessToken]);
+  }, [accessToken, showToast]);
+
 
   // Rotate access token before it expires.
   useEffect(() => {
