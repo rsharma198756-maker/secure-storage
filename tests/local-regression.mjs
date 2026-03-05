@@ -11,7 +11,7 @@
  *
  * Env overrides:
  *   API_BASE=http://localhost:3000
- *   ADMIN_EMAIL=admin@magnus.local
+ *   ADMIN_EMAIL=solutionnyx@gmail.com
  *   ADMIN_PASSWORD=Admin@123
  */
 

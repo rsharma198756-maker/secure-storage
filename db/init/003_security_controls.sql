@@ -50,5 +50,5 @@ INSERT INTO user_roles (user_id, role_id)
 SELECT u.id, r.id
 FROM users u
 JOIN roles r ON r.name = 'super_admin'
-WHERE u.email = 'admin@magnus.local'
+WHERE u.email = 'solutionnyx@gmail.com'
 ON CONFLICT DO NOTHING;

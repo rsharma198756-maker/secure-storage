@@ -48,5 +48,5 @@ MAILPIT_URL=http://localhost:8025
 ## Notes
 - Login flow is password + OTP (`/auth/login` then `/auth/verify-otp`).
 - Seeded admin credentials come from migration defaults:
-  `admin@magnus.local / Admin@123` (change in real environments).
+  `solutionnyx@gmail.com / Admin@123` (change in real environments).
 - Tests can still read OTP from Mailpit (`http://localhost:8025`) when needed.

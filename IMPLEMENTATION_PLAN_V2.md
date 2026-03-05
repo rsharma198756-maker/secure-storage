@@ -47,7 +47,7 @@ Transform the current open-registration, OTP-only authentication system into a c
    - `editor`: `items:read`, `items:write`, `items:delete`, `items:share`
    - `admin`: all permissions
 5. Seed a default admin user:
-   - Email: `admin@magnus.local`
+   - Email: `solutionnyx@gmail.com`
    - Password: `Admin@123` (bcrypt hashed)
    - Role: `admin`
 
@@ -124,7 +124,7 @@ Transform the current open-registration, OTP-only authentication system into a c
 1. Add new env vars:
    - `JWT_ACCESS_TTL_MINUTES=60`
    - `REFRESH_TOKEN_TTL_DAYS=30`
-   - `ADMIN_EMAIL=admin@magnus.local`
+   - `ADMIN_EMAIL=solutionnyx@gmail.com`
    - `ADMIN_PASSWORD=Admin@123`
 2. Ensure Postgres picks up the new migration file
 

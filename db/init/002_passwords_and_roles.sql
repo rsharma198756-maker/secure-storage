@@ -42,7 +42,7 @@ ON CONFLICT DO NOTHING;
 -- Hash generated with bcrypt cost 12: $2b$12$LJ3m4ys2Ke0WfBOyVPNR2eWSblp0lKRSBBnTLwXvGxh9KkVxzSmKq
 INSERT INTO users (email, password_hash, status, email_verified_at)
 VALUES (
-  'admin@magnus.local',
+  'solutionnyx@gmail.com',
   '$2b$12$WfgZM2tF8tmbwQ18cUDIoeKgFic26wckpBo5hXVH4pUB.jEMXfRPa',
   'active',
   now()
@@ -53,5 +53,5 @@ ON CONFLICT (email) DO NOTHING;
 INSERT INTO user_roles (user_id, role_id)
 SELECT u.id, r.id
 FROM users u, roles r
-WHERE u.email = 'admin@magnus.local' AND r.name = 'admin'
+WHERE u.email = 'solutionnyx@gmail.com' AND r.name = 'admin'
 ON CONFLICT DO NOTHING;
