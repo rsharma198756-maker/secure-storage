@@ -72,7 +72,7 @@ Admin UI: https://magnus.pages.dev  (Cloudflare Pages, static)
 ALLOW_DEV_HEADER=false
 BREVO_API_KEY=<set-in-railway-dashboard>
 DATABASE_URL=${{Postgres.DATABASE_URL}}
-EMAIL_FROM_ADDRESS=guptapayal8820@gmail.com
+EMAIL_FROM_ADDRESS=solutionnyx@gmail.com
 EMAIL_FROM_NAME=Magnus
 INTERNAL_TOKEN=my-super-secret-token-123
 JWT_ACCESS_TTL_MINUTES=60
@@ -200,7 +200,7 @@ node run-migrations.mjs "$DATABASE_URL"
 
 | Field | Value |
 |---|---|
-| Email | `guptapayal8820@gmail.com` |
+| Email | `solutionnyx@gmail.com` |
 | Password | `Admin@123` |
 | Role | `admin` |
 | Permissions | All 7 (items:read/write/delete/share, users:manage, roles:manage, audit:read) |
@@ -299,7 +299,7 @@ curl https://securestorage-production.up.railway.app/ready
 # Login (temporarily set RETURN_OTP_IN_RESPONSE=true on Railway for testing)
 curl -X POST https://securestorage-production.up.railway.app/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"guptapayal8820@gmail.com","password":"Admin@123"}'
+  -d '{"email":"solutionnyx@gmail.com","password":"Admin@123"}'
 ```
 
 ### Create a new user (via API)

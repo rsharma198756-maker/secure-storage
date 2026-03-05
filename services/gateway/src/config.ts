@@ -6,7 +6,7 @@ export const config = {
   brevoApiKey: process.env.BREVO_API_KEY ?? "",
   emailFrom: process.env.EMAIL_FROM ?? "Magnus <noreply@securestorage.app>",
   emailFromName: process.env.EMAIL_FROM_NAME ?? "Magnus",
-  emailFromAddress: process.env.EMAIL_FROM_ADDRESS ?? "guptapayal8820@gmail.com",
+  emailFromAddress: process.env.EMAIL_FROM_ADDRESS ?? "solutionnyx@gmail.com",
   smtp: {
     host: process.env.SMTP_HOST ?? "smtp.gmail.com",
     port: Number(process.env.SMTP_PORT ?? 587),
