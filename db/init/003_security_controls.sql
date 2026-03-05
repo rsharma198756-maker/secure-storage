@@ -33,22 +33,10 @@ INSERT INTO permissions (key, description)
 VALUES ('security:control', 'Perform emergency security controls and global session actions')
 ON CONFLICT DO NOTHING;
 
--- Super-admin role dedicated for security control actions
-INSERT INTO roles (name, description)
-VALUES ('super_admin', 'Can execute emergency security controls')
-ON CONFLICT DO NOTHING;
-
+-- Admin role gets full security control permission (no separate super_admin role needed)
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT r.id, p.id
 FROM roles r
 JOIN permissions p ON p.key = 'security:control'
-WHERE r.name = 'super_admin'
-ON CONFLICT DO NOTHING;
-
--- Seeded admin gets super_admin to keep bootstrap account operational
-INSERT INTO user_roles (user_id, role_id)
-SELECT u.id, r.id
-FROM users u
-JOIN roles r ON r.name = 'super_admin'
-WHERE u.email = 'solutionnyx@gmail.com'
+WHERE r.name = 'admin'
 ON CONFLICT DO NOTHING;

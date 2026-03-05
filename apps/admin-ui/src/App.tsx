@@ -2724,12 +2724,9 @@ export default function App() {
               {session.user.firstName ? `${session.user.firstName} ${session.user.lastName}` : session.user.email.split('@')[0]}
             </div>
             <div className="sidebar-profile-role" style={{ textTransform: "capitalize" }}>
-              {session.user.roles.includes("super_admin")
-                ? "Super Admin"
-                : session.user.roles
-                  .filter(r => r !== "super_admin")
-                  .map(r => r.replace(/_/g, " "))
-                  .join(", ")
+              {session.user.roles
+                .map(r => r.replace(/_/g, " "))
+                .join(", ")
               }
             </div>
           </div>
