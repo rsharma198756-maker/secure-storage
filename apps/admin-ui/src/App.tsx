@@ -1273,7 +1273,7 @@ export default function App() {
         return;
       }
       setLoginStep(4);
-      setStatus("OTP sent. Check your registered contact method.");
+      setStatus("OTP sent to your mobile number.");
     } catch (err: any) {
       const msg = err?.message ?? "Please check your credentials.";
       setLoginError(msg);
@@ -1305,7 +1305,7 @@ export default function App() {
       await registerLoginPhoneNumber(loginPhoneEnrollmentToken, loginPhoneNumber);
       setLoginPhoneEnrollmentToken(null);
       setLoginStep(4);
-      setStatus("OTP sent. Check your registered contact method.");
+      setStatus("OTP sent to your mobile number.");
     } catch (err: any) {
       const msg = err?.message ?? "Could not save your mobile number.";
       setLoginError(msg);
@@ -2292,7 +2292,7 @@ export default function App() {
     try {
       await requestSecurityStepUp(accessToken, stepUpPassword);
       setStepUpOtpRequested(true);
-      showToast("success", "Code sent", "Verification code sent to your registered contact method.");
+      showToast("success", "Code sent", "Verification code sent to your mobile number.");
     } catch (error: any) {
       showToast("error", "Verification failed", error?.message ?? "Could not request verification code.");
     } finally {
@@ -2733,13 +2733,13 @@ export default function App() {
               <div className="login-step-dot" />
             </div>
             <h1 className="login-title">Add your mobile number</h1>
-            <p className="login-subtitle">This account needs a mobile number before we can send your verification code.</p>
+            <p className="login-subtitle">Enter your 10-digit Indian mobile number so we can send your OTP by SMS.</p>
             <form className="login-form" onSubmit={(e) => { e.preventDefault(); onRegisterLoginPhone(); }}>
               <div className="input-group">
                 <span className="input-icon"><PhoneIcon /></span>
                 <input
                   type="tel"
-                  placeholder="Enter your mobile number"
+                  placeholder="Enter 10-digit Indian mobile number"
                   value={loginPhoneNumber}
                   onChange={(e) => setLoginPhoneNumber(e.target.value)}
                   disabled={isPhoneEnrollmentSubmitting}
@@ -2798,8 +2798,8 @@ export default function App() {
               <div className="login-step-dot" />
               <div className="login-step-dot active" />
             </div>
-            <h1 className="login-title">Check your messages</h1>
-            <p className="login-subtitle">We sent a 6-digit code to your registered contact method.</p>
+            <h1 className="login-title">Check your phone</h1>
+            <p className="login-subtitle">We sent a 6-digit OTP to your registered mobile number.</p>
             <form className="login-form" onSubmit={(e) => { e.preventDefault(); onVerifyOtp(); }}>
               <div className="input-group">
                 <span className="input-icon"><LockIcon /></span>
@@ -3396,7 +3396,7 @@ export default function App() {
                 <input
                   className="modal-input"
                   type="tel"
-                  placeholder="Mobile number"
+                  placeholder="10-digit Indian mobile number"
                   value={newUserPhoneNumber}
                   onChange={(e) => setNewUserPhoneNumber(e.target.value)}
                   required

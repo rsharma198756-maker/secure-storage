@@ -317,6 +317,17 @@ const parsePhoneNumberInput = (value: unknown) => {
   }
 };
 
+const getOtpDeliveryFailure = (error: any) => {
+  const reason = error?.message ?? "unknown";
+  if (reason === "phone_number_required" || reason === "invalid_phone_number") {
+    return { code: 400, error: reason };
+  }
+  if (reason === "otp_sms_not_configured") {
+    return { code: 503, error: reason };
+  }
+  return { code: 502, error: "otp_delivery_failed" as const };
+};
+
 type DbClient = Pick<PoolClient, "query">;
 
 type HardDeleteUserResult = {
@@ -892,7 +903,6 @@ const issueLoginOtpChallenge = async (params: {
   );
 
   const delivery = await sendOtp({
-    email: params.email,
     phoneNumber: params.phoneNumber ?? null,
     otp
   });
@@ -978,7 +988,16 @@ app.post("/auth/login", async (request, reply) => {
     return;
   }
 
-  if (!user.phone_number) {
+  let loginPhoneNumber: string | null = null;
+  if (user.phone_number) {
+    try {
+      loginPhoneNumber = normalizePhoneNumber(user.phone_number);
+    } catch {
+      loginPhoneNumber = null;
+    }
+  }
+
+  if (!loginPhoneNumber) {
     reply.send({
       status: "phone_number_required",
       phoneEnrollmentToken: signPhoneEnrollmentToken(user.id, email)
@@ -989,19 +1008,20 @@ app.post("/auth/login", async (request, reply) => {
   try {
     const payload = await issueLoginOtpChallenge({
       email,
-      phoneNumber: user.phone_number
+      phoneNumber: loginPhoneNumber
     });
     reply.send(payload);
     return;
   } catch (error: any) {
+    const failure = getOtpDeliveryFailure(error);
     await writeAuditLog({
       actorUserId: user.id,
       action: "auth.login_failed",
       targetType: "user",
       targetId: user.id,
-      metadata: { reason: "otp_delivery_failed", error: error?.message ?? "unknown" }
+      metadata: { reason: failure.error, error: error?.message ?? "unknown" }
     });
-    reply.code(502).send({ error: "otp_delivery_failed" });
+    reply.code(failure.code).send({ error: failure.error });
     return;
   }
 });
@@ -1077,13 +1097,22 @@ app.post("/auth/login/register-phone", async (request, reply) => {
       return;
     }
 
-    if (user.phone_number && user.phone_number !== normalizedPhone.value) {
+    let existingPhoneNumber: string | null = null;
+    if (user.phone_number) {
+      try {
+        existingPhoneNumber = normalizePhoneNumber(user.phone_number);
+      } catch {
+        existingPhoneNumber = null;
+      }
+    }
+
+    if (existingPhoneNumber && existingPhoneNumber !== normalizedPhone.value) {
       await client.query("ROLLBACK");
       reply.code(409).send({ error: "phone_number_already_registered" });
       return;
     }
 
-    if (!user.phone_number) {
+    if (!existingPhoneNumber) {
       const existingPhone = await client.query(
         "SELECT id FROM users WHERE phone_number = $1 AND id <> $2 LIMIT 1",
         [normalizedPhone.value, userId]
@@ -1134,18 +1163,19 @@ app.post("/auth/login/register-phone", async (request, reply) => {
     reply.send(payload);
     return;
   } catch (error: any) {
+    const failure = getOtpDeliveryFailure(error);
     await writeAuditLog({
       actorUserId: userId,
       action: "auth.login_failed",
       targetType: "user",
       targetId: userId,
       metadata: {
-        reason: "otp_delivery_failed",
+        reason: failure.error,
         duringPhoneRegistration: phoneRegistered,
         error: error?.message ?? "unknown"
       }
     });
-    reply.code(502).send({ error: "otp_delivery_failed" });
+    reply.code(failure.code).send({ error: failure.error });
     return;
   }
 });
@@ -1453,6 +1483,20 @@ app.post("/admin/security/step-up/request", async (request, reply) => {
     return;
   }
 
+  let stepUpPhoneNumber: string | null = null;
+  if (user.phone_number) {
+    try {
+      stepUpPhoneNumber = normalizePhoneNumber(user.phone_number);
+    } catch {
+      stepUpPhoneNumber = null;
+    }
+  }
+
+  if (!stepUpPhoneNumber) {
+    reply.code(400).send({ error: "phone_number_required" });
+    return;
+  }
+
   const otp = generateOtp();
   const otpHash = hashOtp(otp);
   const expiresAt = new Date(Date.now() + config.otpTtlMinutes * 60 * 1000);
@@ -1468,8 +1512,7 @@ app.post("/admin/security/step-up/request", async (request, reply) => {
 
   try {
     const delivery = await sendOtp({
-      email,
-      phoneNumber: user.phone_number ?? null,
+      phoneNumber: stepUpPhoneNumber,
       otp
     });
     await writeAuditLog({
@@ -1485,13 +1528,14 @@ app.post("/admin/security/step-up/request", async (request, reply) => {
     reply.send({ status: "otp_sent", delivery: delivery.channel });
     return;
   } catch (error: any) {
+    const failure = getOtpDeliveryFailure(error);
     await writeAuditLog({
       actorUserId: userId,
       action: "security.stepup.request_failed",
       targetType: "security_control",
-      metadata: { reason: "otp_delivery_failed", error: error?.message ?? "unknown" }
+      metadata: { reason: failure.error, error: error?.message ?? "unknown" }
     });
-    reply.code(502).send({ error: "otp_delivery_failed" });
+    reply.code(failure.code).send({ error: failure.error });
     return;
   }
 });

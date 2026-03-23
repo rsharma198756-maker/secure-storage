@@ -130,8 +130,11 @@ export const login = async (email: string, password: string) => {
     if (data.error === "invalid_credentials") throw new Error("Invalid email or password");
     if (data.error === "user_disabled") throw new Error("Your account has been disabled");
     if (data.error === "rate_limited") throw new Error("Too many attempts. Please wait.");
+    if (data.error === "otp_sms_not_configured") {
+      throw new Error("SMS OTP is not configured on the server.");
+    }
     if (data.error === "otp_delivery_failed") {
-      throw new Error("Could not send the verification code. Check your OTP delivery settings.");
+      throw new Error("Could not send the OTP to your mobile number.");
     }
     throw new Error("Login failed");
   }
@@ -170,7 +173,7 @@ export const registerLoginPhoneNumber = async (
       throw new Error("Mobile number is required");
     }
     if (data.error === "invalid_phone_number") {
-      throw new Error("Please enter a valid mobile number");
+      throw new Error("Please enter a valid 10-digit Indian mobile number");
     }
     if (data.error === "phone_enrollment_token_required") {
       throw new Error("Please start sign-in again.");
@@ -190,8 +193,11 @@ export const registerLoginPhoneNumber = async (
     if (data.error === "rate_limited") {
       throw new Error("Too many attempts. Please wait.");
     }
+    if (data.error === "otp_sms_not_configured") {
+      throw new Error("SMS OTP is not configured on the server.");
+    }
     if (data.error === "otp_delivery_failed") {
-      throw new Error("Could not send the verification code. Check your OTP delivery settings.");
+      throw new Error("Could not send the OTP to your mobile number.");
     }
     throw new Error(toApiErrorMessage(data, "Could not save your mobile number"));
   }
@@ -272,9 +278,13 @@ export const requestSecurityStepUp = async (
     const data = await res.json().catch(() => ({}));
     if (data.error === "password_required") throw new Error("Password is required");
     if (data.error === "invalid_credentials") throw new Error("Password is incorrect");
+    if (data.error === "phone_number_required") throw new Error("Add a mobile number to your account first.");
     if (data.error === "rate_limited") throw new Error("Too many attempts. Please wait.");
+    if (data.error === "otp_sms_not_configured") {
+      throw new Error("SMS OTP is not configured on the server.");
+    }
     if (data.error === "otp_delivery_failed") {
-      throw new Error("Could not send the verification code. Check your OTP delivery settings.");
+      throw new Error("Could not send the OTP to your mobile number.");
     }
     throw new Error(toApiErrorMessage(data, "Could not request verification OTP"));
   }
@@ -548,7 +558,7 @@ export const updateUserInfo = async (
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     if (data.error === "invalid_email") throw new Error("Please enter a valid email address");
-    if (data.error === "invalid_phone_number") throw new Error("Please enter a valid mobile number");
+    if (data.error === "invalid_phone_number") throw new Error("Please enter a valid 10-digit Indian mobile number");
     if (data.error === "phone_number_already_exists") throw new Error("A user with this mobile number already exists");
     if (data.error === "email_already_exists") throw new Error("A user with this email already exists");
     if (data.error === "user_not_found") throw new Error("User not found");
@@ -892,7 +902,7 @@ export const createUser = async (
     const data = await res.json().catch(() => ({}));
     if (data.error === "email_already_exists") throw new Error("A user with this email already exists");
     if (data.error === "invalid_email") throw new Error("Please enter a valid email address");
-    if (data.error === "invalid_phone_number") throw new Error("Please enter a valid mobile number");
+    if (data.error === "invalid_phone_number") throw new Error("Please enter a valid 10-digit Indian mobile number");
     if (data.error === "phone_number_already_exists") throw new Error("A user with this mobile number already exists");
     const passwordError = mapPasswordPolicyError(data.error);
     if (passwordError) throw new Error(passwordError);

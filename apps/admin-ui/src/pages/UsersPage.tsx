@@ -276,7 +276,7 @@ export default function UsersPage(props: UsersPageProps) {
                     <input
                       className="modal-input"
                       type="tel"
-                      placeholder="Mobile number"
+                      placeholder="10-digit Indian mobile number"
                       value={editUserPhoneNumber}
                       onChange={(e: any) => setEditUserPhoneNumber(e.target.value)}
                       style={{ margin: 0 }}

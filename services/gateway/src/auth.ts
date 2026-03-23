@@ -19,15 +19,23 @@ export const normalizePhoneNumber = (phoneNumber: string) => {
   }
 
   const digitsOnly = phoneNumber.replace(/[^\d]/g, "");
-  if (!digitsOnly || digitsOnly.length < 10) {
+  let localNumber = "";
+
+  if (digitsOnly.length === 10) {
+    localNumber = digitsOnly;
+  } else if (digitsOnly.length === 11 && digitsOnly.startsWith("0")) {
+    localNumber = digitsOnly.slice(1);
+  } else if (digitsOnly.length === 12 && digitsOnly.startsWith("91")) {
+    localNumber = digitsOnly.slice(2);
+  } else {
     throw new Error("invalid_phone_number");
   }
 
-  if (digitsOnly.length === 10) {
-    return `91${digitsOnly}`;
+  if (!/^[6-9]\d{9}$/.test(localNumber)) {
+    throw new Error("invalid_phone_number");
   }
 
-  return digitsOnly;
+  return `91${localNumber}`;
 };
 
 export const isValidPhoneNumber = (phoneNumber: string) => {
@@ -195,15 +203,16 @@ const sendOtpSms = async (phoneNumber: string, otp: string) => {
 };
 
 export const sendOtp = async (params: {
-  email: string;
   phoneNumber?: string | null;
   otp: string;
 }) => {
-  if (params.phoneNumber && config.msg91.authKey && config.msg91.templateId) {
-    await sendOtpSms(params.phoneNumber, params.otp);
-    return { channel: "sms" as const };
+  if (!params.phoneNumber) {
+    throw new Error("phone_number_required");
+  }
+  if (!config.msg91.authKey || !config.msg91.templateId) {
+    throw new Error("otp_sms_not_configured");
   }
 
-  await sendOtpEmail(params.email, params.otp);
-  return { channel: "email" as const };
+  await sendOtpSms(params.phoneNumber, params.otp);
+  return { channel: "sms" as const };
 };
