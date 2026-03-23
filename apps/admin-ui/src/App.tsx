@@ -23,6 +23,7 @@ import {
   listUsers,
   login,
   logout,
+  registerLoginPhoneNumber,
   refreshSession as refreshAuthSession,
   requestSecurityStepUp,
   removeUser,
@@ -157,6 +158,12 @@ const MailIcon = ({ size = 20, ...props }: IconProps) => (
   <svg {...svgBase} width={size} height={size} {...props}>
     <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
     <polyline points="22 6 12 13 2 6" />
+  </svg>
+);
+
+const PhoneIcon = ({ size = 20, ...props }: IconProps) => (
+  <svg {...svgBase} width={size} height={size} {...props}>
+    <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07A19.5 19.5 0 0 1 5.15 12.8 19.8 19.8 0 0 1 2.08 4.09 2 2 0 0 1 4.06 1.9h3a2 2 0 0 1 2 1.72c.12.9.33 1.79.61 2.65a2 2 0 0 1-.45 2.11L8 9.59a16 16 0 0 0 6.4 6.4l1.21-1.22a2 2 0 0 1 2.11-.45c.86.28 1.75.49 2.65.61a2 2 0 0 1 1.63 1.99z" />
   </svg>
 );
 
@@ -723,7 +730,9 @@ export default function App() {
   );
   const [password, setPassword] = useState("");
   const [otp, setOtp] = useState("");
-  const [loginStep, setLoginStep] = useState<1 | 2 | 3>(1);
+  const [loginStep, setLoginStep] = useState<1 | 2 | 3 | 4>(1);
+  const [loginPhoneNumber, setLoginPhoneNumber] = useState("");
+  const [loginPhoneEnrollmentToken, setLoginPhoneEnrollmentToken] = useState<string | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [tab, setTab] = useState<Tab>(() => tabFromPath());
 
@@ -814,6 +823,7 @@ export default function App() {
   );
   const [showPassword, setShowPassword] = useState(false);
   const [isLoginSubmitting, setIsLoginSubmitting] = useState(false);
+  const [isPhoneEnrollmentSubmitting, setIsPhoneEnrollmentSubmitting] = useState(false);
   const [isOtpSubmitting, setIsOtpSubmitting] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [showNewUserPassword, setShowNewUserPassword] = useState(false);
@@ -1231,6 +1241,10 @@ export default function App() {
     setLoginStep(1);
     setOtp("");
     setPassword("");
+    setLoginPhoneNumber("");
+    setLoginPhoneEnrollmentToken(null);
+    setStatus(null);
+    setLoginError(null);
     const userTabs = getTabsForRole(
       normalizedSession.user?.roles ?? [],
       normalizedSession.user?.permissions ?? []
@@ -1242,6 +1256,8 @@ export default function App() {
     if (isLoginSubmitting) return;
     setStatus(null);
     setLoginError(null);
+    setLoginPhoneEnrollmentToken(null);
+    setLoginPhoneNumber("");
     setIsLoginSubmitting(true);
     try {
       const loginResult = await login(email, password);
@@ -1249,7 +1265,14 @@ export default function App() {
         completeSessionLogin(loginResult);
         return;
       }
-      setLoginStep(3);
+      if (loginResult.status === "phone_number_required") {
+        setLoginPhoneEnrollmentToken(loginResult.phoneEnrollmentToken);
+        setLoginPhoneNumber("");
+        setLoginStep(3);
+        setStatus(null);
+        return;
+      }
+      setLoginStep(4);
       setStatus("OTP sent. Check your registered contact method.");
     } catch (err: any) {
       const msg = err?.message ?? "Please check your credentials.";
@@ -1257,6 +1280,38 @@ export default function App() {
       showToast("error", "Login failed", msg);
     } finally {
       setIsLoginSubmitting(false);
+    }
+  };
+
+  const onRegisterLoginPhone = async () => {
+    if (isPhoneEnrollmentSubmitting) return;
+    if (!loginPhoneEnrollmentToken) {
+      const msg = "Your sign-in session expired. Start again.";
+      setLoginError(msg);
+      showToast("error", "Sign-in expired", msg);
+      setLoginStep(1);
+      setPassword("");
+      setOtp("");
+      setLoginPhoneNumber("");
+      setLoginPhoneEnrollmentToken(null);
+      setStatus(null);
+      return;
+    }
+
+    setLoginError(null);
+    setStatus(null);
+    setIsPhoneEnrollmentSubmitting(true);
+    try {
+      await registerLoginPhoneNumber(loginPhoneEnrollmentToken, loginPhoneNumber);
+      setLoginPhoneEnrollmentToken(null);
+      setLoginStep(4);
+      setStatus("OTP sent. Check your registered contact method.");
+    } catch (err: any) {
+      const msg = err?.message ?? "Could not save your mobile number.";
+      setLoginError(msg);
+      showToast("error", "Verification setup failed", msg);
+    } finally {
+      setIsPhoneEnrollmentSubmitting(false);
     }
   };
 
@@ -2531,10 +2586,19 @@ export default function App() {
               <div className="login-step-dot active" />
               <div className="login-step-dot" />
               <div className="login-step-dot" />
+              <div className="login-step-dot" />
             </div>
             <h1 className="login-title">Welcome back</h1>
             <p className="login-subtitle">Enter your email address to continue.</p>
-            <form className="login-form" autoComplete="on" onSubmit={(e) => { e.preventDefault(); if (email.trim()) setLoginStep(2); }}>
+            <form className="login-form" autoComplete="on" onSubmit={(e) => {
+              e.preventDefault();
+              if (!email.trim()) return;
+              setLoginError(null);
+              setStatus(null);
+              setLoginPhoneNumber("");
+              setLoginPhoneEnrollmentToken(null);
+              setLoginStep(2);
+            }}>
               <div className="input-group">
                 <span className="input-icon"><MailIcon /></span>
                 <input
@@ -2585,6 +2649,7 @@ export default function App() {
             <div className="login-step-indicator">
               <div className="login-step-dot" />
               <div className="login-step-dot active" />
+              <div className="login-step-dot" />
               <div className="login-step-dot" />
             </div>
             <h1 className="login-title">Enter your password</h1>
@@ -2637,7 +2702,15 @@ export default function App() {
             <div className="login-footer">
               <button
                 className="btn btn-ghost btn-sm"
-                onClick={() => { setLoginStep(1); setPassword(""); setLoginError(null); }}
+                onClick={() => {
+                  setLoginStep(1);
+                  setPassword("");
+                  setOtp("");
+                  setLoginPhoneNumber("");
+                  setLoginPhoneEnrollmentToken(null);
+                  setStatus(null);
+                  setLoginError(null);
+                }}
                 disabled={isLoginSubmitting}
                 style={{ width: "100%", marginTop: 8 }}
               >
@@ -2648,12 +2721,79 @@ export default function App() {
         )}
 
         {loginStep === 3 && (
+          <div className="login-card" key="step-phone">
+            <div className="login-brand">
+              <div className="login-brand-icon"><VaultIcon size={24} /></div>
+              <div className="login-brand-text">Magnus</div>
+            </div>
+            <div className="login-step-indicator">
+              <div className="login-step-dot" />
+              <div className="login-step-dot" />
+              <div className="login-step-dot active" />
+              <div className="login-step-dot" />
+            </div>
+            <h1 className="login-title">Add your mobile number</h1>
+            <p className="login-subtitle">This account needs a mobile number before we can send your verification code.</p>
+            <form className="login-form" onSubmit={(e) => { e.preventDefault(); onRegisterLoginPhone(); }}>
+              <div className="input-group">
+                <span className="input-icon"><PhoneIcon /></span>
+                <input
+                  type="tel"
+                  placeholder="Enter your mobile number"
+                  value={loginPhoneNumber}
+                  onChange={(e) => setLoginPhoneNumber(e.target.value)}
+                  disabled={isPhoneEnrollmentSubmitting}
+                  required
+                  autoFocus
+                />
+              </div>
+              {loginError && (
+                <div style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "10px 14px",
+                  borderRadius: 10,
+                  background: "var(--red-bg, rgba(248,113,113,0.1))",
+                  border: "1px solid rgba(248,113,113,0.3)",
+                  color: "var(--red, #f87171)",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  marginBottom: 4
+                }}>
+                  <span>⚠</span> {loginError}
+                </div>
+              )}
+              <button className="btn btn-primary" type="submit" disabled={isPhoneEnrollmentSubmitting}>
+                {isPhoneEnrollmentSubmitting ? "Saving..." : "Save & Send Code"}
+              </button>
+            </form>
+            <div className="login-footer">
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => {
+                  setLoginStep(2);
+                  setLoginPhoneNumber("");
+                  setStatus(null);
+                  setLoginError(null);
+                }}
+                disabled={isPhoneEnrollmentSubmitting}
+                style={{ width: "100%", marginTop: 8 }}
+              >
+                ← Back
+              </button>
+            </div>
+          </div>
+        )}
+
+        {loginStep === 4 && (
           <div className="login-card" key="step-otp">
             <div className="login-brand">
               <div className="login-brand-icon"><VaultIcon size={24} /></div>
               <div className="login-brand-text">Magnus</div>
             </div>
             <div className="login-step-indicator">
+              <div className="login-step-dot" />
               <div className="login-step-dot" />
               <div className="login-step-dot" />
               <div className="login-step-dot active" />
@@ -2681,7 +2821,15 @@ export default function App() {
             <div className="login-footer">
               <button
                 className="btn btn-ghost btn-sm"
-                onClick={() => { setLoginStep(1); setOtp(""); setPassword(""); setStatus(null); }}
+                onClick={() => {
+                  setLoginStep(1);
+                  setOtp("");
+                  setPassword("");
+                  setLoginPhoneNumber("");
+                  setLoginPhoneEnrollmentToken(null);
+                  setStatus(null);
+                  setLoginError(null);
+                }}
                 disabled={isOtpSubmitting}
                 style={{ width: "100%", marginTop: 8 }}
               >

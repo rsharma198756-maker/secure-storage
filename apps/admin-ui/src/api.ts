@@ -19,13 +19,21 @@ export type AuthSession = {
   user: UserProfile;
 };
 
-export type LoginChallenge = {
-  status: string;
+export type OtpLoginChallenge = {
+  status: "otp_sent";
   otp?: string;
   delivery?: "email" | "sms";
 };
 
-export type LoginResponse = AuthSession | LoginChallenge;
+export type PhoneEnrollmentLoginChallenge = {
+  status: "phone_number_required";
+  phoneEnrollmentToken: string;
+};
+
+export type LoginResponse =
+  | AuthSession
+  | OtpLoginChallenge
+  | PhoneEnrollmentLoginChallenge;
 
 export type Item = {
   id: string;
@@ -144,6 +152,51 @@ export const verifyOtp = async (email: string, otp: string) => {
   }
 
   return (await res.json()) as AuthSession;
+};
+
+export const registerLoginPhoneNumber = async (
+  phoneEnrollmentToken: string,
+  phoneNumber: string
+) => {
+  const res = await fetch(`${API_BASE}/auth/login/register-phone`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ phoneEnrollmentToken, phoneNumber })
+  });
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    if (data.error === "phone_number_required") {
+      throw new Error("Mobile number is required");
+    }
+    if (data.error === "invalid_phone_number") {
+      throw new Error("Please enter a valid mobile number");
+    }
+    if (data.error === "phone_enrollment_token_required") {
+      throw new Error("Please start sign-in again.");
+    }
+    if (data.error === "phone_enrollment_token_invalid") {
+      throw new Error("Your sign-in session expired. Start again.");
+    }
+    if (data.error === "phone_number_already_exists") {
+      throw new Error("This mobile number is already in use.");
+    }
+    if (data.error === "phone_number_already_registered") {
+      throw new Error("This account already has a mobile number. Start sign-in again.");
+    }
+    if (data.error === "user_disabled") {
+      throw new Error("Your account has been disabled");
+    }
+    if (data.error === "rate_limited") {
+      throw new Error("Too many attempts. Please wait.");
+    }
+    if (data.error === "otp_delivery_failed") {
+      throw new Error("Could not send the verification code. Check your OTP delivery settings.");
+    }
+    throw new Error(toApiErrorMessage(data, "Could not save your mobile number"));
+  }
+
+  return res.json() as Promise<OtpLoginChallenge>;
 };
 
 export const refreshSession = async (refreshToken: string) => {
@@ -496,6 +549,7 @@ export const updateUserInfo = async (
     const data = await res.json().catch(() => ({}));
     if (data.error === "invalid_email") throw new Error("Please enter a valid email address");
     if (data.error === "invalid_phone_number") throw new Error("Please enter a valid mobile number");
+    if (data.error === "phone_number_already_exists") throw new Error("A user with this mobile number already exists");
     if (data.error === "email_already_exists") throw new Error("A user with this email already exists");
     if (data.error === "user_not_found") throw new Error("User not found");
     if (data.error === "no_fields_to_update") throw new Error("No changes to save");
@@ -839,6 +893,7 @@ export const createUser = async (
     if (data.error === "email_already_exists") throw new Error("A user with this email already exists");
     if (data.error === "invalid_email") throw new Error("Please enter a valid email address");
     if (data.error === "invalid_phone_number") throw new Error("Please enter a valid mobile number");
+    if (data.error === "phone_number_already_exists") throw new Error("A user with this mobile number already exists");
     const passwordError = mapPasswordPolicyError(data.error);
     if (passwordError) throw new Error(passwordError);
     throw new Error(data.error ?? "Failed to create user");

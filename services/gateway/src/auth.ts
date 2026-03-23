@@ -84,6 +84,14 @@ type SecurityActionTokenClaims = {
   exp?: number;
 };
 
+type PhoneEnrollmentTokenClaims = {
+  sub: string;
+  email: string;
+  kind: "phone_enrollment";
+  iat?: number;
+  exp?: number;
+};
+
 export const signSecurityActionToken = (userId: string) =>
   jwt.sign(
     {
@@ -97,6 +105,20 @@ export const signSecurityActionToken = (userId: string) =>
 
 export const verifySecurityActionToken = (token: string) =>
   jwt.verify(token, config.jwtSecret) as SecurityActionTokenClaims;
+
+export const signPhoneEnrollmentToken = (userId: string, email: string) =>
+  jwt.sign(
+    {
+      sub: userId,
+      email,
+      kind: "phone_enrollment"
+    },
+    config.jwtSecret,
+    { expiresIn: `${config.otpTtlMinutes}m` }
+  );
+
+export const verifyPhoneEnrollmentToken = (token: string) =>
+  jwt.verify(token, config.jwtSecret) as PhoneEnrollmentTokenClaims;
 
 export const sendOtpEmail = async (email: string, otp: string) => {
   const subject = "Your Secure Storage OTP";

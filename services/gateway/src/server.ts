@@ -15,9 +15,11 @@ import {
   normalizeEmail,
   sendOtp,
   signAccessToken,
+  signPhoneEnrollmentToken,
   signSecurityActionToken,
   signServiceToken,
   verifyAccessToken,
+  verifyPhoneEnrollmentToken,
   verifySecurityActionToken,
   verifyPassword
 } from "./auth.js";
@@ -871,6 +873,41 @@ const issueTokens = async (params: {
   };
 };
 
+const issueLoginOtpChallenge = async (params: {
+  email: string;
+  phoneNumber?: string | null;
+}) => {
+  const otp = generateOtp();
+  const otpHash = hashOtp(otp);
+  const expiresAt = new Date(Date.now() + config.otpTtlMinutes * 60 * 1000);
+
+  await pool.query(
+    "UPDATE otp_tokens SET consumed_at = now() WHERE email = $1 AND consumed_at IS NULL AND purpose = 'login'",
+    [params.email]
+  );
+
+  await pool.query(
+    `INSERT INTO otp_tokens (email, otp_hash, expires_at, purpose) VALUES ($1,$2,$3,'login')`,
+    [params.email, otpHash, expiresAt]
+  );
+
+  const delivery = await sendOtp({
+    email: params.email,
+    phoneNumber: params.phoneNumber ?? null,
+    otp
+  });
+
+  const payload: { status: "otp_sent"; otp?: string; delivery: "email" | "sms" } = {
+    status: "otp_sent",
+    delivery: delivery.channel
+  };
+  if (config.returnOtpInResponse) {
+    payload.otp = otp;
+  }
+
+  return payload;
+};
+
 app.post("/auth/login", async (request, reply) => {
   if (!(await ensureAuthFlowAvailable(reply))) return;
 
@@ -941,34 +978,19 @@ app.post("/auth/login", async (request, reply) => {
     return;
   }
 
-  // Password valid — send OTP
-  const otp = generateOtp();
-  const otpHash = hashOtp(otp);
-  const expiresAt = new Date(Date.now() + config.otpTtlMinutes * 60 * 1000);
-
-  await pool.query(
-    "UPDATE otp_tokens SET consumed_at = now() WHERE email = $1 AND consumed_at IS NULL AND purpose = 'login'",
-    [email]
-  );
-
-  await pool.query(
-    `INSERT INTO otp_tokens (email, otp_hash, expires_at, purpose) VALUES ($1,$2,$3,'login')`,
-    [email, otpHash, expiresAt]
-  );
+  if (!user.phone_number) {
+    reply.send({
+      status: "phone_number_required",
+      phoneEnrollmentToken: signPhoneEnrollmentToken(user.id, email)
+    });
+    return;
+  }
 
   try {
-    const delivery = await sendOtp({
+    const payload = await issueLoginOtpChallenge({
       email,
-      phoneNumber: user.phone_number ?? null,
-      otp
+      phoneNumber: user.phone_number
     });
-    const payload: { status: string; otp?: string; delivery?: "email" | "sms" } = {
-      status: "otp_sent",
-      delivery: delivery.channel
-    };
-    if (config.returnOtpInResponse) {
-      payload.otp = otp;
-    }
     reply.send(payload);
     return;
   } catch (error: any) {
@@ -978,6 +1000,150 @@ app.post("/auth/login", async (request, reply) => {
       targetType: "user",
       targetId: user.id,
       metadata: { reason: "otp_delivery_failed", error: error?.message ?? "unknown" }
+    });
+    reply.code(502).send({ error: "otp_delivery_failed" });
+    return;
+  }
+});
+
+app.post("/auth/login/register-phone", async (request, reply) => {
+  if (!(await ensureAuthFlowAvailable(reply))) return;
+
+  const body = request.body as {
+    phoneEnrollmentToken?: string;
+    phoneNumber?: string | null;
+  };
+
+  if (!body?.phoneEnrollmentToken) {
+    reply.code(400).send({ error: "phone_enrollment_token_required" });
+    return;
+  }
+
+  const normalizedPhone = parsePhoneNumberInput(body.phoneNumber);
+  if (normalizedPhone.error || !normalizedPhone.value) {
+    reply.code(400).send({ error: normalizedPhone.error ?? "phone_number_required" });
+    return;
+  }
+
+  let claims: { sub?: string; email?: string; kind?: string };
+  try {
+    claims = verifyPhoneEnrollmentToken(body.phoneEnrollmentToken);
+  } catch {
+    reply.code(401).send({ error: "phone_enrollment_token_invalid" });
+    return;
+  }
+
+  if (claims.kind !== "phone_enrollment" || !claims.sub || !claims.email) {
+    reply.code(401).send({ error: "phone_enrollment_token_invalid" });
+    return;
+  }
+
+  const email = normalizeEmail(claims.email);
+  const userId = claims.sub;
+
+  const isLimited = await otpRequestLimiter(email, request.ip);
+  if (isLimited) {
+    reply.code(429).send({ error: "rate_limited" });
+    return;
+  }
+
+  const client = await pool.connect();
+  let phoneRegistered = false;
+
+  try {
+    await client.query("BEGIN");
+
+    const userRes = await client.query(
+      "SELECT id, email, status, phone_number FROM users WHERE id = $1 AND email = $2 LIMIT 1",
+      [userId, email]
+    );
+
+    if ((userRes.rowCount ?? 0) === 0) {
+      await client.query("ROLLBACK");
+      reply.code(401).send({ error: "phone_enrollment_token_invalid" });
+      return;
+    }
+
+    const user = userRes.rows[0] as {
+      id: string;
+      email: string;
+      status: string;
+      phone_number: string | null;
+    };
+
+    if (user.status !== "active") {
+      await client.query("ROLLBACK");
+      reply.code(403).send({ error: "user_disabled" });
+      return;
+    }
+
+    if (user.phone_number && user.phone_number !== normalizedPhone.value) {
+      await client.query("ROLLBACK");
+      reply.code(409).send({ error: "phone_number_already_registered" });
+      return;
+    }
+
+    if (!user.phone_number) {
+      const existingPhone = await client.query(
+        "SELECT id FROM users WHERE phone_number = $1 AND id <> $2 LIMIT 1",
+        [normalizedPhone.value, userId]
+      );
+      if ((existingPhone.rowCount ?? 0) > 0) {
+        await client.query("ROLLBACK");
+        reply.code(409).send({ error: "phone_number_already_exists" });
+        return;
+      }
+
+      await client.query(
+        "UPDATE users SET phone_number = $1, updated_at = now() WHERE id = $2",
+        [normalizedPhone.value, userId]
+      );
+      phoneRegistered = true;
+    }
+
+    await client.query("COMMIT");
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+    if (error?.code === "23505") {
+      reply.code(409).send({ error: "phone_number_already_exists" });
+      return;
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  if (phoneRegistered) {
+    await writeAuditLog({
+      actorUserId: userId,
+      action: "user.phone_registered",
+      targetType: "user",
+      targetId: userId,
+      metadata: {
+        duringLogin: true,
+        phoneNumber: normalizedPhone.value
+      }
+    });
+  }
+
+  try {
+    const payload = await issueLoginOtpChallenge({
+      email,
+      phoneNumber: normalizedPhone.value
+    });
+    reply.send(payload);
+    return;
+  } catch (error: any) {
+    await writeAuditLog({
+      actorUserId: userId,
+      action: "auth.login_failed",
+      targetType: "user",
+      targetId: userId,
+      metadata: {
+        reason: "otp_delivery_failed",
+        duringPhoneRegistration: phoneRegistered,
+        error: error?.message ?? "unknown"
+      }
     });
     reply.code(502).send({ error: "otp_delivery_failed" });
     return;
@@ -1719,6 +1885,18 @@ app.post("/admin/users", async (request, reply) => {
       }
     }
 
+    if (normalizedPhone.value) {
+      const existingPhone = await client.query(
+        "SELECT id FROM users WHERE phone_number = $1 LIMIT 1",
+        [normalizedPhone.value]
+      );
+      if ((existingPhone.rowCount ?? 0) > 0) {
+        await client.query("ROLLBACK");
+        reply.code(409).send({ error: "phone_number_already_exists" });
+        return;
+      }
+    }
+
     const roleRes = await client.query("SELECT id FROM roles WHERE name = $1 LIMIT 1", [roleName]);
     const passwordHash = await hashPassword(body.password);
     const insertRes = await client.query(
@@ -1836,6 +2014,16 @@ app.patch("/admin/users/:id", async (request, reply) => {
     if (normalizedPhone.error) {
       reply.code(400).send({ error: normalizedPhone.error });
       return;
+    }
+    if (normalizedPhone.value) {
+      const existingPhone = await pool.query(
+        "SELECT id FROM users WHERE phone_number = $1 AND id <> $2 LIMIT 1",
+        [normalizedPhone.value, id]
+      );
+      if ((existingPhone.rowCount ?? 0) > 0) {
+        reply.code(409).send({ error: "phone_number_already_exists" });
+        return;
+      }
     }
     params.push(normalizedPhone.value);
     updates.push(`phone_number = $${params.length}`);
