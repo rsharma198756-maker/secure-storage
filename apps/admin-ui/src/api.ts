@@ -22,6 +22,7 @@ export type AuthSession = {
 export type LoginChallenge = {
   status: string;
   otp?: string;
+  delivery?: "email" | "sms";
 };
 
 export type LoginResponse = AuthSession | LoginChallenge;
@@ -60,6 +61,7 @@ export type AdminUserRecord = {
   email: string;
   first_name?: string;
   last_name?: string;
+  phone_number?: string | null;
   status: string;
   created_at: string;
   roles?: string[];
@@ -120,6 +122,9 @@ export const login = async (email: string, password: string) => {
     if (data.error === "invalid_credentials") throw new Error("Invalid email or password");
     if (data.error === "user_disabled") throw new Error("Your account has been disabled");
     if (data.error === "rate_limited") throw new Error("Too many attempts. Please wait.");
+    if (data.error === "otp_delivery_failed") {
+      throw new Error("Could not send the verification code. Check your OTP delivery settings.");
+    }
     throw new Error("Login failed");
   }
 
@@ -215,6 +220,9 @@ export const requestSecurityStepUp = async (
     if (data.error === "password_required") throw new Error("Password is required");
     if (data.error === "invalid_credentials") throw new Error("Password is incorrect");
     if (data.error === "rate_limited") throw new Error("Too many attempts. Please wait.");
+    if (data.error === "otp_delivery_failed") {
+      throw new Error("Could not send the verification code. Check your OTP delivery settings.");
+    }
     throw new Error(toApiErrorMessage(data, "Could not request verification OTP"));
   }
 };
@@ -472,6 +480,7 @@ export const updateUserInfo = async (
     email?: string;
     firstName?: string;
     lastName?: string;
+    phoneNumber?: string | null;
   }
 ) => {
   const res = await fetch(`${API_BASE}/admin/users/${userId}`, {
@@ -486,6 +495,7 @@ export const updateUserInfo = async (
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     if (data.error === "invalid_email") throw new Error("Please enter a valid email address");
+    if (data.error === "invalid_phone_number") throw new Error("Please enter a valid mobile number");
     if (data.error === "email_already_exists") throw new Error("A user with this email already exists");
     if (data.error === "user_not_found") throw new Error("User not found");
     if (data.error === "no_fields_to_update") throw new Error("No changes to save");
@@ -812,7 +822,8 @@ export const createUser = async (
   password: string,
   role: string,
   firstName: string,
-  lastName: string
+  lastName: string,
+  phoneNumber: string
 ) => {
   const res = await fetch(`${API_BASE}/admin/users`, {
     method: "POST",
@@ -820,13 +831,14 @@ export const createUser = async (
       "content-type": "application/json",
       Authorization: `Bearer ${token}`
     },
-    body: JSON.stringify({ email, password, role, firstName, lastName })
+    body: JSON.stringify({ email, password, role, firstName, lastName, phoneNumber })
   });
 
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     if (data.error === "email_already_exists") throw new Error("A user with this email already exists");
     if (data.error === "invalid_email") throw new Error("Please enter a valid email address");
+    if (data.error === "invalid_phone_number") throw new Error("Please enter a valid mobile number");
     const passwordError = mapPasswordPolicyError(data.error);
     if (passwordError) throw new Error(passwordError);
     throw new Error(data.error ?? "Failed to create user");
@@ -835,6 +847,7 @@ export const createUser = async (
   return res.json() as Promise<{
     id: string;
     email: string;
+    phone_number?: string | null;
     status: string;
     role: string;
     reused?: boolean;

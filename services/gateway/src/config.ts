@@ -15,6 +15,12 @@ export const config = {
     user: process.env.SMTP_USER ?? "",
     pass: process.env.SMTP_PASS ?? ""
   },
+  msg91: {
+    apiBaseUrl: process.env.MSG91_API_BASE_URL ?? "https://api.msg91.com/api/v5",
+    authKey: process.env.MSG91_AUTH_KEY ?? "",
+    templateId: process.env.MSG91_TEMPLATE_ID ?? "",
+    senderId: process.env.MSG91_SENDER_ID ?? ""
+  },
   serviceJwt: {
     secret: process.env.SERVICE_JWT_SECRET ?? "dev-service-jwt-secret",
     issuer: process.env.SERVICE_JWT_ISSUER ?? "secure-gateway",

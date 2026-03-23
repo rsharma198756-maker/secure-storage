@@ -24,6 +24,8 @@ export default function UsersPage(props: UsersPageProps) {
     setEditUserLastName,
     editUserEmail,
     setEditUserEmail,
+    editUserPhoneNumber,
+    setEditUserPhoneNumber,
     selectedRoleIds,
     onRequestUserAccessRoleChange,
     roles,
@@ -103,6 +105,9 @@ export default function UsersPage(props: UsersPageProps) {
                             {user.first_name ? `${user.first_name} ${user.last_name}` : "-"}
                           </span>
                           <span style={{ fontSize: 12, color: "var(--ink-4)" }}>{user.email}</span>
+                          {user.phone_number && (
+                            <span style={{ fontSize: 12, color: "var(--ink-4)" }}>{user.phone_number}</span>
+                          )}
                         </div>
                       </div>
                     </td>
@@ -211,6 +216,9 @@ export default function UsersPage(props: UsersPageProps) {
                       </span>
                     </div>
                     <div style={{ fontSize: 14, color: "var(--ink-3)" }}>{selectedUser.email}</div>
+                    {selectedUser.phone_number && (
+                      <div style={{ fontSize: 13, color: "var(--ink-4)", marginTop: 4 }}>{selectedUser.phone_number}</div>
+                    )}
                   </div>
                 </div>
                 <button onClick={() => setSelectedUser(null)} style={{ background: "transparent", border: "none", color: "var(--ink-3)", cursor: "pointer", padding: 4, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -260,6 +268,17 @@ export default function UsersPage(props: UsersPageProps) {
                       placeholder="Email address"
                       value={editUserEmail}
                       onChange={(e: any) => setEditUserEmail(e.target.value)}
+                      style={{ margin: 0 }}
+                    />
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 16 }}>
+                    <label style={{ fontSize: 13, fontWeight: 500, color: "var(--ink-2)" }}>Mobile Number</label>
+                    <input
+                      className="modal-input"
+                      type="tel"
+                      placeholder="Mobile number"
+                      value={editUserPhoneNumber}
+                      onChange={(e: any) => setEditUserPhoneNumber(e.target.value)}
                       style={{ margin: 0 }}
                     />
                   </div>

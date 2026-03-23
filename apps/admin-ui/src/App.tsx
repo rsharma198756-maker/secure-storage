@@ -275,6 +275,7 @@ type User = {
   email: string;
   first_name?: string;
   last_name?: string;
+  phone_number?: string | null;
   status: string;
   created_at: string;
   roles?: string[];
@@ -742,6 +743,7 @@ export default function App() {
   const [editUserEmail, setEditUserEmail] = useState("");
   const [editUserFirstName, setEditUserFirstName] = useState("");
   const [editUserLastName, setEditUserLastName] = useState("");
+  const [editUserPhoneNumber, setEditUserPhoneNumber] = useState("");
   const [userRoles, setUserRoles] = useState<Role[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [items, setItems] = useState<Item[]>([]);
@@ -806,6 +808,7 @@ export default function App() {
   const [newUserRole, setNewUserRole] = useState("viewer");
   const [newUserFirstName, setNewUserFirstName] = useState("");
   const [newUserLastName, setNewUserLastName] = useState("");
+  const [newUserPhoneNumber, setNewUserPhoneNumber] = useState("");
   const [rememberMe, setRememberMe] = useState(
     () => localStorage.getItem(REMEMBER_ME_STORAGE_KEY) !== "false"
   );
@@ -1247,7 +1250,7 @@ export default function App() {
         return;
       }
       setLoginStep(3);
-      setStatus("OTP sent! Check your email inbox.");
+      setStatus("OTP sent. Check your registered contact method.");
     } catch (err: any) {
       const msg = err?.message ?? "Please check your credentials.";
       setLoginError(msg);
@@ -1508,6 +1511,7 @@ export default function App() {
     setEditUserEmail(user.email);
     setEditUserFirstName(user.first_name ?? "");
     setEditUserLastName(user.last_name ?? "");
+    setEditUserPhoneNumber(user.phone_number ?? "");
     const data = await listUserRoles(accessToken, user.id);
     setUserRoles(data);
   };
@@ -1518,6 +1522,7 @@ export default function App() {
     const emailValue = normalizeEmail(editUserEmail);
     const firstNameValue = editUserFirstName.trim();
     const lastNameValue = editUserLastName.trim();
+    const phoneNumberValue = editUserPhoneNumber.trim();
 
     if (!emailValue) {
       showToast("error", "Invalid email", "Email is required.");
@@ -1526,10 +1531,12 @@ export default function App() {
 
     const currentFirst = selectedUser.first_name ?? "";
     const currentLast = selectedUser.last_name ?? "";
+    const currentPhone = selectedUser.phone_number ?? "";
     if (
       emailValue === selectedUser.email &&
       firstNameValue === currentFirst &&
-      lastNameValue === currentLast
+      lastNameValue === currentLast &&
+      phoneNumberValue === currentPhone
     ) {
       showToast("success", "No changes", "User details are already up to date.");
       return true;
@@ -1540,7 +1547,8 @@ export default function App() {
       const updated = await updateUserInfo(accessToken, selectedUser.id, {
         email: emailValue,
         firstName: firstNameValue,
-        lastName: lastNameValue
+        lastName: lastNameValue,
+        phoneNumber: phoneNumberValue || null
       });
 
       setUsers((prev) =>
@@ -1550,7 +1558,8 @@ export default function App() {
               ...u,
               email: updated.email,
               first_name: updated.first_name ?? "",
-              last_name: updated.last_name ?? ""
+              last_name: updated.last_name ?? "",
+              phone_number: updated.phone_number ?? null
             }
             : u
         )
@@ -1561,13 +1570,15 @@ export default function App() {
             ...prev,
             email: updated.email,
             first_name: updated.first_name ?? "",
-            last_name: updated.last_name ?? ""
+            last_name: updated.last_name ?? "",
+            phone_number: updated.phone_number ?? null
           }
           : prev
       );
       setEditUserEmail(updated.email);
       setEditUserFirstName(updated.first_name ?? "");
       setEditUserLastName(updated.last_name ?? "");
+      setEditUserPhoneNumber(updated.phone_number ?? "");
 
       if (session?.user?.id === updated.id) {
         const nextSession = {
@@ -1718,12 +1729,14 @@ export default function App() {
     const emailValue = normalizeEmail(editUserEmail);
     const firstNameValue = editUserFirstName.trim();
     const lastNameValue = editUserLastName.trim();
+    const phoneNumberValue = editUserPhoneNumber.trim();
     return (
       emailValue !== selectedUser.email ||
       firstNameValue !== (selectedUser.first_name ?? "") ||
-      lastNameValue !== (selectedUser.last_name ?? "")
+      lastNameValue !== (selectedUser.last_name ?? "") ||
+      phoneNumberValue !== (selectedUser.phone_number ?? "")
     );
-  }, [selectedUser, editUserEmail, editUserFirstName, editUserLastName]);
+  }, [selectedUser, editUserEmail, editUserFirstName, editUserLastName, editUserPhoneNumber]);
 
   const onDoneUserDetails = async () => {
     if (!selectedUser) return;
@@ -2163,7 +2176,8 @@ export default function App() {
         newUserPassword,
         newUserRole,
         newUserFirstName,
-        newUserLastName
+        newUserLastName,
+        newUserPhoneNumber
       );
       showToast("success", "User created", `${newUserEmail} has been created successfully.`);
       setShowCreateUser(false);
@@ -2171,6 +2185,7 @@ export default function App() {
       setNewUserPassword("");
       setNewUserFirstName("");
       setNewUserLastName("");
+      setNewUserPhoneNumber("");
       refreshData();
     } catch (err: any) {
       showToast("error", "Failed to create user", err.message);
@@ -2222,7 +2237,7 @@ export default function App() {
     try {
       await requestSecurityStepUp(accessToken, stepUpPassword);
       setStepUpOtpRequested(true);
-      showToast("success", "Code sent", "Verification code sent to your email.");
+      showToast("success", "Code sent", "Verification code sent to your registered contact method.");
     } catch (error: any) {
       showToast("error", "Verification failed", error?.message ?? "Could not request verification code.");
     } finally {
@@ -2643,8 +2658,8 @@ export default function App() {
               <div className="login-step-dot" />
               <div className="login-step-dot active" />
             </div>
-            <h1 className="login-title">Check your email</h1>
-            <p className="login-subtitle">We sent a 6-digit code to <strong>{email}</strong></p>
+            <h1 className="login-title">Check your messages</h1>
+            <p className="login-subtitle">We sent a 6-digit code to your registered contact method.</p>
             <form className="login-form" onSubmit={(e) => { e.preventDefault(); onVerifyOtp(); }}>
               <div className="input-group">
                 <span className="input-icon"><LockIcon /></span>
@@ -2844,6 +2859,8 @@ export default function App() {
             setEditUserLastName={setEditUserLastName}
             editUserEmail={editUserEmail}
             setEditUserEmail={setEditUserEmail}
+            editUserPhoneNumber={editUserPhoneNumber}
+            setEditUserPhoneNumber={setEditUserPhoneNumber}
             selectedRoleIds={selectedRoleIds}
             onRequestUserAccessRoleChange={onRequestUserAccessRoleChange}
             roles={roles}
@@ -3228,6 +3245,15 @@ export default function App() {
                   required
                   style={{ marginBottom: 12 }}
                 />
+                <input
+                  className="modal-input"
+                  type="tel"
+                  placeholder="Mobile number"
+                  value={newUserPhoneNumber}
+                  onChange={(e) => setNewUserPhoneNumber(e.target.value)}
+                  required
+                  style={{ marginBottom: 12 }}
+                />
                 <div style={{ position: "relative", marginBottom: 6 }}>
                   <input
                     className="modal-input"
@@ -3258,7 +3284,7 @@ export default function App() {
                 </select>
                 <div className="modal-actions">
                   <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowCreateUser(false)}>Cancel</button>
-                  <button type="submit" className="btn btn-primary btn-sm" disabled={!newUserEmail.trim() || Boolean(newUserPasswordError) || isBusy}>
+                  <button type="submit" className="btn btn-primary btn-sm" disabled={!newUserEmail.trim() || !newUserPhoneNumber.trim() || Boolean(newUserPasswordError) || isBusy}>
                     {isBusy ? "Creating..." : "Create User"}
                   </button>
                 </div>

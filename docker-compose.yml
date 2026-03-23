@@ -118,6 +118,10 @@ services:
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-no-reply@secure-storage.local}
       BREVO_API_KEY: ${BREVO_API_KEY:-}
+      MSG91_API_BASE_URL: ${MSG91_API_BASE_URL:-https://api.msg91.com/api/v5}
+      MSG91_AUTH_KEY: ${MSG91_AUTH_KEY:-}
+      MSG91_TEMPLATE_ID: ${MSG91_TEMPLATE_ID:-}
+      MSG91_SENDER_ID: ${MSG91_SENDER_ID:-}
       EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-Magnus}
       EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-}
       OTP_REQUEST_MAX: 20

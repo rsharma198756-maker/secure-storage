@@ -11,8 +11,9 @@ import {
   hashOtp,
   hashPassword,
   isValidEmail,
+  normalizePhoneNumber,
   normalizeEmail,
-  sendOtpEmail,
+  sendOtp,
   signAccessToken,
   signSecurityActionToken,
   signServiceToken,
@@ -287,6 +288,31 @@ const validatePassword = (password: string): string | null => {
   if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]/.test(password))
     return "password_needs_special_char";
   return null;
+};
+
+const parsePhoneNumberInput = (value: unknown) => {
+  if (value === undefined) {
+    return { provided: false, value: null as string | null };
+  }
+
+  if (value === null) {
+    return { provided: true, value: null as string | null };
+  }
+
+  if (typeof value !== "string") {
+    return { provided: true, value: null as string | null, error: "invalid_phone_number" };
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { provided: true, value: null as string | null };
+  }
+
+  try {
+    return { provided: true, value: normalizePhoneNumber(trimmed) };
+  } catch {
+    return { provided: true, value: null as string | null, error: "invalid_phone_number" };
+  }
 };
 
 type DbClient = Pick<PoolClient, "query">;
@@ -868,7 +894,7 @@ app.post("/auth/login", async (request, reply) => {
 
   // Check user exists and is active
   const userRes = await pool.query(
-    "SELECT id, password_hash, status FROM users WHERE email = $1",
+    "SELECT id, password_hash, status, phone_number FROM users WHERE email = $1",
     [email]
   );
 
@@ -931,24 +957,31 @@ app.post("/auth/login", async (request, reply) => {
   );
 
   try {
-    await sendOtpEmail(email, otp);
+    const delivery = await sendOtp({
+      email,
+      phoneNumber: user.phone_number ?? null,
+      otp
+    });
+    const payload: { status: string; otp?: string; delivery?: "email" | "sms" } = {
+      status: "otp_sent",
+      delivery: delivery.channel
+    };
+    if (config.returnOtpInResponse) {
+      payload.otp = otp;
+    }
+    reply.send(payload);
+    return;
   } catch (error: any) {
     await writeAuditLog({
       actorUserId: user.id,
       action: "auth.login_failed",
       targetType: "user",
       targetId: user.id,
-      metadata: { reason: "otp_email_send_failed", error: error?.message ?? "unknown" }
+      metadata: { reason: "otp_delivery_failed", error: error?.message ?? "unknown" }
     });
-    reply.code(502).send({ error: "otp_email_send_failed" });
+    reply.code(502).send({ error: "otp_delivery_failed" });
     return;
   }
-
-  const payload: { status: string; otp?: string } = { status: "otp_sent" };
-  if (config.returnOtpInResponse) {
-    payload.otp = otp;
-  }
-  reply.send(payload);
 });
 
 app.post("/auth/verify-otp", async (request, reply) => {
@@ -1217,7 +1250,7 @@ app.post("/admin/security/step-up/request", async (request, reply) => {
 
   const userId = request.userId!;
   const userRes = await pool.query(
-    "SELECT id, email, status, password_hash FROM users WHERE id = $1 LIMIT 1",
+    "SELECT id, email, status, password_hash, phone_number FROM users WHERE id = $1 LIMIT 1",
     [userId]
   );
   if ((userRes.rowCount ?? 0) === 0) {
@@ -1268,29 +1301,33 @@ app.post("/admin/security/step-up/request", async (request, reply) => {
   );
 
   try {
-    await sendOtpEmail(email, otp);
+    const delivery = await sendOtp({
+      email,
+      phoneNumber: user.phone_number ?? null,
+      otp
+    });
+    await writeAuditLog({
+      actorUserId: userId,
+      action: "security.stepup.request",
+      targetType: "security_control",
+      metadata: {
+        channel: delivery.channel,
+        ip: request.ip,
+        userAgent: request.headers["user-agent"] ?? null
+      }
+    });
+    reply.send({ status: "otp_sent", delivery: delivery.channel });
+    return;
   } catch (error: any) {
     await writeAuditLog({
       actorUserId: userId,
       action: "security.stepup.request_failed",
       targetType: "security_control",
-      metadata: { reason: "otp_email_send_failed", error: error?.message ?? "unknown" }
+      metadata: { reason: "otp_delivery_failed", error: error?.message ?? "unknown" }
     });
-    reply.code(502).send({ error: "otp_email_send_failed" });
+    reply.code(502).send({ error: "otp_delivery_failed" });
     return;
   }
-
-  await writeAuditLog({
-    actorUserId: userId,
-    action: "security.stepup.request",
-    targetType: "security_control",
-    metadata: {
-      ip: request.ip,
-      userAgent: request.headers["user-agent"] ?? null
-    }
-  });
-
-  reply.send({ status: "otp_sent" });
 });
 
 app.post("/admin/security/step-up/verify", async (request, reply) => {
@@ -1604,6 +1641,7 @@ app.get("/admin/users", async (request, reply) => {
 
   const res = await pool.query(
     `SELECT u.id, u.email, u.first_name, u.last_name, u.status, u.created_at,
+            u.phone_number,
             COALESCE(
               (
                 SELECT json_agg(r.name)
@@ -1629,6 +1667,7 @@ app.post("/admin/users", async (request, reply) => {
     role?: string;
     firstName?: string;
     lastName?: string;
+    phoneNumber?: string | null;
   };
   if (!body?.email || !body?.password) {
     reply.code(400).send({ error: "email_and_password_required" });
@@ -1644,6 +1683,12 @@ app.post("/admin/users", async (request, reply) => {
   const pwError = validatePassword(body.password);
   if (pwError) {
     reply.code(400).send({ error: pwError });
+    return;
+  }
+
+  const normalizedPhone = parsePhoneNumberInput(body.phoneNumber);
+  if (normalizedPhone.error) {
+    reply.code(400).send({ error: normalizedPhone.error });
     return;
   }
 
@@ -1677,10 +1722,16 @@ app.post("/admin/users", async (request, reply) => {
     const roleRes = await client.query("SELECT id FROM roles WHERE name = $1 LIMIT 1", [roleName]);
     const passwordHash = await hashPassword(body.password);
     const insertRes = await client.query(
-      `INSERT INTO users (email, password_hash, status, first_name, last_name, email_verified_at)
-       VALUES ($1, $2, 'active', $3, $4, now())
+      `INSERT INTO users (email, password_hash, status, first_name, last_name, phone_number, email_verified_at)
+       VALUES ($1, $2, 'active', $3, $4, $5, now())
        RETURNING id`,
-      [email, passwordHash, body.firstName ?? "", body.lastName ?? ""]
+      [
+        email,
+        passwordHash,
+        body.firstName ?? "",
+        body.lastName ?? "",
+        normalizedPhone.value
+      ]
     );
     newUserId = insertRes.rows[0].id;
 
@@ -1719,10 +1770,16 @@ app.post("/admin/users", async (request, reply) => {
     action: "user.created",
     targetType: "user",
     targetId: newUserId,
-    metadata: { email, role: roleName }
+    metadata: { email, role: roleName, phoneNumber: normalizedPhone.value }
   });
 
-  reply.send({ id: newUserId, email, status: "active", role: roleName });
+  reply.send({
+    id: newUserId,
+    email,
+    phone_number: normalizedPhone.value,
+    status: "active",
+    role: roleName
+  });
 });
 
 // Update user profile fields (admin only)
@@ -1734,10 +1791,11 @@ app.patch("/admin/users/:id", async (request, reply) => {
     email?: string;
     firstName?: string;
     lastName?: string;
+    phoneNumber?: string | null;
   };
 
   const updates: string[] = [];
-  const params: (string | number)[] = [];
+  const params: (string | number | null)[] = [];
   const metadata: Record<string, string> = {};
 
   if (body?.email !== undefined) {
@@ -1773,6 +1831,17 @@ app.patch("/admin/users/:id", async (request, reply) => {
     metadata.lastName = lastName;
   }
 
+  if (body?.phoneNumber !== undefined) {
+    const normalizedPhone = parsePhoneNumberInput(body.phoneNumber);
+    if (normalizedPhone.error) {
+      reply.code(400).send({ error: normalizedPhone.error });
+      return;
+    }
+    params.push(normalizedPhone.value);
+    updates.push(`phone_number = $${params.length}`);
+    metadata.phoneNumber = normalizedPhone.value ?? "";
+  }
+
   if (updates.length === 0) {
     reply.code(400).send({ error: "no_fields_to_update" });
     return;
@@ -1784,7 +1853,7 @@ app.patch("/admin/users/:id", async (request, reply) => {
     UPDATE users
     SET ${updates.join(", ")}, updated_at = now()
     WHERE id = $${params.length}
-    RETURNING id, email, first_name, last_name, status, created_at
+    RETURNING id, email, first_name, last_name, phone_number, status, created_at
     `,
     params
   );

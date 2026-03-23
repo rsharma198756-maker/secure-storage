@@ -13,6 +13,32 @@ export const normalizeEmail = (email: string) => email.trim().toLowerCase();
 export const isValidEmail = (email: string) =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
+export const normalizePhoneNumber = (phoneNumber: string) => {
+  if (!phoneNumber) {
+    throw new Error("phone_number_required");
+  }
+
+  const digitsOnly = phoneNumber.replace(/[^\d]/g, "");
+  if (!digitsOnly || digitsOnly.length < 10) {
+    throw new Error("invalid_phone_number");
+  }
+
+  if (digitsOnly.length === 10) {
+    return `91${digitsOnly}`;
+  }
+
+  return digitsOnly;
+};
+
+export const isValidPhoneNumber = (phoneNumber: string) => {
+  try {
+    normalizePhoneNumber(phoneNumber);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export const generateOtp = () =>
   crypto.randomInt(100000, 1000000).toString();
 
@@ -114,4 +140,48 @@ export const sendOtpEmail = async (email: string, otp: string) => {
     subject,
     text
   });
+};
+
+const sendOtpSms = async (phoneNumber: string, otp: string) => {
+  if (!config.msg91.authKey || !config.msg91.templateId) {
+    throw new Error("otp_sms_not_configured");
+  }
+
+  const res = await fetch(`${config.msg91.apiBaseUrl}/otp`, {
+    method: "POST",
+    headers: {
+      authkey: config.msg91.authKey,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      mobile: normalizePhoneNumber(phoneNumber),
+      otp,
+      template_id: config.msg91.templateId
+    })
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({})) as any;
+    if (res.status === 401 || res.status === 403) {
+      throw new Error("otp_sms_auth_failed");
+    }
+    if (res.status === 404) {
+      throw new Error("otp_sms_template_not_found");
+    }
+    throw new Error(err?.message ?? err?.error ?? `otp_sms_send_failed:${res.status}`);
+  }
+};
+
+export const sendOtp = async (params: {
+  email: string;
+  phoneNumber?: string | null;
+  otp: string;
+}) => {
+  if (params.phoneNumber && config.msg91.authKey && config.msg91.templateId) {
+    await sendOtpSms(params.phoneNumber, params.otp);
+    return { channel: "sms" as const };
+  }
+
+  await sendOtpEmail(params.email, params.otp);
+  return { channel: "email" as const };
 };
