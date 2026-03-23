@@ -1265,7 +1265,7 @@ export default function App() {
         completeSessionLogin(loginResult);
         return;
       }
-      if (loginResult.status === "phone_number_required") {
+      if ("status" in loginResult && loginResult.status === "phone_number_required") {
         setLoginPhoneEnrollmentToken(loginResult.phoneEnrollmentToken);
         setLoginPhoneNumber("");
         setLoginStep(3);
