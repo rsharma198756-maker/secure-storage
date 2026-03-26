@@ -13,9 +13,11 @@ import {
   forceLogoutUser,
   fetchDashboardSummary,
   fetchMyProfile,
+  getSessionTerminationMessage,
   getIpAccessSettings,
   getSecurityState,
   fetchUserDashboardSummary,
+  isSessionTerminationError,
   listAuditLogs,
   listItems,
   listPermissions,
@@ -31,6 +33,7 @@ import {
   removeUser,
   resetUserPassword,
   saveIpAccessRule,
+  SESSION_TERMINATED_EVENT,
   setUserRole,
   tapOffService,
   tapOnService,
@@ -323,7 +326,7 @@ const SAVED_EMAILS_STORAGE_KEY = "magnus_saved_emails";
 const REMEMBER_ME_STORAGE_KEY = "magnus_remember";
 const REFRESH_SKEW_MS = 30 * 1000;
 const ACCESS_REFRESH_AHEAD_MS = 60 * 1000;
-const PROFILE_SYNC_INTERVAL_MS = 5 * 1000;  // poll every 5 s so permission changes reflect quickly
+const PROFILE_SYNC_INTERVAL_MS = 3 * 1000;  // poll every 3 s so forced sign-outs land quickly without user action
 
 
 const parseStoredSession = (raw: string | null): Session | null => {
@@ -788,6 +791,7 @@ export default function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastId = useRef(0);
+  const sessionTerminationNoticeUntilRef = useRef(0);
   const [showFolderModal, setShowFolderModal] = useState(false);
   const [folderName, setFolderName] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Item | null>(null);
@@ -1263,6 +1267,7 @@ export default function App() {
     };
 
     setSession(normalizedSession);
+    sessionTerminationNoticeUntilRef.current = 0;
     setSecurityActionToken(null);
     setSecurityActionExpiresAt(null);
     setSecurityState(null);
@@ -1440,6 +1445,35 @@ export default function App() {
     setLoginStep(1);
   }, [viewerUrl]);
 
+  const handleSessionTermination = useCallback(
+    (message: string, title = "You were signed out") => {
+      const now = Date.now();
+      clearClientSession();
+      if (sessionTerminationNoticeUntilRef.current > now) {
+        return;
+      }
+      sessionTerminationNoticeUntilRef.current = now + 3000;
+      showToast("warning", title, message);
+    },
+    [clearClientSession, showToast]
+  );
+
+  useEffect(() => {
+    const onSessionTerminated = (event: Event) => {
+      const detail = (event as CustomEvent<{ message?: string }>).detail;
+      handleSessionTermination(
+        detail?.message ?? "Your session has ended. Please sign in again to continue."
+      );
+    };
+
+    window.addEventListener(SESSION_TERMINATED_EVENT, onSessionTerminated as EventListener);
+    return () =>
+      window.removeEventListener(
+        SESSION_TERMINATED_EVENT,
+        onSessionTerminated as EventListener
+      );
+  }, [handleSessionTermination]);
+
   const onLogout = async () => {
     if (session) {
       try { await logout(session.refreshToken); } catch (e) { }
@@ -1467,7 +1501,11 @@ export default function App() {
           setSession(next);
           return true;
         })
-        .catch(() => {
+        .catch((error: any) => {
+          if (isSessionTerminationError(error)) {
+            handleSessionTermination(getSessionTerminationMessage(error));
+            return false;
+          }
           if (showExpiryToast) {
             showToast("error", "Session expired", "Your session expired. Please sign in again.");
           }
@@ -1481,7 +1519,13 @@ export default function App() {
       refreshInFlightRef.current = promise;
       return promise;
     },
-    [session?.refreshToken, session?.refreshExpiresAt, clearClientSession, showToast]
+    [
+      session?.refreshToken,
+      session?.refreshExpiresAt,
+      clearClientSession,
+      handleSessionTermination,
+      showToast
+    ]
   );
 
   const syncSessionProfile = useCallback(async () => {
@@ -1546,7 +1590,11 @@ export default function App() {
             }
           };
         });
-      } catch {
+      } catch (error: any) {
+        if (isSessionTerminationError(error)) {
+          handleSessionTermination(getSessionTerminationMessage(error));
+          return;
+        }
         // Ignore transient profile-sync failures; next interval/focus retries.
       }
     })().finally(() => {
@@ -1555,7 +1603,7 @@ export default function App() {
 
     profileSyncInFlightRef.current = promise;
     return promise;
-  }, [accessToken, showToast]);
+  }, [accessToken, handleSessionTermination, showToast]);
 
 
   // Rotate access token before it expires.

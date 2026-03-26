@@ -1,6 +1,24 @@
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:3000";
 const MAINTENANCE_FALLBACK =
   "We're performing routine service maintenance. Please try again shortly.";
+export const SESSION_TERMINATED_EVENT = "magnus:session-terminated";
+
+type ApiErrorOptions = {
+  code?: string;
+  status?: number;
+};
+
+class ApiError extends Error {
+  code?: string;
+  status?: number;
+
+  constructor(message: string, options?: ApiErrorOptions) {
+    super(message);
+    this.name = "ApiError";
+    this.code = options?.code;
+    this.status = options?.status;
+  }
+}
 
 export type UserProfile = {
   id: string;
@@ -123,6 +141,24 @@ const inferContentTypeFromFilename = (name: string) => {
 const resolveUploadContentType = (file: File) =>
   file.type || inferContentTypeFromFilename(file.name) || "application/octet-stream";
 
+const isSessionTerminationCode = (code?: string | null) =>
+  code === "session_revoked" ||
+  code === "user_disabled" ||
+  code === "invalid_user" ||
+  code === "unauthorized" ||
+  code === "invalid_refresh_token" ||
+  code === "refresh_token_expired";
+
+const getSessionTerminationMessageForCode = (code?: string | null) => {
+  if (code === "session_revoked") {
+    return "An administrator signed you out. Please sign in again to continue.";
+  }
+  if (code === "user_disabled") {
+    return "Your account is currently disabled. Contact an administrator if you need access restored.";
+  }
+  return "Your session has ended. Please sign in again to continue.";
+};
+
 const toApiErrorMessage = (data: any, fallback: string) => {
   if (data?.error === "service_temporarily_unavailable") {
     return data?.message ?? MAINTENANCE_FALLBACK;
@@ -133,7 +169,51 @@ const toApiErrorMessage = (data: any, fallback: string) => {
   if (data?.error === "ip_access_controls_unavailable") {
     return "IP access controls are unavailable until the latest database migration is applied.";
   }
+  if (isSessionTerminationCode(data?.error)) {
+    return getSessionTerminationMessageForCode(data.error);
+  }
   return fallback;
+};
+
+const createApiError = (data: any, fallback: string, status?: number) =>
+  new ApiError(toApiErrorMessage(data, fallback), {
+    code: typeof data?.error === "string" ? data.error : undefined,
+    status
+  });
+
+const throwApiError = (
+  data: any,
+  fallback: string,
+  status?: number,
+  options?: { emitSessionTermination?: boolean }
+): never => {
+  const error = createApiError(data, fallback, status);
+  if (
+    options?.emitSessionTermination !== false &&
+    typeof window !== "undefined" &&
+    isSessionTerminationCode(error.code)
+  ) {
+    window.dispatchEvent(
+      new CustomEvent(SESSION_TERMINATED_EVENT, {
+        detail: {
+          code: error.code,
+          message: error.message
+        }
+      })
+    );
+  }
+  throw error;
+};
+
+export const isSessionTerminationError = (error: unknown) =>
+  isSessionTerminationCode((error as { code?: string } | null | undefined)?.code);
+
+export const getSessionTerminationMessage = (error: unknown) => {
+  const typedError = error as { code?: string; message?: string } | null | undefined;
+  if (typedError?.code && isSessionTerminationCode(typedError.code)) {
+    return typedError.message ?? getSessionTerminationMessageForCode(typedError.code);
+  }
+  return "Your session has ended. Please sign in again to continue.";
 };
 
 export const login = async (email: string, password: string) => {
@@ -236,7 +316,7 @@ export const refreshSession = async (refreshToken: string) => {
 
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(toApiErrorMessage(data, "Refresh failed"));
+    throwApiError(data, "Refresh failed", res.status);
   }
 
   return (await res.json()) as AuthSession;
@@ -267,7 +347,7 @@ const authFetch = async (
 
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(toApiErrorMessage(data, `Request failed: ${path}`));
+    throwApiError(data, `Request failed: ${path}`, res.status);
   }
 
   return res.json();
