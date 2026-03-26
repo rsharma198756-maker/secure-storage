@@ -8,11 +8,8 @@ export default function SettingsPage(props: SettingsPageProps) {
     ipAccessLoading,
     ipAccessError,
     refreshIpAccessSettings,
-    refreshSecurityControlState,
     settingsIpAddress,
     setSettingsIpAddress,
-    settingsIpLabel,
-    setSettingsIpLabel,
     settingsIpEnabled,
     setSettingsIpEnabled,
     onSaveIpAccessRule,
@@ -20,28 +17,18 @@ export default function SettingsPage(props: SettingsPageProps) {
     ipRuleActionId,
     onToggleIpAccessRule,
     onDeleteIpAccessRule,
-    securityLoading,
-    isBusy,
     RefreshCwIcon,
-    PhoneIcon,
     TrashIcon,
     isSecurityTokenValid,
     securityTokenRemainingSeconds,
     openSecurityStepUpModal,
     stepUpBusy,
-    securityError,
-    securityState,
-    formatDate,
-    securityReason,
-    setSecurityReason,
     securityTargetUserId,
     setSecurityTargetUserId,
     users,
     session,
     onForceLogoutSelectedUser,
-    onForceLogoutEveryone,
-    onTapOff,
-    onTapOn,
+    isBusy,
     showSecurityStepUpModal,
     setShowSecurityStepUpModal,
     stepUpPassword,
@@ -51,6 +38,7 @@ export default function SettingsPage(props: SettingsPageProps) {
     stepUpOtp,
     setStepUpOtp,
     onVerifySecurityStepUpOtp,
+    PhoneIcon,
     LockIcon
   } = props as any;
 
@@ -68,19 +56,19 @@ export default function SettingsPage(props: SettingsPageProps) {
     <>
       <div style={{ display: "grid", gap: 18 }}>
         <div className="panel" style={{ padding: 20 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center", marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
             <div>
-              <h2 style={{ margin: 0, fontSize: 20, color: "var(--ink-1)" }}>Security access</h2>
+              <h2 style={{ margin: 0, fontSize: 20, color: "var(--ink-1)" }}>Admin settings</h2>
               <p style={{ margin: "6px 0 0", color: "var(--ink-3)", fontSize: 14 }}>
-                Verify your identity before changing access rules or running emergency controls.
+                Keep it simple: control IP access and sign out a selected user.
               </p>
             </div>
             <button className="btn btn-primary btn-sm" onClick={openSecurityStepUpModal} disabled={stepUpBusy}>
-              {isSecurityTokenValid ? "Re-verify identity" : "Verify identity"}
+              {isSecurityTokenValid ? "Re-verify" : "Verify identity"}
             </button>
           </div>
 
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 14 }}>
             <span className={`badge ${isSecurityTokenValid ? "badge-active" : "badge-disabled"}`}>
               {isSecurityTokenValid ? "Privileged actions unlocked" : "Verification required"}
             </span>
@@ -95,9 +83,9 @@ export default function SettingsPage(props: SettingsPageProps) {
         <div className="panel" style={{ padding: 20 }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center", marginBottom: 16 }}>
             <div>
-              <h2 style={{ margin: 0, fontSize: 20, color: "var(--ink-1)" }}>IP access control</h2>
+              <h2 style={{ margin: 0, fontSize: 20, color: "var(--ink-1)" }}>IP access</h2>
               <p style={{ margin: "6px 0 0", color: "var(--ink-3)", fontSize: 14 }}>
-                Disable a specific IP to block that network from using the app.
+                Enable or disable a specific IP address from using the app.
               </p>
             </div>
             <button
@@ -106,11 +94,11 @@ export default function SettingsPage(props: SettingsPageProps) {
               disabled={ipAccessLoading || isIpAccessSubmitting || Boolean(ipRuleActionId)}
             >
               <RefreshCwIcon size={14} style={{ marginRight: 4 }} />
-              {ipAccessLoading ? "Refreshing..." : "Refresh rules"}
+              {ipAccessLoading ? "Refreshing..." : "Refresh"}
             </button>
           </div>
 
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
             <span className="badge badge-active">Current IP</span>
             <span style={{ fontSize: 13, color: "var(--ink-2)", fontWeight: 600 }}>
               {currentIpAddress ?? "Unavailable"}
@@ -145,19 +133,7 @@ export default function SettingsPage(props: SettingsPageProps) {
                 style={{ margin: 0 }}
               />
             </div>
-            <div>
-              <label style={{ display: "block", fontSize: 12, color: "var(--ink-4)", fontWeight: 600, marginBottom: 6 }}>
-                Label
-              </label>
-              <input
-                className="modal-input"
-                type="text"
-                value={settingsIpLabel}
-                onChange={(event: any) => setSettingsIpLabel(event.target.value)}
-                placeholder="Office broadband"
-                style={{ margin: 0 }}
-              />
-            </div>
+
             <div>
               <label style={{ display: "block", fontSize: 12, color: "var(--ink-4)", fontWeight: 600, marginBottom: 6 }}>
                 Access
@@ -175,17 +151,18 @@ export default function SettingsPage(props: SettingsPageProps) {
                   minHeight: 46
                 }}
               >
-                <option value="disabled">Disabled (block)</option>
-                <option value="enabled">Enabled (allow)</option>
+                <option value="disabled">Disabled</option>
+                <option value="enabled">Enabled</option>
               </select>
             </div>
+
             <button
               className="btn btn-primary"
               onClick={() => void onSaveIpAccessRule()}
               disabled={isIpAccessSubmitting || Boolean(ipRuleActionId)}
               style={{ minHeight: 46 }}
             >
-              {isIpAccessSubmitting ? "Saving..." : "Save rule"}
+              {isIpAccessSubmitting ? "Saving..." : "Save"}
             </button>
           </div>
 
@@ -199,10 +176,10 @@ export default function SettingsPage(props: SettingsPageProps) {
                 fontSize: 13
               }}
             >
-              No IP rules yet. Add one above to start blocking or re-enabling a network.
+              No IP rules yet.
             </div>
           ) : (
-            <div style={{ display: "grid", gap: 12 }}>
+            <div style={{ display: "grid", gap: 10 }}>
               {ipAccessRules.map((rule: any) => {
                 const isCurrentIp = Boolean(currentIpAddress && currentIpAddress === rule.ipAddress);
                 const rowBusy = ipRuleActionId === rule.id;
@@ -213,50 +190,49 @@ export default function SettingsPage(props: SettingsPageProps) {
                       border: "1px solid var(--border)",
                       borderRadius: 14,
                       padding: 16,
-                      background: rule.enabled
-                        ? "color-mix(in srgb, var(--green) 7%, var(--surface))"
-                        : "color-mix(in srgb, var(--red) 8%, var(--surface))"
+                      background: "var(--surface)",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: 12,
+                      flexWrap: "wrap"
                     }}
                   >
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
-                      <div style={{ display: "grid", gap: 8 }}>
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                          <span style={{ fontSize: 16, fontWeight: 700, color: "var(--ink-1)" }}>{rule.ipAddress}</span>
-                          <span className={`badge ${rule.enabled ? "badge-active" : "badge-disabled"}`}>
-                            {rule.enabled ? "Enabled" : "Disabled"}
+                    <div style={{ display: "grid", gap: 6 }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 16, fontWeight: 700, color: "var(--ink-1)" }}>
+                          {rule.ipAddress}
+                        </span>
+                        <span className={`badge ${rule.enabled ? "badge-active" : "badge-disabled"}`}>
+                          {rule.enabled ? "Enabled" : "Disabled"}
+                        </span>
+                        {isCurrentIp && (
+                          <span className="badge" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
+                            Current IP
                           </span>
-                          {isCurrentIp && (
-                            <span className="badge" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
-                              Current network
-                            </span>
-                          )}
-                        </div>
-                        <div style={{ fontSize: 13, color: "var(--ink-3)" }}>
-                          {rule.label || "No label provided"}
-                        </div>
-                        <div style={{ fontSize: 12, color: "var(--ink-4)" }}>
-                          Updated {formatDate(rule.updatedAt)}
-                          {rule.updatedByEmail ? ` by ${rule.updatedByEmail}` : ""}
-                        </div>
+                        )}
                       </div>
+                      <div style={{ fontSize: 12, color: "var(--ink-4)" }}>
+                        Updated by {rule.updatedByEmail ?? "system"}
+                      </div>
+                    </div>
 
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                        <button
-                          className={`btn ${rule.enabled ? "btn-danger" : "btn-primary"} btn-sm`}
-                          onClick={() => void onToggleIpAccessRule(rule)}
-                          disabled={rowBusy || isIpAccessSubmitting}
-                        >
-                          {rowBusy ? "Saving..." : rule.enabled ? "Disable access" : "Enable access"}
-                        </button>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => void onDeleteIpAccessRule(rule)}
-                          disabled={rowBusy || isIpAccessSubmitting}
-                        >
-                          <TrashIcon size={14} style={{ marginRight: 4 }} />
-                          Delete
-                        </button>
-                      </div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button
+                        className={`btn ${rule.enabled ? "btn-danger" : "btn-primary"} btn-sm`}
+                        onClick={() => void onToggleIpAccessRule(rule)}
+                        disabled={rowBusy || isIpAccessSubmitting}
+                      >
+                        {rowBusy ? "Saving..." : rule.enabled ? "Disable" : "Enable"}
+                      </button>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => void onDeleteIpAccessRule(rule)}
+                        disabled={rowBusy || isIpAccessSubmitting}
+                      >
+                        <TrashIcon size={14} style={{ marginRight: 4 }} />
+                        Delete
+                      </button>
                     </div>
                   </div>
                 );
@@ -266,125 +242,40 @@ export default function SettingsPage(props: SettingsPageProps) {
         </div>
 
         <div className="panel" style={{ padding: 20 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center", marginBottom: 18 }}>
-            <div>
-              <h2 style={{ margin: 0, fontSize: 20, color: "var(--ink-1)" }}>Emergency controls</h2>
-              <p style={{ margin: "6px 0 0", color: "var(--ink-3)", fontSize: 14 }}>
-                Targeted logout, global logout, and tap-off controls for high-risk events.
-              </p>
-            </div>
-            <button
-              className="btn btn-secondary btn-sm"
-              onClick={() => void refreshSecurityControlState()}
-              disabled={securityLoading || isBusy}
-            >
-              <RefreshCwIcon size={14} style={{ marginRight: 4 }} />
-              {securityLoading ? "Refreshing..." : "Refresh state"}
-            </button>
-          </div>
+          <h2 style={{ margin: 0, fontSize: 20, color: "var(--ink-1)" }}>Sign out a user</h2>
+          <p style={{ margin: "6px 0 16px", color: "var(--ink-3)", fontSize: 14 }}>
+            Pick a user and end their active session. They will be taken back to login automatically.
+          </p>
 
-          {securityError && (
-            <div style={{ marginBottom: 12, color: "var(--red)", fontSize: 13 }}>
-              {securityError}
-            </div>
-          )}
-
-          <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", marginBottom: 18 }}>
-            <div className="panel" style={{ margin: 0 }}>
-              <div style={{ fontSize: 12, color: "var(--ink-4)", marginBottom: 6 }}>Tap-off status</div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: securityState?.tapOffActive ? "var(--red)" : "var(--green)" }}>
-                {securityState?.tapOffActive ? "ACTIVE" : "INACTIVE"}
-              </div>
-              <div style={{ marginTop: 6, fontSize: 12, color: "var(--ink-4)" }}>
-                Started: {securityState?.tapOffStartedAt ? formatDate(securityState.tapOffStartedAt) : "Verify to load"}
-              </div>
-            </div>
-            <div className="panel" style={{ margin: 0 }}>
-              <div style={{ fontSize: 12, color: "var(--ink-4)", marginBottom: 6 }}>Global logout cutoff</div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-2)" }}>
-                {securityState?.globalLogoutAfter ? formatDate(securityState.globalLogoutAfter) : "Verify to load"}
-              </div>
-              <div style={{ marginTop: 6, fontSize: 12, color: "var(--ink-4)" }}>
-                Last tap-off by: {securityState?.tapOffBy ?? "-"}
-              </div>
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gap: 12, marginBottom: 16 }}>
-            <label style={{ fontSize: 12, color: "var(--ink-4)", fontWeight: 600 }}>Reason for security action</label>
-            <textarea
-              value={securityReason}
-              onChange={(event: any) => setSecurityReason(event.target.value)}
-              placeholder="Reason for audit trail..."
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <select
+              value={securityTargetUserId}
+              onChange={(event: any) => setSecurityTargetUserId(event.target.value)}
               style={{
-                minHeight: 80,
-                resize: "vertical",
+                minWidth: 280,
                 borderRadius: 10,
                 border: "1px solid var(--border)",
                 background: "var(--surface)",
                 color: "var(--ink-1)",
                 padding: "10px 12px"
               }}
-            />
-          </div>
-
-          <div style={{ display: "grid", gap: 12, marginBottom: 16 }}>
-            <label style={{ fontSize: 12, color: "var(--ink-4)", fontWeight: 600 }}>
-              Target user for single-account logout
-            </label>
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <select
-                value={securityTargetUserId}
-                onChange={(event: any) => setSecurityTargetUserId(event.target.value)}
-                style={{
-                  minWidth: 260,
-                  borderRadius: 10,
-                  border: "1px solid var(--border)",
-                  background: "var(--surface)",
-                  color: "var(--ink-1)",
-                  padding: "10px 12px"
-                }}
-              >
-                <option value="">Select a user...</option>
-                {users
-                  .filter((user: any) => user.id !== session?.user?.id)
-                  .map((user: any) => (
-                    <option key={user.id} value={user.id}>
-                      {user.email}
-                    </option>
-                  ))}
-              </select>
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={() => void onForceLogoutSelectedUser()}
-                disabled={isBusy || !securityTargetUserId}
-              >
-                Logout selected user
-              </button>
-            </div>
-          </div>
-
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button
-              className="btn btn-secondary btn-sm"
-              onClick={() => void onForceLogoutEveryone()}
-              disabled={isBusy}
             >
-              Logout everyone
-            </button>
-            <button
-              className="btn btn-danger btn-sm"
-              onClick={() => void onTapOff()}
-              disabled={isBusy || Boolean(securityState?.tapOffActive)}
-            >
-              Activate tap-off
-            </button>
+              <option value="">Select a user...</option>
+              {users
+                .filter((user: any) => user.id !== session?.user?.id)
+                .map((user: any) => (
+                  <option key={user.id} value={user.id}>
+                    {user.email}
+                  </option>
+                ))}
+            </select>
+
             <button
               className="btn btn-primary btn-sm"
-              onClick={() => void onTapOn()}
-              disabled={isBusy || !securityState?.tapOffActive}
+              onClick={() => void onForceLogoutSelectedUser()}
+              disabled={isBusy || !securityTargetUserId}
             >
-              Restore service
+              Sign out user
             </button>
           </div>
         </div>
@@ -395,7 +286,7 @@ export default function SettingsPage(props: SettingsPageProps) {
           <div className="modal" onClick={(event: any) => event.stopPropagation()} style={{ maxWidth: 420 }}>
             <div className="modal-title">Verify identity</div>
             <div className="modal-desc">
-              Confirm your password and SMS OTP to unlock privileged actions.
+              Confirm your password and SMS OTP to unlock these admin actions.
             </div>
 
             <div className="input-group" style={{ marginBottom: 12 }}>
