@@ -85,7 +85,7 @@ export default function SettingsPage(props: SettingsPageProps) {
             <div>
               <h2 style={{ margin: 0, fontSize: 20, color: "var(--ink-1)" }}>IP access</h2>
               <p style={{ margin: "6px 0 0", color: "var(--ink-3)", fontSize: 14 }}>
-                Enable or disable a specific IP address from using the app.
+                Disabled IPs are blocked. If at least one IP is enabled, only enabled IPs can use the app.
               </p>
             </div>
             <button
@@ -151,8 +151,8 @@ export default function SettingsPage(props: SettingsPageProps) {
                   minHeight: 46
                 }}
               >
-                <option value="disabled">Disabled</option>
-                <option value="enabled">Enabled</option>
+                <option value="disabled">Disabled (block)</option>
+                <option value="enabled">Enabled (allow)</option>
               </select>
             </div>
 

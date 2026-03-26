@@ -2501,7 +2501,7 @@ export default function App() {
         showToast(
           "warning",
           "Current IP blocked",
-          "This network has just been disabled. The next API request from this IP will be denied."
+          "This network no longer has access. The next API request from this IP will be denied."
         );
       } else {
         showToast("success", "IP rule saved", `${result.rule.ipAddress} was updated successfully.`);
@@ -2537,7 +2537,7 @@ export default function App() {
         showToast(
           "warning",
           "Current IP blocked",
-          "This network has just been disabled. The next API request from this IP will be denied."
+          "This network no longer has access. The next API request from this IP will be denied."
         );
       } else {
         showToast(

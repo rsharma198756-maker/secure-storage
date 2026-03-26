@@ -78,6 +78,11 @@ type IpAccessRuleRecord = {
   updatedByEmail: string | null;
 };
 
+type IpAccessState = {
+  enabledIpAddresses: Set<string>;
+  disabledIpAddresses: Set<string>;
+};
+
 type DashboardRange = "7d" | "today" | "yesterday";
 
 const parseDashboardRange = (value?: string): DashboardRange => {
@@ -110,9 +115,13 @@ const getDashboardRangeWindow = (range: DashboardRange) => {
 
 const SECURITY_STATE_CACHE_MS = 1000;
 const IP_ACCESS_RULES_CACHE_MS = 1000;
-const IP_BLOCKED_PAYLOAD = {
+const IP_DISABLED_PAYLOAD = {
   error: "ip_address_blocked",
   message: "Access from this IP address has been disabled by an administrator."
+};
+const IP_NOT_ALLOWLISTED_PAYLOAD = {
+  error: "ip_address_blocked",
+  message: "You do not have access from this IP address."
 };
 let securityControlsCache:
   | {
@@ -121,9 +130,9 @@ let securityControlsCache:
     }
   | undefined;
 let warnedMissingSecurityControlsTable = false;
-let blockedIpAddressesCache:
+let ipAccessStateCache:
   | {
-      value: Set<string>;
+      value: IpAccessState;
       loadedAt: number;
     }
   | undefined;
@@ -250,8 +259,61 @@ const invalidateSecurityControlsCache = () => {
   securityControlsCache = undefined;
 };
 
-const invalidateBlockedIpAddressesCache = () => {
-  blockedIpAddressesCache = undefined;
+const createEmptyIpAccessState = (): IpAccessState => ({
+  enabledIpAddresses: new Set<string>(),
+  disabledIpAddresses: new Set<string>()
+});
+
+const addIpAccessEntryToState = (state: IpAccessState, ipAddress: string | null | undefined, enabled: boolean) => {
+  const normalized = normalizeIpAddress(String(ipAddress ?? ""));
+  if (!normalized) {
+    return;
+  }
+
+  if (enabled) {
+    state.enabledIpAddresses.add(normalized);
+    state.disabledIpAddresses.delete(normalized);
+    return;
+  }
+
+  state.disabledIpAddresses.add(normalized);
+  state.enabledIpAddresses.delete(normalized);
+};
+
+const buildIpAccessStateFromRows = (rows: Array<{ ip_address?: string | null; enabled?: unknown }>) => {
+  const state = createEmptyIpAccessState();
+  for (const row of rows) {
+    addIpAccessEntryToState(state, row.ip_address ?? null, Boolean(row.enabled));
+  }
+  return state;
+};
+
+const buildIpAccessStateFromRules = (rules: Array<{ ipAddress?: string | null; enabled?: boolean }>) => {
+  const state = createEmptyIpAccessState();
+  for (const rule of rules) {
+    addIpAccessEntryToState(state, rule.ipAddress ?? null, Boolean(rule.enabled));
+  }
+  return state;
+};
+
+const getIpAccessDecision = (state: IpAccessState, ipAddress?: string | null) => {
+  if (!ipAddress) {
+    return { allowed: true, reason: null as "disabled" | "not_allowlisted" | null };
+  }
+
+  if (state.disabledIpAddresses.has(ipAddress)) {
+    return { allowed: false, reason: "disabled" as const };
+  }
+
+  if (state.enabledIpAddresses.size > 0 && !state.enabledIpAddresses.has(ipAddress)) {
+    return { allowed: false, reason: "not_allowlisted" as const };
+  }
+
+  return { allowed: true, reason: null as "disabled" | "not_allowlisted" | null };
+};
+
+const invalidateIpAccessStateCache = () => {
+  ipAccessStateCache = undefined;
 };
 
 const mapIpAccessRuleRow = (row: any): IpAccessRuleRecord => ({
@@ -265,26 +327,21 @@ const mapIpAccessRuleRow = (row: any): IpAccessRuleRecord => ({
   updatedByEmail: row.updated_by_email ?? null
 });
 
-const getBlockedIpAddresses = async () => {
+const getIpAccessState = async () => {
   const now = Date.now();
-  if (blockedIpAddressesCache && now - blockedIpAddressesCache.loadedAt < IP_ACCESS_RULES_CACHE_MS) {
-    return blockedIpAddressesCache.value;
+  if (ipAccessStateCache && now - ipAccessStateCache.loadedAt < IP_ACCESS_RULES_CACHE_MS) {
+    return ipAccessStateCache.value;
   }
 
   try {
     const res = await pool.query(
       `
-      SELECT host(ip_address) AS ip_address
+      SELECT host(ip_address) AS ip_address, enabled
       FROM ip_access_rules
-      WHERE enabled = false
       `
     );
-    const value = new Set(
-      res.rows
-        .map((row) => normalizeIpAddress(String(row.ip_address ?? "")))
-        .filter((ip): ip is string => Boolean(ip))
-    );
-    blockedIpAddressesCache = { value, loadedAt: now };
+    const value = buildIpAccessStateFromRows(res.rows);
+    ipAccessStateCache = { value, loadedAt: now };
     return value;
   } catch (error: any) {
     if (error?.code === "42P01") {
@@ -294,8 +351,8 @@ const getBlockedIpAddresses = async () => {
           "ip_access_rules table is missing; IP access controls are temporarily disabled until migrations are applied"
         );
       }
-      const value = new Set<string>();
-      blockedIpAddressesCache = { value, loadedAt: now };
+      const value = createEmptyIpAccessState();
+      ipAccessStateCache = { value, loadedAt: now };
       return value;
     }
     throw error;
@@ -393,13 +450,19 @@ app.addHook("onRequest", async (request, reply) => {
     return;
   }
 
-  const blockedIpAddresses = await getBlockedIpAddresses();
-  if (!blockedIpAddresses.has(ipAddress)) {
+  const ipAccessState = await getIpAccessState();
+  const decision = getIpAccessDecision(ipAccessState, ipAddress);
+  if (decision.allowed) {
     return;
   }
 
-  request.log.warn({ ipAddress, url: request.url }, "request blocked by IP access rule");
-  return reply.code(403).send(IP_BLOCKED_PAYLOAD);
+  request.log.warn(
+    { ipAddress, url: request.url, reason: decision.reason },
+    "request blocked by IP access rule"
+  );
+  return reply
+    .code(403)
+    .send(decision.reason === "disabled" ? IP_DISABLED_PAYLOAD : IP_NOT_ALLOWLISTED_PAYLOAD);
 });
 
 // Password complexity validator
@@ -1904,7 +1967,7 @@ app.post("/admin/security/ip-access", async (request, reply) => {
       ]
     );
 
-    invalidateBlockedIpAddressesCache();
+    invalidateIpAccessStateCache();
     const rules = await listIpAccessRules();
     const rule = rules.find((entry) => entry.id === result.rows[0]?.id);
     if (!rule) {
@@ -1913,7 +1976,7 @@ app.post("/admin/security/ip-access", async (request, reply) => {
     }
 
     const currentIpAddress = getRequestIpAddress(request);
-    const currentIpBlocked = Boolean(currentIpAddress && rule.ipAddress === currentIpAddress && !rule.enabled);
+    const currentIpBlocked = !getIpAccessDecision(buildIpAccessStateFromRules(rules), currentIpAddress).allowed;
 
     await writeAuditLog({
       actorUserId: request.userId,
@@ -2004,7 +2067,7 @@ app.patch("/admin/security/ip-access/:id", async (request, reply) => {
       return;
     }
 
-    invalidateBlockedIpAddressesCache();
+    invalidateIpAccessStateCache();
     const rules = await listIpAccessRules();
     const rule = rules.find((entry) => entry.id === result.rows[0]?.id);
     if (!rule) {
@@ -2013,7 +2076,7 @@ app.patch("/admin/security/ip-access/:id", async (request, reply) => {
     }
 
     const currentIpAddress = getRequestIpAddress(request);
-    const currentIpBlocked = Boolean(currentIpAddress && rule.ipAddress === currentIpAddress && !rule.enabled);
+    const currentIpBlocked = !getIpAccessDecision(buildIpAccessStateFromRules(rules), currentIpAddress).allowed;
 
     await writeAuditLog({
       actorUserId: request.userId,
@@ -2070,7 +2133,7 @@ app.delete("/admin/security/ip-access/:id", async (request, reply) => {
 
     const existingRule = existingRes.rows[0];
     await pool.query("DELETE FROM ip_access_rules WHERE id = $1", [params.id]);
-    invalidateBlockedIpAddressesCache();
+    invalidateIpAccessStateCache();
 
     await writeAuditLog({
       actorUserId: request.userId,

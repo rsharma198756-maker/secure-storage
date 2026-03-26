@@ -164,7 +164,7 @@ const toApiErrorMessage = (data: any, fallback: string) => {
     return data?.message ?? MAINTENANCE_FALLBACK;
   }
   if (data?.error === "ip_address_blocked") {
-    return data?.message ?? "Access from this IP address has been disabled by an administrator.";
+    return data?.message ?? "You do not have access from this IP address.";
   }
   if (data?.error === "ip_access_controls_unavailable") {
     return "IP access controls are unavailable until the latest database migration is applied.";
