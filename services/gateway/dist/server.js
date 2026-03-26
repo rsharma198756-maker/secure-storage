@@ -210,6 +210,8 @@ const getIpAccessDecision = (state, ipAddress) => {
     }
     return { allowed: true, reason: null };
 };
+const getIpBlockedPayload = (reason) => reason === "disabled" ? IP_DISABLED_PAYLOAD : IP_NOT_ALLOWLISTED_PAYLOAD;
+const sendIpAccessDenied = (reply, reason) => reply.code(403).send(getIpBlockedPayload(reason));
 const invalidateIpAccessStateCache = () => {
     ipAccessStateCache = undefined;
 };
@@ -325,10 +327,21 @@ app.addHook("onRequest", async (request, reply) => {
     if (decision.allowed) {
         return;
     }
+    if (request.url === "/auth/login" ||
+        request.url.startsWith("/auth/login/") ||
+        request.url === "/auth/verify-otp" ||
+        request.url === "/auth/refresh") {
+        return;
+    }
+    const accessClaims = getAccessClaimsFromAuth(request);
+    const candidateUserId = accessClaims?.sub ??
+        (config.allowDevHeader ? getUserIdFromHeader(request) : undefined);
+    if (candidateUserId && (await isAdminUser(pool, candidateUserId))) {
+        request.log.info({ ipAddress, url: request.url, userId: candidateUserId }, "admin bypassed IP access rule");
+        return;
+    }
     request.log.warn({ ipAddress, url: request.url, reason: decision.reason }, "request blocked by IP access rule");
-    return reply
-        .code(403)
-        .send(decision.reason === "disabled" ? IP_DISABLED_PAYLOAD : IP_NOT_ALLOWLISTED_PAYLOAD);
+    return sendIpAccessDenied(reply, decision.reason);
 });
 // Password complexity validator
 const validatePassword = (password) => {
@@ -429,6 +442,18 @@ const getOtpDeliveryFailure = (error) => {
 const isMissingRelationOrColumn = (error) => {
     const pgError = error;
     return pgError?.code === "42P01" || pgError?.code === "42703";
+};
+const isAdminUser = async (client, userId) => {
+    const res = await client.query(`
+    SELECT EXISTS (
+      SELECT 1
+      FROM user_roles ur
+      JOIN roles r ON r.id = ur.role_id
+      WHERE ur.user_id = $1
+        AND r.name = 'admin'
+    ) AS is_admin
+    `, [userId]);
+    return Boolean(res.rows[0]?.is_admin);
 };
 const hardDeleteUserAccount = async (client, userId, options) => {
     const targetRes = await client.query(`
@@ -900,6 +925,23 @@ app.post("/auth/login", async (request, reply) => {
         reply.code(401).send({ error: "invalid_credentials" });
         return;
     }
+    const requestIpAddress = getRequestIpAddress(request);
+    const ipAccessDecision = getIpAccessDecision(await getIpAccessState(), requestIpAddress);
+    if (!ipAccessDecision.allowed && !(await isAdminUser(pool, user.id))) {
+        await writeAuditLog({
+            actorUserId: user.id,
+            action: "auth.login_failed",
+            targetType: "user",
+            targetId: user.id,
+            metadata: {
+                reason: "ip_address_blocked",
+                ipAddress: requestIpAddress,
+                userAgent: request.headers["user-agent"] ?? null
+            }
+        });
+        sendIpAccessDenied(reply, ipAccessDecision.reason);
+        return;
+    }
     let loginPhoneNumber = null;
     if (user.phone_number) {
         try {
@@ -983,6 +1025,13 @@ app.post("/auth/login/register-phone", async (request, reply) => {
         if (user.status !== "active") {
             await client.query("ROLLBACK");
             reply.code(403).send({ error: "user_disabled" });
+            return;
+        }
+        const requestIpAddress = getRequestIpAddress(request);
+        const ipAccessDecision = getIpAccessDecision(await getIpAccessState(), requestIpAddress);
+        if (!ipAccessDecision.allowed && !(await isAdminUser(client, userId))) {
+            await client.query("ROLLBACK");
+            sendIpAccessDenied(reply, ipAccessDecision.reason);
             return;
         }
         let existingPhoneNumber = null;
@@ -1103,7 +1152,6 @@ app.post("/auth/verify-otp", async (request, reply) => {
         reply.code(400).send({ error: "otp_invalid" });
         return;
     }
-    await pool.query("UPDATE otp_tokens SET consumed_at = now() WHERE id = $1", [tokenRow.id]);
     // User must already exist (created by admin, no auto-registration)
     const userRes = await pool.query("SELECT id, status FROM users WHERE email = $1", [email]);
     if (userRes.rowCount === 0) {
@@ -1115,6 +1163,13 @@ app.post("/auth/verify-otp", async (request, reply) => {
         reply.code(403).send({ error: "user_disabled" });
         return;
     }
+    const requestIpAddress = getRequestIpAddress(request);
+    const ipAccessDecision = getIpAccessDecision(await getIpAccessState(), requestIpAddress);
+    if (!ipAccessDecision.allowed && !(await isAdminUser(pool, userId))) {
+        sendIpAccessDenied(reply, ipAccessDecision.reason);
+        return;
+    }
+    await pool.query("UPDATE otp_tokens SET consumed_at = now() WHERE id = $1", [tokenRow.id]);
     // Mark email as verified if not already
     await pool.query("UPDATE users SET email_verified_at = COALESCE(email_verified_at, now()) WHERE id = $1", [userId]);
     const tokens = await issueTokens({
@@ -1150,11 +1205,6 @@ app.post("/auth/refresh", async (request, reply) => {
         reply.code(401).send({ error: "refresh_token_expired" });
         return;
     }
-    await revokeRefreshTokenWithMetadata(pool, {
-        tokenHash: refreshHash,
-        reason: "refresh_rotation",
-        revokedByUserId: record.user_id
-    });
     const userRes = await pool.query("SELECT email, status, force_logout_after FROM users WHERE id = $1", [record.user_id]);
     if (userRes.rowCount === 0) {
         reply.code(401).send({ error: "invalid_user" });
@@ -1162,6 +1212,12 @@ app.post("/auth/refresh", async (request, reply) => {
     }
     if (userRes.rows[0].status !== "active") {
         reply.code(403).send({ error: "user_disabled" });
+        return;
+    }
+    const requestIpAddress = getRequestIpAddress(request);
+    const ipAccessDecision = getIpAccessDecision(await getIpAccessState(), requestIpAddress);
+    if (!ipAccessDecision.allowed && !(await isAdminUser(pool, record.user_id))) {
+        sendIpAccessDenied(reply, ipAccessDecision.reason);
         return;
     }
     const controls = await getSecurityControls();
@@ -1172,6 +1228,11 @@ app.post("/auth/refresh", async (request, reply) => {
         reply.code(401).send({ error: "session_revoked" });
         return;
     }
+    await revokeRefreshTokenWithMetadata(pool, {
+        tokenHash: refreshHash,
+        reason: "refresh_rotation",
+        revokedByUserId: record.user_id
+    });
     const tokens = await issueTokens({
         userId: record.user_id,
         email: userRes.rows[0].email,
