@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import { isIP } from "node:net";
 import archiver from "archiver";
 import { config } from "./config.js";
-import { generateOtp, hashOtp, hashPassword, isValidEmail, normalizePhoneNumber, normalizeEmail, sendOtp, signAccessToken, signPhoneEnrollmentToken, signSecurityActionToken, signServiceToken, verifyAccessToken, verifyPhoneEnrollmentToken, verifySecurityActionToken, verifyPassword } from "./auth.js";
+import { generateOtp, hashOtp, hashPassword, isValidEmail, normalizePhoneNumber, normalizeEmail, sendOtp, signAccessToken, signSecurityActionToken, signServiceToken, verifyAccessToken, verifyPhoneEnrollmentToken, verifySecurityActionToken, verifyPassword } from "./auth.js";
 import { getRedis } from "./redis.js";
 import { findRefreshToken, generateRefreshToken, hashRefreshToken, revokeAllRefreshTokens, revokeRefreshTokenWithMetadata, revokeRefreshTokensForUser, storeRefreshToken } from "./refreshTokens.js";
 import { hasPermission, invalidateEnforcer } from "./rbac.js";
@@ -51,11 +51,11 @@ const SECURITY_STATE_CACHE_MS = 1000;
 const IP_ACCESS_RULES_CACHE_MS = 1000;
 const IP_DISABLED_PAYLOAD = {
     error: "ip_address_blocked",
-    message: "Access from this IP address has been disabled by an administrator."
+    message: "Access denied."
 };
 const IP_NOT_ALLOWLISTED_PAYLOAD = {
     error: "ip_address_blocked",
-    message: "You do not have access from this IP address."
+    message: "Access denied."
 };
 let securityControlsCache;
 let warnedMissingSecurityControlsTable = false;
@@ -870,29 +870,29 @@ app.post("/auth/login", async (request, reply) => {
     if (!(await ensureAuthFlowAvailable(reply)))
         return;
     const body = request.body;
-    if (!body?.email || !body?.password) {
-        reply.code(400).send({ error: "email_and_password_required" });
+    if (!body?.phoneNumber || !body?.password) {
+        reply.code(400).send({ error: "phone_number_and_password_required" });
         return;
     }
-    const email = normalizeEmail(body.email);
-    if (!isValidEmail(email)) {
-        reply.code(400).send({ error: "invalid_email" });
+    const normalizedPhone = parsePhoneNumberInput(body.phoneNumber);
+    if (normalizedPhone.error || !normalizedPhone.value) {
+        reply.code(400).send({ error: normalizedPhone.error ?? "phone_number_required" });
         return;
     }
-    const isLimited = await otpRequestLimiter(email, request.ip);
+    const phoneNumber = normalizedPhone.value;
+    const isLimited = await otpRequestLimiter(phoneNumber, request.ip);
     if (isLimited) {
         reply.code(429).send({ error: "rate_limited" });
         return;
     }
     // Check user exists and is active
-    const userRes = await pool.query("SELECT id, password_hash, status, phone_number FROM users WHERE email = $1", [email]);
+    const userRes = await pool.query("SELECT id, email, password_hash, status, phone_number FROM users WHERE phone_number = $1", [phoneNumber]);
     if (userRes.rowCount === 0) {
-        // Don't reveal whether email exists — still delay
         await writeAuditLog({
             actorUserId: null,
             action: "auth.login_failed",
             targetType: "user",
-            metadata: { email, reason: "not_found" }
+            metadata: { phoneNumber, reason: "not_found" }
         });
         reply.code(401).send({ error: "invalid_credentials" });
         return;
@@ -942,26 +942,10 @@ app.post("/auth/login", async (request, reply) => {
         sendIpAccessDenied(reply, ipAccessDecision.reason);
         return;
     }
-    let loginPhoneNumber = null;
-    if (user.phone_number) {
-        try {
-            loginPhoneNumber = normalizePhoneNumber(user.phone_number);
-        }
-        catch {
-            loginPhoneNumber = null;
-        }
-    }
-    if (!loginPhoneNumber) {
-        reply.send({
-            status: "phone_number_required",
-            phoneEnrollmentToken: signPhoneEnrollmentToken(user.id, email)
-        });
-        return;
-    }
     try {
         const payload = await issueLoginOtpChallenge({
-            email,
-            phoneNumber: loginPhoneNumber
+            email: normalizeEmail(user.email),
+            phoneNumber
         });
         reply.send(payload);
         return;
@@ -1112,18 +1096,30 @@ app.post("/auth/verify-otp", async (request, reply) => {
     if (!(await ensureAuthFlowAvailable(reply)))
         return;
     const body = request.body;
-    if (!body?.email || !body?.otp) {
+    if (!body?.phoneNumber || !body?.otp) {
         reply.code(400).send({ error: "invalid_payload" });
         return;
     }
-    const email = normalizeEmail(body.email);
-    if (!isValidEmail(email)) {
-        reply.code(400).send({ error: "invalid_email" });
+    const normalizedPhone = parsePhoneNumberInput(body.phoneNumber);
+    if (normalizedPhone.error || !normalizedPhone.value) {
+        reply.code(400).send({ error: normalizedPhone.error ?? "phone_number_required" });
         return;
     }
-    const isLimited = await otpVerifyLimiter(email, request.ip);
+    const phoneNumber = normalizedPhone.value;
+    const isLimited = await otpVerifyLimiter(phoneNumber, request.ip);
     if (isLimited) {
         reply.code(429).send({ error: "rate_limited" });
+        return;
+    }
+    const userRes = await pool.query("SELECT id, email, status FROM users WHERE phone_number = $1 LIMIT 1", [phoneNumber]);
+    if (userRes.rowCount === 0) {
+        reply.code(400).send({ error: "otp_not_found" });
+        return;
+    }
+    const userId = userRes.rows[0].id;
+    const email = normalizeEmail(userRes.rows[0].email);
+    if (userRes.rows[0].status !== "active") {
+        reply.code(403).send({ error: "user_disabled" });
         return;
     }
     const tokenRes = await pool.query(`
@@ -1150,17 +1146,6 @@ app.post("/auth/verify-otp", async (request, reply) => {
     if (otpHash !== tokenRow.otp_hash) {
         await pool.query("UPDATE otp_tokens SET attempts = attempts + 1 WHERE id = $1", [tokenRow.id]);
         reply.code(400).send({ error: "otp_invalid" });
-        return;
-    }
-    // User must already exist (created by admin, no auto-registration)
-    const userRes = await pool.query("SELECT id, status FROM users WHERE email = $1", [email]);
-    if (userRes.rowCount === 0) {
-        reply.code(400).send({ error: "user_not_found" });
-        return;
-    }
-    const userId = userRes.rows[0].id;
-    if (userRes.rows[0].status !== "active") {
-        reply.code(403).send({ error: "user_disabled" });
         return;
     }
     const requestIpAddress = getRequestIpAddress(request);

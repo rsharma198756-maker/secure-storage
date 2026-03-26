@@ -27,7 +27,6 @@ import {
   listUsers,
   login,
   logout,
-  registerLoginPhoneNumber,
   refreshSession as refreshAuthSession,
   requestSecurityStepUp,
   removeUser,
@@ -160,13 +159,6 @@ const LogoutIcon = ({ size = 20, ...props }: IconProps) => (
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
     <polyline points="16 17 21 12 16 7" />
     <line x1="21" y1="12" x2="9" y2="12" />
-  </svg>
-);
-
-const MailIcon = ({ size = 20, ...props }: IconProps) => (
-  <svg {...svgBase} width={size} height={size} {...props}>
-    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
-    <polyline points="22 6 12 13 2 6" />
   </svg>
 );
 
@@ -321,8 +313,8 @@ type Session = {
 };
 
 const SESSION_STORAGE_KEY = "magnus_session";
-const LAST_EMAIL_STORAGE_KEY = "magnus_last_email";
-const SAVED_EMAILS_STORAGE_KEY = "magnus_saved_emails";
+const LAST_PHONE_STORAGE_KEY = "magnus_last_phone";
+const SAVED_PHONE_STORAGE_KEY = "magnus_saved_phones";
 const REMEMBER_ME_STORAGE_KEY = "magnus_remember";
 const REFRESH_SKEW_MS = 30 * 1000;
 const ACCESS_REFRESH_AHEAD_MS = 60 * 1000;
@@ -756,14 +748,12 @@ const CheckSmall = ({ size = 14, color = "currentColor" }: { size?: number; colo
    ============================================= */
 
 export default function App() {
-  const [email, setEmail] = useState(
-    () => localStorage.getItem(LAST_EMAIL_STORAGE_KEY) ?? ""
+  const [phoneNumber, setPhoneNumber] = useState(
+    () => localStorage.getItem(LAST_PHONE_STORAGE_KEY) ?? ""
   );
   const [password, setPassword] = useState("");
   const [otp, setOtp] = useState("");
-  const [loginStep, setLoginStep] = useState<1 | 2 | 3 | 4>(1);
-  const [loginPhoneNumber, setLoginPhoneNumber] = useState("");
-  const [loginPhoneEnrollmentToken, setLoginPhoneEnrollmentToken] = useState<string | null>(null);
+  const [loginStep, setLoginStep] = useState<1 | 2 | 3>(1);
   const [session, setSession] = useState<Session | null>(null);
   const [tab, setTab] = useState<Tab>(() => tabFromPath());
 
@@ -864,7 +854,6 @@ export default function App() {
   );
   const [showPassword, setShowPassword] = useState(false);
   const [isLoginSubmitting, setIsLoginSubmitting] = useState(false);
-  const [isPhoneEnrollmentSubmitting, setIsPhoneEnrollmentSubmitting] = useState(false);
   const [isOtpSubmitting, setIsOtpSubmitting] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [showNewUserPassword, setShowNewUserPassword] = useState(false);
@@ -878,9 +867,9 @@ export default function App() {
   const [resetNewPassword, setResetNewPassword] = useState("");
   const [showResetPassword, setShowResetPassword] = useState(false);
   const [isSessionChecking, setIsSessionChecking] = useState(true);
-  const [savedEmails, setSavedEmails] = useState<string[]>(() => {
+  const [savedPhoneNumbers, setSavedPhoneNumbers] = useState<string[]>(() => {
     try {
-      const raw = localStorage.getItem(SAVED_EMAILS_STORAGE_KEY);
+      const raw = localStorage.getItem(SAVED_PHONE_STORAGE_KEY);
       return raw ? (JSON.parse(raw) as string[]) : [];
     } catch {
       return [];
@@ -1281,18 +1270,16 @@ export default function App() {
     setIsIpAccessSubmitting(false);
     setIpRuleActionId(null);
     if (rememberMe) {
-      localStorage.setItem(LAST_EMAIL_STORAGE_KEY, email);
-      setSavedEmails((prev) => {
-        const next = [email, ...prev.filter((value) => value !== email)].slice(0, 10);
-        localStorage.setItem(SAVED_EMAILS_STORAGE_KEY, JSON.stringify(next));
+      localStorage.setItem(LAST_PHONE_STORAGE_KEY, phoneNumber);
+      setSavedPhoneNumbers((prev) => {
+        const next = [phoneNumber, ...prev.filter((value) => value !== phoneNumber)].slice(0, 10);
+        localStorage.setItem(SAVED_PHONE_STORAGE_KEY, JSON.stringify(next));
         return next;
       });
     }
     setLoginStep(1);
     setOtp("");
     setPassword("");
-    setLoginPhoneNumber("");
-    setLoginPhoneEnrollmentToken(null);
     setStatus(null);
     setLoginError(null);
     const userTabs = getTabsForRole(
@@ -1306,23 +1293,14 @@ export default function App() {
     if (isLoginSubmitting) return;
     setStatus(null);
     setLoginError(null);
-    setLoginPhoneEnrollmentToken(null);
-    setLoginPhoneNumber("");
     setIsLoginSubmitting(true);
     try {
-      const loginResult = await login(email, password);
+      const loginResult = await login(phoneNumber, password);
       if ("accessToken" in loginResult && loginResult.accessToken) {
         completeSessionLogin(loginResult);
         return;
       }
-      if ("status" in loginResult && loginResult.status === "phone_number_required") {
-        setLoginPhoneEnrollmentToken(loginResult.phoneEnrollmentToken);
-        setLoginPhoneNumber("");
-        setLoginStep(3);
-        setStatus(null);
-        return;
-      }
-      setLoginStep(4);
+      setLoginStep(3);
       setStatus("OTP sent to your mobile number.");
     } catch (err: any) {
       const msg = err?.message ?? "Please check your credentials.";
@@ -1333,44 +1311,12 @@ export default function App() {
     }
   };
 
-  const onRegisterLoginPhone = async () => {
-    if (isPhoneEnrollmentSubmitting) return;
-    if (!loginPhoneEnrollmentToken) {
-      const msg = "Your sign-in session expired. Start again.";
-      setLoginError(msg);
-      showToast("error", "Sign-in expired", msg);
-      setLoginStep(1);
-      setPassword("");
-      setOtp("");
-      setLoginPhoneNumber("");
-      setLoginPhoneEnrollmentToken(null);
-      setStatus(null);
-      return;
-    }
-
-    setLoginError(null);
-    setStatus(null);
-    setIsPhoneEnrollmentSubmitting(true);
-    try {
-      await registerLoginPhoneNumber(loginPhoneEnrollmentToken, loginPhoneNumber);
-      setLoginPhoneEnrollmentToken(null);
-      setLoginStep(4);
-      setStatus("OTP sent to your mobile number.");
-    } catch (err: any) {
-      const msg = err?.message ?? "Could not save your mobile number.";
-      setLoginError(msg);
-      showToast("error", "Verification setup failed", msg);
-    } finally {
-      setIsPhoneEnrollmentSubmitting(false);
-    }
-  };
-
   const onVerifyOtp = async () => {
     if (isOtpSubmitting) return;
     setStatus(null);
     setIsOtpSubmitting(true);
     try {
-      const data = await verifyOtp(email, otp);
+      const data = await verifyOtp(phoneNumber, otp);
       completeSessionLogin(data);
     } catch (err: any) {
       showToast("error", "Verification failed", err?.message ?? "Invalid OTP code. Please try again.");
@@ -1439,7 +1385,7 @@ export default function App() {
     setPdfRendering(false);
     setPdfScalePercent(100);
     setPdfViewportWidth(0);
-    setEmail(""); // Reset login details
+    setPhoneNumber(""); // Reset login details
     setPassword("");
     setOtp("");
     setLoginStep(1);
@@ -2814,7 +2760,7 @@ export default function App() {
         <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
         {loginStep === 1 && (
-          <div className="login-card" key="step-email">
+          <div className="login-card" key="step-phone">
             <div className="login-brand">
               <div className="login-brand-icon"><VaultIcon size={24} /></div>
               <div className="login-brand-text">Magnus</div>
@@ -2823,35 +2769,32 @@ export default function App() {
               <div className="login-step-dot active" />
               <div className="login-step-dot" />
               <div className="login-step-dot" />
-              <div className="login-step-dot" />
             </div>
             <h1 className="login-title">Welcome back</h1>
-            <p className="login-subtitle">Enter your email address to continue.</p>
+            <p className="login-subtitle">Enter your phone number to continue.</p>
             <form className="login-form" autoComplete="on" onSubmit={(e) => {
               e.preventDefault();
-              if (!email.trim()) return;
+              if (!phoneNumber.trim()) return;
               setLoginError(null);
               setStatus(null);
-              setLoginPhoneNumber("");
-              setLoginPhoneEnrollmentToken(null);
               setLoginStep(2);
             }}>
               <div className="input-group">
-                <span className="input-icon"><MailIcon /></span>
+                <span className="input-icon"><PhoneIcon /></span>
                 <input
-                  type="email"
-                  name="email"
-                  autoComplete="email"
-                  list="remembered-emails"
-                  placeholder="Enter your email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  type="tel"
+                  name="phoneNumber"
+                  autoComplete="tel"
+                  list="remembered-phones"
+                  placeholder="Enter your mobile number"
+                  value={phoneNumber}
+                  onChange={(e) => setPhoneNumber(e.target.value)}
                   required
                   autoFocus
                 />
-                <datalist id="remembered-emails">
-                  {savedEmails.map((savedEmail) => (
-                    <option key={savedEmail} value={savedEmail} />
+                <datalist id="remembered-phones">
+                  {savedPhoneNumbers.map((savedPhone) => (
+                    <option key={savedPhone} value={savedPhone} />
                   ))}
                 </datalist>
               </div>
@@ -2887,12 +2830,11 @@ export default function App() {
               <div className="login-step-dot" />
               <div className="login-step-dot active" />
               <div className="login-step-dot" />
-              <div className="login-step-dot" />
             </div>
             <h1 className="login-title">Enter your password</h1>
-            <p className="login-subtitle">Signing in as <strong>{email}</strong></p>
+            <p className="login-subtitle">Signing in as <strong>{phoneNumber}</strong></p>
             <form className="login-form" autoComplete="on" onSubmit={(e) => { e.preventDefault(); onLogin(); }}>
-              <input type="email" name="username" autoComplete="username" value={email} readOnly style={{ display: "none" }} />
+              <input type="text" name="username" autoComplete="username" value={phoneNumber} readOnly style={{ display: "none" }} />
               <div className="input-group">
                 <span className="input-icon"><LockIcon /></span>
                 <input
@@ -2943,94 +2885,25 @@ export default function App() {
                   setLoginStep(1);
                   setPassword("");
                   setOtp("");
-                  setLoginPhoneNumber("");
-                  setLoginPhoneEnrollmentToken(null);
                   setStatus(null);
                   setLoginError(null);
                 }}
                 disabled={isLoginSubmitting}
                 style={{ width: "100%", marginTop: 8 }}
               >
-                ← Use a different email
+                ← Use a different mobile number
               </button>
             </div>
           </div>
         )}
 
         {loginStep === 3 && (
-          <div className="login-card" key="step-phone">
-            <div className="login-brand">
-              <div className="login-brand-icon"><VaultIcon size={24} /></div>
-              <div className="login-brand-text">Magnus</div>
-            </div>
-            <div className="login-step-indicator">
-              <div className="login-step-dot" />
-              <div className="login-step-dot" />
-              <div className="login-step-dot active" />
-              <div className="login-step-dot" />
-            </div>
-            <h1 className="login-title">Add your mobile number</h1>
-            <p className="login-subtitle">Enter your 10-digit Indian mobile number so we can send your OTP by SMS.</p>
-            <form className="login-form" onSubmit={(e) => { e.preventDefault(); onRegisterLoginPhone(); }}>
-              <div className="input-group">
-                <span className="input-icon"><PhoneIcon /></span>
-                <input
-                  type="tel"
-                  placeholder="Enter 10-digit Indian mobile number"
-                  value={loginPhoneNumber}
-                  onChange={(e) => setLoginPhoneNumber(e.target.value)}
-                  disabled={isPhoneEnrollmentSubmitting}
-                  required
-                  autoFocus
-                />
-              </div>
-              {loginError && (
-                <div style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "10px 14px",
-                  borderRadius: 10,
-                  background: "var(--red-bg, rgba(248,113,113,0.1))",
-                  border: "1px solid rgba(248,113,113,0.3)",
-                  color: "var(--red, #f87171)",
-                  fontSize: 13,
-                  fontWeight: 500,
-                  marginBottom: 4
-                }}>
-                  <span>⚠</span> {loginError}
-                </div>
-              )}
-              <button className="btn btn-primary" type="submit" disabled={isPhoneEnrollmentSubmitting}>
-                {isPhoneEnrollmentSubmitting ? "Saving..." : "Save & Send Code"}
-              </button>
-            </form>
-            <div className="login-footer">
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={() => {
-                  setLoginStep(2);
-                  setLoginPhoneNumber("");
-                  setStatus(null);
-                  setLoginError(null);
-                }}
-                disabled={isPhoneEnrollmentSubmitting}
-                style={{ width: "100%", marginTop: 8 }}
-              >
-                ← Back
-              </button>
-            </div>
-          </div>
-        )}
-
-        {loginStep === 4 && (
           <div className="login-card" key="step-otp">
             <div className="login-brand">
               <div className="login-brand-icon"><VaultIcon size={24} /></div>
               <div className="login-brand-text">Magnus</div>
             </div>
             <div className="login-step-indicator">
-              <div className="login-step-dot" />
               <div className="login-step-dot" />
               <div className="login-step-dot" />
               <div className="login-step-dot active" />
@@ -3062,8 +2935,6 @@ export default function App() {
                   setLoginStep(1);
                   setOtp("");
                   setPassword("");
-                  setLoginPhoneNumber("");
-                  setLoginPhoneEnrollmentToken(null);
                   setStatus(null);
                   setLoginError(null);
                 }}

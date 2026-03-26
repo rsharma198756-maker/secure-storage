@@ -43,15 +43,7 @@ export type OtpLoginChallenge = {
   delivery?: "email" | "sms";
 };
 
-export type PhoneEnrollmentLoginChallenge = {
-  status: "phone_number_required";
-  phoneEnrollmentToken: string;
-};
-
-export type LoginResponse =
-  | AuthSession
-  | OtpLoginChallenge
-  | PhoneEnrollmentLoginChallenge;
+export type LoginResponse = AuthSession | OtpLoginChallenge;
 
 export type Item = {
   id: string;
@@ -164,7 +156,7 @@ const toApiErrorMessage = (data: any, fallback: string) => {
     return data?.message ?? MAINTENANCE_FALLBACK;
   }
   if (data?.error === "ip_address_blocked") {
-    return data?.message ?? "You do not have access from this IP address.";
+    return data?.message ?? "Access denied.";
   }
   if (data?.error === "ip_access_controls_unavailable") {
     return "IP access controls are unavailable until the latest database migration is applied.";
@@ -216,11 +208,11 @@ export const getSessionTerminationMessage = (error: unknown) => {
   return "Your session has ended. Please sign in again to continue.";
 };
 
-export const login = async (email: string, password: string) => {
+export const login = async (phoneNumber: string, password: string) => {
   const res = await fetch(`${API_BASE}/auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email, password })
+    body: JSON.stringify({ phoneNumber, password })
   });
 
   if (!res.ok) {
@@ -229,7 +221,13 @@ export const login = async (email: string, password: string) => {
     if (maintenance) {
       throw new Error(maintenance);
     }
-    if (data.error === "invalid_credentials") throw new Error("Invalid email or password");
+    if (data.error === "phone_number_required" || data.error === "phone_number_and_password_required") {
+      throw new Error("Mobile number and password are required.");
+    }
+    if (data.error === "invalid_phone_number") {
+      throw new Error("Please enter a valid 10-digit Indian mobile number.");
+    }
+    if (data.error === "invalid_credentials") throw new Error("Invalid mobile number or password.");
     if (data.error === "user_disabled") throw new Error("Your account has been disabled");
     if (data.error === "rate_limited") throw new Error("Too many attempts. Please wait.");
     if (data.error === "otp_sms_not_configured") {
@@ -244,15 +242,18 @@ export const login = async (email: string, password: string) => {
   return res.json() as Promise<LoginResponse>;
 };
 
-export const verifyOtp = async (email: string, otp: string) => {
+export const verifyOtp = async (phoneNumber: string, otp: string) => {
   const res = await fetch(`${API_BASE}/auth/verify-otp`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email, otp })
+    body: JSON.stringify({ phoneNumber, otp })
   });
 
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
+    if (data.error === "invalid_phone_number" || data.error === "phone_number_required") {
+      throw new Error("Please enter a valid 10-digit Indian mobile number.");
+    }
     throw new Error(toApiErrorMessage(data, "Invalid OTP"));
   }
 

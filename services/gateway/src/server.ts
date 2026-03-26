@@ -16,7 +16,6 @@ import {
   normalizeEmail,
   sendOtp,
   signAccessToken,
-  signPhoneEnrollmentToken,
   signSecurityActionToken,
   signServiceToken,
   verifyAccessToken,
@@ -119,11 +118,11 @@ const SECURITY_STATE_CACHE_MS = 1000;
 const IP_ACCESS_RULES_CACHE_MS = 1000;
 const IP_DISABLED_PAYLOAD = {
   error: "ip_address_blocked",
-  message: "Access from this IP address has been disabled by an administrator."
+  message: "Access denied."
 };
 const IP_NOT_ALLOWLISTED_PAYLOAD = {
   error: "ip_address_blocked",
-  message: "You do not have access from this IP address."
+  message: "Access denied."
 };
 let securityControlsCache:
   | {
@@ -1207,19 +1206,20 @@ const issueLoginOtpChallenge = async (params: {
 app.post("/auth/login", async (request, reply) => {
   if (!(await ensureAuthFlowAvailable(reply))) return;
 
-  const body = request.body as { email?: string; password?: string };
-  if (!body?.email || !body?.password) {
-    reply.code(400).send({ error: "email_and_password_required" });
+  const body = request.body as { phoneNumber?: string; password?: string };
+  if (!body?.phoneNumber || !body?.password) {
+    reply.code(400).send({ error: "phone_number_and_password_required" });
     return;
   }
 
-  const email = normalizeEmail(body.email);
-  if (!isValidEmail(email)) {
-    reply.code(400).send({ error: "invalid_email" });
+  const normalizedPhone = parsePhoneNumberInput(body.phoneNumber);
+  if (normalizedPhone.error || !normalizedPhone.value) {
+    reply.code(400).send({ error: normalizedPhone.error ?? "phone_number_required" });
     return;
   }
+  const phoneNumber = normalizedPhone.value;
 
-  const isLimited = await otpRequestLimiter(email, request.ip);
+  const isLimited = await otpRequestLimiter(phoneNumber, request.ip);
   if (isLimited) {
     reply.code(429).send({ error: "rate_limited" });
     return;
@@ -1227,23 +1227,28 @@ app.post("/auth/login", async (request, reply) => {
 
   // Check user exists and is active
   const userRes = await pool.query(
-    "SELECT id, password_hash, status, phone_number FROM users WHERE email = $1",
-    [email]
+    "SELECT id, email, password_hash, status, phone_number FROM users WHERE phone_number = $1",
+    [phoneNumber]
   );
 
   if (userRes.rowCount === 0) {
-    // Don't reveal whether email exists — still delay
     await writeAuditLog({
       actorUserId: null,
       action: "auth.login_failed",
       targetType: "user",
-      metadata: { email, reason: "not_found" }
+      metadata: { phoneNumber, reason: "not_found" }
     });
     reply.code(401).send({ error: "invalid_credentials" });
     return;
   }
 
-  const user = userRes.rows[0];
+  const user = userRes.rows[0] as {
+    id: string;
+    email: string;
+    password_hash: string | null;
+    status: string;
+    phone_number: string | null;
+  };
   if (user.status !== "active") {
     await writeAuditLog({
       actorUserId: user.id,
@@ -1292,27 +1297,10 @@ app.post("/auth/login", async (request, reply) => {
     return;
   }
 
-  let loginPhoneNumber: string | null = null;
-  if (user.phone_number) {
-    try {
-      loginPhoneNumber = normalizePhoneNumber(user.phone_number);
-    } catch {
-      loginPhoneNumber = null;
-    }
-  }
-
-  if (!loginPhoneNumber) {
-    reply.send({
-      status: "phone_number_required",
-      phoneEnrollmentToken: signPhoneEnrollmentToken(user.id, email)
-    });
-    return;
-  }
-
   try {
     const payload = await issueLoginOtpChallenge({
-      email,
-      phoneNumber: loginPhoneNumber
+      email: normalizeEmail(user.email),
+      phoneNumber
     });
     reply.send(payload);
     return;
@@ -1495,21 +1483,39 @@ app.post("/auth/login/register-phone", async (request, reply) => {
 app.post("/auth/verify-otp", async (request, reply) => {
   if (!(await ensureAuthFlowAvailable(reply))) return;
 
-  const body = request.body as { email?: string; otp?: string };
-  if (!body?.email || !body?.otp) {
+  const body = request.body as { phoneNumber?: string; otp?: string };
+  if (!body?.phoneNumber || !body?.otp) {
     reply.code(400).send({ error: "invalid_payload" });
     return;
   }
 
-  const email = normalizeEmail(body.email);
-  if (!isValidEmail(email)) {
-    reply.code(400).send({ error: "invalid_email" });
+  const normalizedPhone = parsePhoneNumberInput(body.phoneNumber);
+  if (normalizedPhone.error || !normalizedPhone.value) {
+    reply.code(400).send({ error: normalizedPhone.error ?? "phone_number_required" });
+    return;
+  }
+  const phoneNumber = normalizedPhone.value;
+
+  const isLimited = await otpVerifyLimiter(phoneNumber, request.ip);
+  if (isLimited) {
+    reply.code(429).send({ error: "rate_limited" });
     return;
   }
 
-  const isLimited = await otpVerifyLimiter(email, request.ip);
-  if (isLimited) {
-    reply.code(429).send({ error: "rate_limited" });
+  const userRes = await pool.query(
+    "SELECT id, email, status FROM users WHERE phone_number = $1 LIMIT 1",
+    [phoneNumber]
+  );
+
+  if (userRes.rowCount === 0) {
+    reply.code(400).send({ error: "otp_not_found" });
+    return;
+  }
+
+  const userId = userRes.rows[0].id as string;
+  const email = normalizeEmail(userRes.rows[0].email as string);
+  if (userRes.rows[0].status !== "active") {
+    reply.code(403).send({ error: "user_disabled" });
     return;
   }
 
@@ -1547,23 +1553,6 @@ app.post("/auth/verify-otp", async (request, reply) => {
       [tokenRow.id]
     );
     reply.code(400).send({ error: "otp_invalid" });
-    return;
-  }
-
-  // User must already exist (created by admin, no auto-registration)
-  const userRes = await pool.query(
-    "SELECT id, status FROM users WHERE email = $1",
-    [email]
-  );
-
-  if (userRes.rowCount === 0) {
-    reply.code(400).send({ error: "user_not_found" });
-    return;
-  }
-
-  const userId = userRes.rows[0].id;
-  if (userRes.rows[0].status !== "active") {
-    reply.code(403).send({ error: "user_disabled" });
     return;
   }
 
