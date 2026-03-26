@@ -3,6 +3,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { Pool, type PoolClient } from "pg";
 import crypto from "node:crypto";
+import { isIP } from "node:net";
 import archiver from "archiver";
 import { config } from "./config.js";
 import {
@@ -36,7 +37,7 @@ import {
 } from "./refreshTokens.js";
 import { hasPermission, invalidateEnforcer } from "./rbac.js";
 
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: true, trustProxy: config.trustProxy });
 const pool = new Pool({ connectionString: config.databaseUrl });
 
 const INTERNAL_AUTH_HEADER = "x-internal-token";
@@ -64,6 +65,17 @@ type SecurityActionClaims = {
   scope?: string;
   kind?: string;
   exp?: number;
+};
+
+type IpAccessRuleRecord = {
+  id: string;
+  ipAddress: string;
+  label: string | null;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  createdByEmail: string | null;
+  updatedByEmail: string | null;
 };
 
 type DashboardRange = "7d" | "today" | "yesterday";
@@ -97,6 +109,11 @@ const getDashboardRangeWindow = (range: DashboardRange) => {
 };
 
 const SECURITY_STATE_CACHE_MS = 1000;
+const IP_ACCESS_RULES_CACHE_MS = 1000;
+const IP_BLOCKED_PAYLOAD = {
+  error: "ip_address_blocked",
+  message: "Access from this IP address has been disabled by an administrator."
+};
 let securityControlsCache:
   | {
       value: SecurityControls;
@@ -104,6 +121,13 @@ let securityControlsCache:
     }
   | undefined;
 let warnedMissingSecurityControlsTable = false;
+let blockedIpAddressesCache:
+  | {
+      value: Set<string>;
+      loadedAt: number;
+    }
+  | undefined;
+let warnedMissingIpAccessRulesTable = false;
 
 type ItemPermission = "read" | "write" | "delete" | "manage";
 const PERMISSION_MAP: Record<ItemPermission, ItemPermission[]> = {
@@ -226,6 +250,80 @@ const invalidateSecurityControlsCache = () => {
   securityControlsCache = undefined;
 };
 
+const invalidateBlockedIpAddressesCache = () => {
+  blockedIpAddressesCache = undefined;
+};
+
+const mapIpAccessRuleRow = (row: any): IpAccessRuleRecord => ({
+  id: row.id as string,
+  ipAddress: row.ip_address as string,
+  label: row.label ?? null,
+  enabled: Boolean(row.enabled),
+  createdAt: new Date(row.created_at).toISOString(),
+  updatedAt: new Date(row.updated_at).toISOString(),
+  createdByEmail: row.created_by_email ?? null,
+  updatedByEmail: row.updated_by_email ?? null
+});
+
+const getBlockedIpAddresses = async () => {
+  const now = Date.now();
+  if (blockedIpAddressesCache && now - blockedIpAddressesCache.loadedAt < IP_ACCESS_RULES_CACHE_MS) {
+    return blockedIpAddressesCache.value;
+  }
+
+  try {
+    const res = await pool.query(
+      `
+      SELECT host(ip_address) AS ip_address
+      FROM ip_access_rules
+      WHERE enabled = false
+      `
+    );
+    const value = new Set(
+      res.rows
+        .map((row) => normalizeIpAddress(String(row.ip_address ?? "")))
+        .filter((ip): ip is string => Boolean(ip))
+    );
+    blockedIpAddressesCache = { value, loadedAt: now };
+    return value;
+  } catch (error: any) {
+    if (error?.code === "42P01") {
+      if (!warnedMissingIpAccessRulesTable) {
+        warnedMissingIpAccessRulesTable = true;
+        app.log.warn(
+          "ip_access_rules table is missing; IP access controls are temporarily disabled until migrations are applied"
+        );
+      }
+      const value = new Set<string>();
+      blockedIpAddressesCache = { value, loadedAt: now };
+      return value;
+    }
+    throw error;
+  }
+};
+
+const listIpAccessRules = async () => {
+  const res = await pool.query(
+    `
+    SELECT
+      r.id,
+      host(r.ip_address) AS ip_address,
+      r.label,
+      r.enabled,
+      r.created_at,
+      r.updated_at,
+      creator.email AS created_by_email,
+      updater.email AS updated_by_email
+    FROM ip_access_rules r
+    LEFT JOIN users creator ON creator.id = r.created_by_user_id
+    LEFT JOIN users updater ON updater.id = r.updated_by_user_id
+    ORDER BY r.updated_at DESC, r.created_at DESC
+    `
+  );
+
+  return res.rows.map(mapIpAccessRuleRow);
+};
+
 const makeStorageHeaders = (params: {
   scope: string;
   userId?: string;
@@ -281,6 +379,29 @@ app.addContentTypeParser("*", { parseAs: "buffer" }, (_request, body, done) => {
   done(null, body);
 });
 
+app.addHook("onRequest", async (request, reply) => {
+  if (
+    request.url.startsWith("/health") ||
+    request.url.startsWith("/ready") ||
+    request.url.startsWith("/internal/")
+  ) {
+    return;
+  }
+
+  const ipAddress = getRequestIpAddress(request);
+  if (!ipAddress) {
+    return;
+  }
+
+  const blockedIpAddresses = await getBlockedIpAddresses();
+  if (!blockedIpAddresses.has(ipAddress)) {
+    return;
+  }
+
+  request.log.warn({ ipAddress, url: request.url }, "request blocked by IP access rule");
+  return reply.code(403).send(IP_BLOCKED_PAYLOAD);
+});
+
 // Password complexity validator
 const validatePassword = (password: string): string | null => {
   if (!password || password.length < 8) return "password_min_8_chars";
@@ -315,6 +436,66 @@ const parsePhoneNumberInput = (value: unknown) => {
   } catch {
     return { provided: true, value: null as string | null, error: "invalid_phone_number" };
   }
+};
+
+const normalizeIpAddress = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  let normalized = trimmed;
+  if (normalized.startsWith("[") && normalized.endsWith("]")) {
+    normalized = normalized.slice(1, -1);
+  }
+  if (normalized.startsWith("::ffff:")) {
+    normalized = normalized.slice("::ffff:".length);
+  }
+  const zoneIndex = normalized.indexOf("%");
+  if (zoneIndex !== -1) {
+    normalized = normalized.slice(0, zoneIndex);
+  }
+
+  if (!isIP(normalized)) {
+    return null;
+  }
+
+  return normalized.toLowerCase();
+};
+
+const getRequestIpAddress = (request: { ip?: string }) => {
+  if (!request.ip) return null;
+  return normalizeIpAddress(request.ip);
+};
+
+const parseIpAddressInput = (value: unknown) => {
+  if (value === undefined || value === null) {
+    return { provided: false, value: null as string | null };
+  }
+
+  if (typeof value !== "string") {
+    return { provided: true, value: null as string | null, error: "invalid_ip_address" };
+  }
+
+  const normalized = normalizeIpAddress(value);
+  if (!normalized) {
+    return { provided: true, value: null as string | null, error: "invalid_ip_address" };
+  }
+
+  return { provided: true, value: normalized };
+};
+
+const parseLabelInput = (value: unknown) => {
+  if (value === undefined) {
+    return { provided: false, value: null as string | null };
+  }
+  if (value === null) {
+    return { provided: true, value: null as string | null };
+  }
+  if (typeof value !== "string") {
+    return { provided: true, value: null as string | null, error: "invalid_label" };
+  }
+
+  const trimmed = value.trim();
+  return { provided: true, value: trimmed || null };
 };
 
 const getOtpDeliveryFailure = (error: any) => {
@@ -1649,6 +1830,273 @@ app.get("/admin/security/state", async (request, reply) => {
       : null,
     tapOffBy
   });
+});
+
+app.get("/admin/security/ip-access", async (request, reply) => {
+  if (!(await requireSecurityControlAccess(request, reply, { requireStepUp: false }))) return;
+
+  try {
+    const rules = await listIpAccessRules();
+    reply.send({
+      currentIpAddress: getRequestIpAddress(request),
+      rules
+    });
+  } catch (error: any) {
+    if (error?.code === "42P01") {
+      reply.code(503).send({ error: "ip_access_controls_unavailable" });
+      return;
+    }
+    throw error;
+  }
+});
+
+app.post("/admin/security/ip-access", async (request, reply) => {
+  if (!(await requireSecurityControlAccess(request, reply))) return;
+
+  const body = request.body as {
+    ipAddress?: string;
+    label?: string | null;
+    enabled?: boolean;
+  };
+  const normalizedIpAddress = parseIpAddressInput(body?.ipAddress);
+  if (normalizedIpAddress.error) {
+    reply.code(400).send({ error: normalizedIpAddress.error });
+    return;
+  }
+  if (!normalizedIpAddress.provided || !normalizedIpAddress.value) {
+    reply.code(400).send({ error: "ip_address_required" });
+    return;
+  }
+
+  const normalizedLabel = parseLabelInput(body?.label);
+  if (normalizedLabel.error) {
+    reply.code(400).send({ error: normalizedLabel.error });
+    return;
+  }
+  if (body?.enabled !== undefined && typeof body.enabled !== "boolean") {
+    reply.code(400).send({ error: "invalid_enabled_value" });
+    return;
+  }
+
+  try {
+    const result = await pool.query(
+      `
+      INSERT INTO ip_access_rules (
+        ip_address,
+        label,
+        enabled,
+        created_by_user_id,
+        updated_by_user_id
+      )
+      VALUES ($1::inet, $2, $3, $4, $4)
+      ON CONFLICT (ip_address) DO UPDATE
+      SET label = EXCLUDED.label,
+          enabled = EXCLUDED.enabled,
+          updated_by_user_id = EXCLUDED.updated_by_user_id,
+          updated_at = now()
+      RETURNING id
+      `,
+      [
+        normalizedIpAddress.value,
+        normalizedLabel.provided ? normalizedLabel.value : null,
+        body?.enabled ?? true,
+        request.userId ?? null
+      ]
+    );
+
+    invalidateBlockedIpAddressesCache();
+    const rules = await listIpAccessRules();
+    const rule = rules.find((entry) => entry.id === result.rows[0]?.id);
+    if (!rule) {
+      reply.code(500).send({ error: "ip_access_rule_save_failed" });
+      return;
+    }
+
+    const currentIpAddress = getRequestIpAddress(request);
+    const currentIpBlocked = Boolean(currentIpAddress && rule.ipAddress === currentIpAddress && !rule.enabled);
+
+    await writeAuditLog({
+      actorUserId: request.userId,
+      action: "security.ip_access.upsert",
+      targetType: "ip_access_rule",
+      targetId: rule.id,
+      metadata: {
+        ipAddress: rule.ipAddress,
+        label: rule.label,
+        enabled: rule.enabled,
+        currentIpBlocked,
+        requestIp: request.ip,
+        userAgent: request.headers["user-agent"] ?? null
+      }
+    });
+
+    reply.send({
+      status: "ok",
+      rule,
+      currentIpBlocked
+    });
+  } catch (error: any) {
+    if (error?.code === "42P01") {
+      reply.code(503).send({ error: "ip_access_controls_unavailable" });
+      return;
+    }
+    throw error;
+  }
+});
+
+app.patch("/admin/security/ip-access/:id", async (request, reply) => {
+  if (!(await requireSecurityControlAccess(request, reply))) return;
+
+  const params = request.params as { id?: string };
+  if (!params?.id) {
+    reply.code(400).send({ error: "ip_access_rule_id_required" });
+    return;
+  }
+
+  const body = request.body as {
+    label?: string | null;
+    enabled?: boolean;
+  };
+  const normalizedLabel = parseLabelInput(body?.label);
+  if (normalizedLabel.error) {
+    reply.code(400).send({ error: normalizedLabel.error });
+    return;
+  }
+  if (body?.enabled !== undefined && typeof body.enabled !== "boolean") {
+    reply.code(400).send({ error: "invalid_enabled_value" });
+    return;
+  }
+
+  const updates: string[] = [];
+  const values: Array<string | boolean | null> = [];
+
+  if (normalizedLabel.provided) {
+    values.push(normalizedLabel.value);
+    updates.push(`label = $${values.length}`);
+  }
+  if (body?.enabled !== undefined) {
+    values.push(body.enabled);
+    updates.push(`enabled = $${values.length}`);
+  }
+
+  if (updates.length === 0) {
+    reply.code(400).send({ error: "no_fields_to_update" });
+    return;
+  }
+
+  values.push(request.userId ?? null);
+  updates.push(`updated_by_user_id = $${values.length}`);
+  updates.push("updated_at = now()");
+  values.push(params.id);
+
+  try {
+    const result = await pool.query(
+      `
+      UPDATE ip_access_rules
+      SET ${updates.join(", ")}
+      WHERE id = $${values.length}
+      RETURNING id
+      `,
+      values
+    );
+    if ((result.rowCount ?? 0) === 0) {
+      reply.code(404).send({ error: "ip_access_rule_not_found" });
+      return;
+    }
+
+    invalidateBlockedIpAddressesCache();
+    const rules = await listIpAccessRules();
+    const rule = rules.find((entry) => entry.id === result.rows[0]?.id);
+    if (!rule) {
+      reply.code(500).send({ error: "ip_access_rule_save_failed" });
+      return;
+    }
+
+    const currentIpAddress = getRequestIpAddress(request);
+    const currentIpBlocked = Boolean(currentIpAddress && rule.ipAddress === currentIpAddress && !rule.enabled);
+
+    await writeAuditLog({
+      actorUserId: request.userId,
+      action: "security.ip_access.update",
+      targetType: "ip_access_rule",
+      targetId: rule.id,
+      metadata: {
+        ipAddress: rule.ipAddress,
+        label: rule.label,
+        enabled: rule.enabled,
+        currentIpBlocked,
+        requestIp: request.ip,
+        userAgent: request.headers["user-agent"] ?? null
+      }
+    });
+
+    reply.send({
+      status: "ok",
+      rule,
+      currentIpBlocked
+    });
+  } catch (error: any) {
+    if (error?.code === "42P01") {
+      reply.code(503).send({ error: "ip_access_controls_unavailable" });
+      return;
+    }
+    throw error;
+  }
+});
+
+app.delete("/admin/security/ip-access/:id", async (request, reply) => {
+  if (!(await requireSecurityControlAccess(request, reply))) return;
+
+  const params = request.params as { id?: string };
+  if (!params?.id) {
+    reply.code(400).send({ error: "ip_access_rule_id_required" });
+    return;
+  }
+
+  try {
+    const existingRes = await pool.query(
+      `
+      SELECT id, host(ip_address) AS ip_address, label, enabled
+      FROM ip_access_rules
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [params.id]
+    );
+    if ((existingRes.rowCount ?? 0) === 0) {
+      reply.code(404).send({ error: "ip_access_rule_not_found" });
+      return;
+    }
+
+    const existingRule = existingRes.rows[0];
+    await pool.query("DELETE FROM ip_access_rules WHERE id = $1", [params.id]);
+    invalidateBlockedIpAddressesCache();
+
+    await writeAuditLog({
+      actorUserId: request.userId,
+      action: "security.ip_access.delete",
+      targetType: "ip_access_rule",
+      targetId: params.id,
+      metadata: {
+        ipAddress: existingRule.ip_address,
+        label: existingRule.label ?? null,
+        enabled: Boolean(existingRule.enabled),
+        requestIp: request.ip,
+        userAgent: request.headers["user-agent"] ?? null
+      }
+    });
+
+    reply.send({
+      status: "ok",
+      id: params.id
+    });
+  } catch (error: any) {
+    if (error?.code === "42P01") {
+      reply.code(503).send({ error: "ip_access_controls_unavailable" });
+      return;
+    }
+    throw error;
+  }
 });
 
 app.post("/admin/security/logout-user", async (request, reply) => {

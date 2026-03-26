@@ -1,5 +1,7 @@
 export const config = {
   port: Number(process.env.PORT ?? 3000),
+  trustProxy:
+    process.env.TRUST_PROXY === "true" || process.env.NODE_ENV === "production",
   storageUrl: process.env.STORAGE_URL ?? "http://localhost:4000",
   internalToken: process.env.INTERNAL_TOKEN ?? "dev-internal-token",
   resendApiKey: process.env.RESEND_API_KEY ?? "",

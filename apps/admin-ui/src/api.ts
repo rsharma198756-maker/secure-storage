@@ -82,6 +82,22 @@ export type SecurityState = {
   tapOffBy: string | null;
 };
 
+export type IpAccessRule = {
+  id: string;
+  ipAddress: string;
+  label: string | null;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  createdByEmail: string | null;
+  updatedByEmail: string | null;
+};
+
+export type IpAccessSettings = {
+  currentIpAddress: string | null;
+  rules: IpAccessRule[];
+};
+
 const inferContentTypeFromFilename = (name: string) => {
   const ext = name.toLowerCase().split(".").pop() ?? "";
   const types: Record<string, string> = {
@@ -110,6 +126,12 @@ const resolveUploadContentType = (file: File) =>
 const toApiErrorMessage = (data: any, fallback: string) => {
   if (data?.error === "service_temporarily_unavailable") {
     return data?.message ?? MAINTENANCE_FALLBACK;
+  }
+  if (data?.error === "ip_address_blocked") {
+    return data?.message ?? "Access from this IP address has been disabled by an administrator.";
+  }
+  if (data?.error === "ip_access_controls_unavailable") {
+    return "IP access controls are unavailable until the latest database migration is applied.";
   }
   return fallback;
 };
@@ -320,6 +342,108 @@ export const getSecurityState = (
   securityActionToken: string
 ) =>
   authFetch(token, "/admin/security/state", undefined, securityActionToken) as Promise<SecurityState>;
+
+export const getIpAccessSettings = (token: string) =>
+  authFetch(token, "/admin/security/ip-access") as Promise<IpAccessSettings>;
+
+const mapIpAccessMutationError = (data: any, fallback: string) => {
+  if (data.error === "ip_address_required") throw new Error("IP address is required");
+  if (data.error === "invalid_ip_address") throw new Error("Please enter a valid IP address");
+  if (data.error === "invalid_label") throw new Error("Label must be plain text");
+  if (data.error === "invalid_enabled_value") throw new Error("Choose a valid access status");
+  if (data.error === "ip_access_rule_id_required") throw new Error("IP rule identifier is missing");
+  if (data.error === "ip_access_rule_not_found") throw new Error("IP rule not found");
+  if (data.error === "no_fields_to_update") throw new Error("No changes to save");
+  if (data.error === "security_action_token_required") throw new Error("Verification token required");
+  if (data.error === "security_action_token_invalid") throw new Error("Verification expired. Verify again.");
+  throw new Error(toApiErrorMessage(data, fallback));
+};
+
+export const saveIpAccessRule = async (
+  token: string,
+  securityActionToken: string,
+  payload: {
+    ipAddress: string;
+    label?: string | null;
+    enabled: boolean;
+  }
+) => {
+  const res = await fetch(`${API_BASE}/admin/security/ip-access`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      Authorization: `Bearer ${token}`,
+      "X-Security-Action-Token": securityActionToken
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    mapIpAccessMutationError(data, "Failed to save IP rule");
+  }
+
+  return (await res.json()) as {
+    status: "ok";
+    rule: IpAccessRule;
+    currentIpBlocked: boolean;
+  };
+};
+
+export const updateIpAccessRule = async (
+  token: string,
+  securityActionToken: string,
+  ruleId: string,
+  payload: {
+    label?: string | null;
+    enabled?: boolean;
+  }
+) => {
+  const res = await fetch(`${API_BASE}/admin/security/ip-access/${ruleId}`, {
+    method: "PATCH",
+    headers: {
+      "content-type": "application/json",
+      Authorization: `Bearer ${token}`,
+      "X-Security-Action-Token": securityActionToken
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    mapIpAccessMutationError(data, "Failed to update IP rule");
+  }
+
+  return (await res.json()) as {
+    status: "ok";
+    rule: IpAccessRule;
+    currentIpBlocked: boolean;
+  };
+};
+
+export const deleteIpAccessRule = async (
+  token: string,
+  securityActionToken: string,
+  ruleId: string
+) => {
+  const res = await fetch(`${API_BASE}/admin/security/ip-access/${ruleId}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "X-Security-Action-Token": securityActionToken
+    }
+  });
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    mapIpAccessMutationError(data, "Failed to delete IP rule");
+  }
+
+  return (await res.json()) as {
+    status: "ok";
+    id: string;
+  };
+};
 
 export const forceLogoutUser = async (
   token: string,

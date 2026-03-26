@@ -3,13 +3,14 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { Pool } from "pg";
 import crypto from "node:crypto";
+import { isIP } from "node:net";
 import archiver from "archiver";
 import { config } from "./config.js";
-import { generateOtp, hashOtp, hashPassword, isValidEmail, normalizeEmail, sendOtpEmail, signAccessToken, signSecurityActionToken, signServiceToken, verifyAccessToken, verifySecurityActionToken, verifyPassword } from "./auth.js";
+import { generateOtp, hashOtp, hashPassword, isValidEmail, normalizePhoneNumber, normalizeEmail, sendOtp, signAccessToken, signPhoneEnrollmentToken, signSecurityActionToken, signServiceToken, verifyAccessToken, verifyPhoneEnrollmentToken, verifySecurityActionToken, verifyPassword } from "./auth.js";
 import { getRedis } from "./redis.js";
 import { findRefreshToken, generateRefreshToken, hashRefreshToken, revokeAllRefreshTokens, revokeRefreshTokenWithMetadata, revokeRefreshTokensForUser, storeRefreshToken } from "./refreshTokens.js";
 import { hasPermission, invalidateEnforcer } from "./rbac.js";
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: true, trustProxy: config.trustProxy });
 const pool = new Pool({ connectionString: config.databaseUrl });
 const INTERNAL_AUTH_HEADER = "x-internal-token";
 const SERVICE_AUTH_HEADER = "x-service-authorization";
@@ -47,8 +48,15 @@ const getDashboardRangeWindow = (range) => {
     };
 };
 const SECURITY_STATE_CACHE_MS = 1000;
+const IP_ACCESS_RULES_CACHE_MS = 1000;
+const IP_BLOCKED_PAYLOAD = {
+    error: "ip_address_blocked",
+    message: "Access from this IP address has been disabled by an administrator."
+};
 let securityControlsCache;
 let warnedMissingSecurityControlsTable = false;
+let blockedIpAddressesCache;
+let warnedMissingIpAccessRulesTable = false;
 const PERMISSION_MAP = {
     read: ["read", "write", "delete", "manage"],
     write: ["write", "delete", "manage"],
@@ -155,6 +163,67 @@ const getSecurityControls = async () => {
 const invalidateSecurityControlsCache = () => {
     securityControlsCache = undefined;
 };
+const invalidateBlockedIpAddressesCache = () => {
+    blockedIpAddressesCache = undefined;
+};
+const mapIpAccessRuleRow = (row) => ({
+    id: row.id,
+    ipAddress: row.ip_address,
+    label: row.label ?? null,
+    enabled: Boolean(row.enabled),
+    createdAt: new Date(row.created_at).toISOString(),
+    updatedAt: new Date(row.updated_at).toISOString(),
+    createdByEmail: row.created_by_email ?? null,
+    updatedByEmail: row.updated_by_email ?? null
+});
+const getBlockedIpAddresses = async () => {
+    const now = Date.now();
+    if (blockedIpAddressesCache && now - blockedIpAddressesCache.loadedAt < IP_ACCESS_RULES_CACHE_MS) {
+        return blockedIpAddressesCache.value;
+    }
+    try {
+        const res = await pool.query(`
+      SELECT host(ip_address) AS ip_address
+      FROM ip_access_rules
+      WHERE enabled = false
+      `);
+        const value = new Set(res.rows
+            .map((row) => normalizeIpAddress(String(row.ip_address ?? "")))
+            .filter((ip) => Boolean(ip)));
+        blockedIpAddressesCache = { value, loadedAt: now };
+        return value;
+    }
+    catch (error) {
+        if (error?.code === "42P01") {
+            if (!warnedMissingIpAccessRulesTable) {
+                warnedMissingIpAccessRulesTable = true;
+                app.log.warn("ip_access_rules table is missing; IP access controls are temporarily disabled until migrations are applied");
+            }
+            const value = new Set();
+            blockedIpAddressesCache = { value, loadedAt: now };
+            return value;
+        }
+        throw error;
+    }
+};
+const listIpAccessRules = async () => {
+    const res = await pool.query(`
+    SELECT
+      r.id,
+      host(r.ip_address) AS ip_address,
+      r.label,
+      r.enabled,
+      r.created_at,
+      r.updated_at,
+      creator.email AS created_by_email,
+      updater.email AS updated_by_email
+    FROM ip_access_rules r
+    LEFT JOIN users creator ON creator.id = r.created_by_user_id
+    LEFT JOIN users updater ON updater.id = r.updated_by_user_id
+    ORDER BY r.updated_at DESC, r.created_at DESC
+    `);
+    return res.rows.map(mapIpAccessRuleRow);
+};
 const makeStorageHeaders = (params) => {
     const headers = {
         [INTERNAL_AUTH_HEADER]: config.internalToken,
@@ -197,6 +266,23 @@ app.register(cors, {
 app.addContentTypeParser("*", { parseAs: "buffer" }, (_request, body, done) => {
     done(null, body);
 });
+app.addHook("onRequest", async (request, reply) => {
+    if (request.url.startsWith("/health") ||
+        request.url.startsWith("/ready") ||
+        request.url.startsWith("/internal/")) {
+        return;
+    }
+    const ipAddress = getRequestIpAddress(request);
+    if (!ipAddress) {
+        return;
+    }
+    const blockedIpAddresses = await getBlockedIpAddresses();
+    if (!blockedIpAddresses.has(ipAddress)) {
+        return;
+    }
+    request.log.warn({ ipAddress, url: request.url }, "request blocked by IP access rule");
+    return reply.code(403).send(IP_BLOCKED_PAYLOAD);
+});
 // Password complexity validator
 const validatePassword = (password) => {
     if (!password || password.length < 8)
@@ -210,6 +296,88 @@ const validatePassword = (password) => {
     if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]/.test(password))
         return "password_needs_special_char";
     return null;
+};
+const parsePhoneNumberInput = (value) => {
+    if (value === undefined) {
+        return { provided: false, value: null };
+    }
+    if (value === null) {
+        return { provided: true, value: null };
+    }
+    if (typeof value !== "string") {
+        return { provided: true, value: null, error: "invalid_phone_number" };
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return { provided: true, value: null };
+    }
+    try {
+        return { provided: true, value: normalizePhoneNumber(trimmed) };
+    }
+    catch {
+        return { provided: true, value: null, error: "invalid_phone_number" };
+    }
+};
+const normalizeIpAddress = (value) => {
+    const trimmed = value.trim();
+    if (!trimmed)
+        return null;
+    let normalized = trimmed;
+    if (normalized.startsWith("[") && normalized.endsWith("]")) {
+        normalized = normalized.slice(1, -1);
+    }
+    if (normalized.startsWith("::ffff:")) {
+        normalized = normalized.slice("::ffff:".length);
+    }
+    const zoneIndex = normalized.indexOf("%");
+    if (zoneIndex !== -1) {
+        normalized = normalized.slice(0, zoneIndex);
+    }
+    if (!isIP(normalized)) {
+        return null;
+    }
+    return normalized.toLowerCase();
+};
+const getRequestIpAddress = (request) => {
+    if (!request.ip)
+        return null;
+    return normalizeIpAddress(request.ip);
+};
+const parseIpAddressInput = (value) => {
+    if (value === undefined || value === null) {
+        return { provided: false, value: null };
+    }
+    if (typeof value !== "string") {
+        return { provided: true, value: null, error: "invalid_ip_address" };
+    }
+    const normalized = normalizeIpAddress(value);
+    if (!normalized) {
+        return { provided: true, value: null, error: "invalid_ip_address" };
+    }
+    return { provided: true, value: normalized };
+};
+const parseLabelInput = (value) => {
+    if (value === undefined) {
+        return { provided: false, value: null };
+    }
+    if (value === null) {
+        return { provided: true, value: null };
+    }
+    if (typeof value !== "string") {
+        return { provided: true, value: null, error: "invalid_label" };
+    }
+    const trimmed = value.trim();
+    return { provided: true, value: trimmed || null };
+};
+const getOtpDeliveryFailure = (error) => {
+    const reason = error?.message ?? "unknown";
+    if (reason === "phone_number_required" || reason === "invalid_phone_number") {
+        return { code: 400, error: reason };
+    }
+    if (reason === "otp_sms_not_configured") {
+        return { code: 503, error: reason };
+    }
+    return { code: 502, error: "otp_delivery_failed" };
 };
 const isMissingRelationOrColumn = (error) => {
     const pgError = error;
@@ -607,6 +775,25 @@ const issueTokens = async (params) => {
         }
     };
 };
+const issueLoginOtpChallenge = async (params) => {
+    const otp = generateOtp();
+    const otpHash = hashOtp(otp);
+    const expiresAt = new Date(Date.now() + config.otpTtlMinutes * 60 * 1000);
+    await pool.query("UPDATE otp_tokens SET consumed_at = now() WHERE email = $1 AND consumed_at IS NULL AND purpose = 'login'", [params.email]);
+    await pool.query(`INSERT INTO otp_tokens (email, otp_hash, expires_at, purpose) VALUES ($1,$2,$3,'login')`, [params.email, otpHash, expiresAt]);
+    const delivery = await sendOtp({
+        phoneNumber: params.phoneNumber ?? null,
+        otp
+    });
+    const payload = {
+        status: "otp_sent",
+        delivery: delivery.channel
+    };
+    if (config.returnOtpInResponse) {
+        payload.otp = otp;
+    }
+    return payload;
+};
 app.post("/auth/login", async (request, reply) => {
     if (!(await ensureAuthFlowAvailable(reply)))
         return;
@@ -626,7 +813,7 @@ app.post("/auth/login", async (request, reply) => {
         return;
     }
     // Check user exists and is active
-    const userRes = await pool.query("SELECT id, password_hash, status FROM users WHERE email = $1", [email]);
+    const userRes = await pool.query("SELECT id, password_hash, status, phone_number FROM users WHERE email = $1", [email]);
     if (userRes.rowCount === 0) {
         // Don't reveal whether email exists — still delay
         await writeAuditLog({
@@ -666,31 +853,164 @@ app.post("/auth/login", async (request, reply) => {
         reply.code(401).send({ error: "invalid_credentials" });
         return;
     }
-    // Password valid — send OTP
-    const otp = generateOtp();
-    const otpHash = hashOtp(otp);
-    const expiresAt = new Date(Date.now() + config.otpTtlMinutes * 60 * 1000);
-    await pool.query("UPDATE otp_tokens SET consumed_at = now() WHERE email = $1 AND consumed_at IS NULL AND purpose = 'login'", [email]);
-    await pool.query(`INSERT INTO otp_tokens (email, otp_hash, expires_at, purpose) VALUES ($1,$2,$3,'login')`, [email, otpHash, expiresAt]);
+    let loginPhoneNumber = null;
+    if (user.phone_number) {
+        try {
+            loginPhoneNumber = normalizePhoneNumber(user.phone_number);
+        }
+        catch {
+            loginPhoneNumber = null;
+        }
+    }
+    if (!loginPhoneNumber) {
+        reply.send({
+            status: "phone_number_required",
+            phoneEnrollmentToken: signPhoneEnrollmentToken(user.id, email)
+        });
+        return;
+    }
     try {
-        await sendOtpEmail(email, otp);
+        const payload = await issueLoginOtpChallenge({
+            email,
+            phoneNumber: loginPhoneNumber
+        });
+        reply.send(payload);
+        return;
     }
     catch (error) {
+        const failure = getOtpDeliveryFailure(error);
         await writeAuditLog({
             actorUserId: user.id,
             action: "auth.login_failed",
             targetType: "user",
             targetId: user.id,
-            metadata: { reason: "otp_email_send_failed", error: error?.message ?? "unknown" }
+            metadata: { reason: failure.error, error: error?.message ?? "unknown" }
         });
-        reply.code(502).send({ error: "otp_email_send_failed" });
+        reply.code(failure.code).send({ error: failure.error });
         return;
     }
-    const payload = { status: "otp_sent" };
-    if (config.returnOtpInResponse) {
-        payload.otp = otp;
+});
+app.post("/auth/login/register-phone", async (request, reply) => {
+    if (!(await ensureAuthFlowAvailable(reply)))
+        return;
+    const body = request.body;
+    if (!body?.phoneEnrollmentToken) {
+        reply.code(400).send({ error: "phone_enrollment_token_required" });
+        return;
     }
-    reply.send(payload);
+    const normalizedPhone = parsePhoneNumberInput(body.phoneNumber);
+    if (normalizedPhone.error || !normalizedPhone.value) {
+        reply.code(400).send({ error: normalizedPhone.error ?? "phone_number_required" });
+        return;
+    }
+    let claims;
+    try {
+        claims = verifyPhoneEnrollmentToken(body.phoneEnrollmentToken);
+    }
+    catch {
+        reply.code(401).send({ error: "phone_enrollment_token_invalid" });
+        return;
+    }
+    if (claims.kind !== "phone_enrollment" || !claims.sub || !claims.email) {
+        reply.code(401).send({ error: "phone_enrollment_token_invalid" });
+        return;
+    }
+    const email = normalizeEmail(claims.email);
+    const userId = claims.sub;
+    const isLimited = await otpRequestLimiter(email, request.ip);
+    if (isLimited) {
+        reply.code(429).send({ error: "rate_limited" });
+        return;
+    }
+    const client = await pool.connect();
+    let phoneRegistered = false;
+    try {
+        await client.query("BEGIN");
+        const userRes = await client.query("SELECT id, email, status, phone_number FROM users WHERE id = $1 AND email = $2 LIMIT 1", [userId, email]);
+        if ((userRes.rowCount ?? 0) === 0) {
+            await client.query("ROLLBACK");
+            reply.code(401).send({ error: "phone_enrollment_token_invalid" });
+            return;
+        }
+        const user = userRes.rows[0];
+        if (user.status !== "active") {
+            await client.query("ROLLBACK");
+            reply.code(403).send({ error: "user_disabled" });
+            return;
+        }
+        let existingPhoneNumber = null;
+        if (user.phone_number) {
+            try {
+                existingPhoneNumber = normalizePhoneNumber(user.phone_number);
+            }
+            catch {
+                existingPhoneNumber = null;
+            }
+        }
+        if (existingPhoneNumber && existingPhoneNumber !== normalizedPhone.value) {
+            await client.query("ROLLBACK");
+            reply.code(409).send({ error: "phone_number_already_registered" });
+            return;
+        }
+        if (!existingPhoneNumber) {
+            const existingPhone = await client.query("SELECT id FROM users WHERE phone_number = $1 AND id <> $2 LIMIT 1", [normalizedPhone.value, userId]);
+            if ((existingPhone.rowCount ?? 0) > 0) {
+                await client.query("ROLLBACK");
+                reply.code(409).send({ error: "phone_number_already_exists" });
+                return;
+            }
+            await client.query("UPDATE users SET phone_number = $1, updated_at = now() WHERE id = $2", [normalizedPhone.value, userId]);
+            phoneRegistered = true;
+        }
+        await client.query("COMMIT");
+    }
+    catch (error) {
+        await client.query("ROLLBACK");
+        if (error?.code === "23505") {
+            reply.code(409).send({ error: "phone_number_already_exists" });
+            return;
+        }
+        throw error;
+    }
+    finally {
+        client.release();
+    }
+    if (phoneRegistered) {
+        await writeAuditLog({
+            actorUserId: userId,
+            action: "user.phone_registered",
+            targetType: "user",
+            targetId: userId,
+            metadata: {
+                duringLogin: true,
+                phoneNumber: normalizedPhone.value
+            }
+        });
+    }
+    try {
+        const payload = await issueLoginOtpChallenge({
+            email,
+            phoneNumber: normalizedPhone.value
+        });
+        reply.send(payload);
+        return;
+    }
+    catch (error) {
+        const failure = getOtpDeliveryFailure(error);
+        await writeAuditLog({
+            actorUserId: userId,
+            action: "auth.login_failed",
+            targetType: "user",
+            targetId: userId,
+            metadata: {
+                reason: failure.error,
+                duringPhoneRegistration: phoneRegistered,
+                error: error?.message ?? "unknown"
+            }
+        });
+        reply.code(failure.code).send({ error: failure.error });
+        return;
+    }
 });
 app.post("/auth/verify-otp", async (request, reply) => {
     if (!(await ensureAuthFlowAvailable(reply)))
@@ -891,7 +1211,7 @@ app.post("/admin/security/step-up/request", async (request, reply) => {
         return;
     }
     const userId = request.userId;
-    const userRes = await pool.query("SELECT id, email, status, password_hash FROM users WHERE id = $1 LIMIT 1", [userId]);
+    const userRes = await pool.query("SELECT id, email, status, password_hash, phone_number FROM users WHERE id = $1 LIMIT 1", [userId]);
     if ((userRes.rowCount ?? 0) === 0) {
         reply.code(401).send({ error: "invalid_user" });
         return;
@@ -922,34 +1242,53 @@ app.post("/admin/security/step-up/request", async (request, reply) => {
         reply.code(429).send({ error: "rate_limited" });
         return;
     }
+    let stepUpPhoneNumber = null;
+    if (user.phone_number) {
+        try {
+            stepUpPhoneNumber = normalizePhoneNumber(user.phone_number);
+        }
+        catch {
+            stepUpPhoneNumber = null;
+        }
+    }
+    if (!stepUpPhoneNumber) {
+        reply.code(400).send({ error: "phone_number_required" });
+        return;
+    }
     const otp = generateOtp();
     const otpHash = hashOtp(otp);
     const expiresAt = new Date(Date.now() + config.otpTtlMinutes * 60 * 1000);
     await pool.query("UPDATE otp_tokens SET consumed_at = now() WHERE email = $1 AND consumed_at IS NULL AND purpose = 'security_stepup'", [email]);
     await pool.query("INSERT INTO otp_tokens (email, otp_hash, expires_at, purpose) VALUES ($1,$2,$3,'security_stepup')", [email, otpHash, expiresAt]);
     try {
-        await sendOtpEmail(email, otp);
+        const delivery = await sendOtp({
+            phoneNumber: stepUpPhoneNumber,
+            otp
+        });
+        await writeAuditLog({
+            actorUserId: userId,
+            action: "security.stepup.request",
+            targetType: "security_control",
+            metadata: {
+                channel: delivery.channel,
+                ip: request.ip,
+                userAgent: request.headers["user-agent"] ?? null
+            }
+        });
+        reply.send({ status: "otp_sent", delivery: delivery.channel });
+        return;
     }
     catch (error) {
+        const failure = getOtpDeliveryFailure(error);
         await writeAuditLog({
             actorUserId: userId,
             action: "security.stepup.request_failed",
             targetType: "security_control",
-            metadata: { reason: "otp_email_send_failed", error: error?.message ?? "unknown" }
+            metadata: { reason: failure.error, error: error?.message ?? "unknown" }
         });
-        reply.code(502).send({ error: "otp_email_send_failed" });
+        reply.code(failure.code).send({ error: failure.error });
         return;
     }
-    await writeAuditLog({
-        actorUserId: userId,
-        action: "security.stepup.request",
-        targetType: "security_control",
-        metadata: {
-            ip: request.ip,
-            userAgent: request.headers["user-agent"] ?? null
-        }
-    });
-    reply.send({ status: "otp_sent" });
 });
 app.post("/admin/security/step-up/verify", async (request, reply) => {
     if (!(await requireSecurityControlAccess(request, reply, { requireStepUp: false })))
@@ -1041,6 +1380,237 @@ app.get("/admin/security/state", async (request, reply) => {
             : null,
         tapOffBy
     });
+});
+app.get("/admin/security/ip-access", async (request, reply) => {
+    if (!(await requireSecurityControlAccess(request, reply, { requireStepUp: false })))
+        return;
+    try {
+        const rules = await listIpAccessRules();
+        reply.send({
+            currentIpAddress: getRequestIpAddress(request),
+            rules
+        });
+    }
+    catch (error) {
+        if (error?.code === "42P01") {
+            reply.code(503).send({ error: "ip_access_controls_unavailable" });
+            return;
+        }
+        throw error;
+    }
+});
+app.post("/admin/security/ip-access", async (request, reply) => {
+    if (!(await requireSecurityControlAccess(request, reply)))
+        return;
+    const body = request.body;
+    const normalizedIpAddress = parseIpAddressInput(body?.ipAddress);
+    if (normalizedIpAddress.error) {
+        reply.code(400).send({ error: normalizedIpAddress.error });
+        return;
+    }
+    if (!normalizedIpAddress.provided || !normalizedIpAddress.value) {
+        reply.code(400).send({ error: "ip_address_required" });
+        return;
+    }
+    const normalizedLabel = parseLabelInput(body?.label);
+    if (normalizedLabel.error) {
+        reply.code(400).send({ error: normalizedLabel.error });
+        return;
+    }
+    if (body?.enabled !== undefined && typeof body.enabled !== "boolean") {
+        reply.code(400).send({ error: "invalid_enabled_value" });
+        return;
+    }
+    try {
+        const result = await pool.query(`
+      INSERT INTO ip_access_rules (
+        ip_address,
+        label,
+        enabled,
+        created_by_user_id,
+        updated_by_user_id
+      )
+      VALUES ($1::inet, $2, $3, $4, $4)
+      ON CONFLICT (ip_address) DO UPDATE
+      SET label = EXCLUDED.label,
+          enabled = EXCLUDED.enabled,
+          updated_by_user_id = EXCLUDED.updated_by_user_id,
+          updated_at = now()
+      RETURNING id
+      `, [
+            normalizedIpAddress.value,
+            normalizedLabel.provided ? normalizedLabel.value : null,
+            body?.enabled ?? true,
+            request.userId ?? null
+        ]);
+        invalidateBlockedIpAddressesCache();
+        const rules = await listIpAccessRules();
+        const rule = rules.find((entry) => entry.id === result.rows[0]?.id);
+        if (!rule) {
+            reply.code(500).send({ error: "ip_access_rule_save_failed" });
+            return;
+        }
+        const currentIpAddress = getRequestIpAddress(request);
+        const currentIpBlocked = Boolean(currentIpAddress && rule.ipAddress === currentIpAddress && !rule.enabled);
+        await writeAuditLog({
+            actorUserId: request.userId,
+            action: "security.ip_access.upsert",
+            targetType: "ip_access_rule",
+            targetId: rule.id,
+            metadata: {
+                ipAddress: rule.ipAddress,
+                label: rule.label,
+                enabled: rule.enabled,
+                currentIpBlocked,
+                requestIp: request.ip,
+                userAgent: request.headers["user-agent"] ?? null
+            }
+        });
+        reply.send({
+            status: "ok",
+            rule,
+            currentIpBlocked
+        });
+    }
+    catch (error) {
+        if (error?.code === "42P01") {
+            reply.code(503).send({ error: "ip_access_controls_unavailable" });
+            return;
+        }
+        throw error;
+    }
+});
+app.patch("/admin/security/ip-access/:id", async (request, reply) => {
+    if (!(await requireSecurityControlAccess(request, reply)))
+        return;
+    const params = request.params;
+    if (!params?.id) {
+        reply.code(400).send({ error: "ip_access_rule_id_required" });
+        return;
+    }
+    const body = request.body;
+    const normalizedLabel = parseLabelInput(body?.label);
+    if (normalizedLabel.error) {
+        reply.code(400).send({ error: normalizedLabel.error });
+        return;
+    }
+    if (body?.enabled !== undefined && typeof body.enabled !== "boolean") {
+        reply.code(400).send({ error: "invalid_enabled_value" });
+        return;
+    }
+    const updates = [];
+    const values = [];
+    if (normalizedLabel.provided) {
+        values.push(normalizedLabel.value);
+        updates.push(`label = $${values.length}`);
+    }
+    if (body?.enabled !== undefined) {
+        values.push(body.enabled);
+        updates.push(`enabled = $${values.length}`);
+    }
+    if (updates.length === 0) {
+        reply.code(400).send({ error: "no_fields_to_update" });
+        return;
+    }
+    values.push(request.userId ?? null);
+    updates.push(`updated_by_user_id = $${values.length}`);
+    updates.push("updated_at = now()");
+    values.push(params.id);
+    try {
+        const result = await pool.query(`
+      UPDATE ip_access_rules
+      SET ${updates.join(", ")}
+      WHERE id = $${values.length}
+      RETURNING id
+      `, values);
+        if ((result.rowCount ?? 0) === 0) {
+            reply.code(404).send({ error: "ip_access_rule_not_found" });
+            return;
+        }
+        invalidateBlockedIpAddressesCache();
+        const rules = await listIpAccessRules();
+        const rule = rules.find((entry) => entry.id === result.rows[0]?.id);
+        if (!rule) {
+            reply.code(500).send({ error: "ip_access_rule_save_failed" });
+            return;
+        }
+        const currentIpAddress = getRequestIpAddress(request);
+        const currentIpBlocked = Boolean(currentIpAddress && rule.ipAddress === currentIpAddress && !rule.enabled);
+        await writeAuditLog({
+            actorUserId: request.userId,
+            action: "security.ip_access.update",
+            targetType: "ip_access_rule",
+            targetId: rule.id,
+            metadata: {
+                ipAddress: rule.ipAddress,
+                label: rule.label,
+                enabled: rule.enabled,
+                currentIpBlocked,
+                requestIp: request.ip,
+                userAgent: request.headers["user-agent"] ?? null
+            }
+        });
+        reply.send({
+            status: "ok",
+            rule,
+            currentIpBlocked
+        });
+    }
+    catch (error) {
+        if (error?.code === "42P01") {
+            reply.code(503).send({ error: "ip_access_controls_unavailable" });
+            return;
+        }
+        throw error;
+    }
+});
+app.delete("/admin/security/ip-access/:id", async (request, reply) => {
+    if (!(await requireSecurityControlAccess(request, reply)))
+        return;
+    const params = request.params;
+    if (!params?.id) {
+        reply.code(400).send({ error: "ip_access_rule_id_required" });
+        return;
+    }
+    try {
+        const existingRes = await pool.query(`
+      SELECT id, host(ip_address) AS ip_address, label, enabled
+      FROM ip_access_rules
+      WHERE id = $1
+      LIMIT 1
+      `, [params.id]);
+        if ((existingRes.rowCount ?? 0) === 0) {
+            reply.code(404).send({ error: "ip_access_rule_not_found" });
+            return;
+        }
+        const existingRule = existingRes.rows[0];
+        await pool.query("DELETE FROM ip_access_rules WHERE id = $1", [params.id]);
+        invalidateBlockedIpAddressesCache();
+        await writeAuditLog({
+            actorUserId: request.userId,
+            action: "security.ip_access.delete",
+            targetType: "ip_access_rule",
+            targetId: params.id,
+            metadata: {
+                ipAddress: existingRule.ip_address,
+                label: existingRule.label ?? null,
+                enabled: Boolean(existingRule.enabled),
+                requestIp: request.ip,
+                userAgent: request.headers["user-agent"] ?? null
+            }
+        });
+        reply.send({
+            status: "ok",
+            id: params.id
+        });
+    }
+    catch (error) {
+        if (error?.code === "42P01") {
+            reply.code(503).send({ error: "ip_access_controls_unavailable" });
+            return;
+        }
+        throw error;
+    }
 });
 app.post("/admin/security/logout-user", async (request, reply) => {
     if (!(await requireSecurityControlAccess(request, reply)))
@@ -1209,6 +1779,7 @@ app.get("/admin/users", async (request, reply) => {
     if (!(await requirePermission(request, reply, "users:manage")))
         return;
     const res = await pool.query(`SELECT u.id, u.email, u.first_name, u.last_name, u.status, u.created_at,
+            u.phone_number,
             COALESCE(
               (
                 SELECT json_agg(r.name)
@@ -1241,6 +1812,11 @@ app.post("/admin/users", async (request, reply) => {
         reply.code(400).send({ error: pwError });
         return;
     }
+    const normalizedPhone = parsePhoneNumberInput(body.phoneNumber);
+    if (normalizedPhone.error) {
+        reply.code(400).send({ error: normalizedPhone.error });
+        return;
+    }
     const roleName = body.role && ["editor", "viewer"].includes(body.role) ? body.role : "viewer";
     const client = await pool.connect();
     let newUserId = "";
@@ -1262,11 +1838,25 @@ app.post("/admin/users", async (request, reply) => {
                 return;
             }
         }
+        if (normalizedPhone.value) {
+            const existingPhone = await client.query("SELECT id FROM users WHERE phone_number = $1 LIMIT 1", [normalizedPhone.value]);
+            if ((existingPhone.rowCount ?? 0) > 0) {
+                await client.query("ROLLBACK");
+                reply.code(409).send({ error: "phone_number_already_exists" });
+                return;
+            }
+        }
         const roleRes = await client.query("SELECT id FROM roles WHERE name = $1 LIMIT 1", [roleName]);
         const passwordHash = await hashPassword(body.password);
-        const insertRes = await client.query(`INSERT INTO users (email, password_hash, status, first_name, last_name, email_verified_at)
-       VALUES ($1, $2, 'active', $3, $4, now())
-       RETURNING id`, [email, passwordHash, body.firstName ?? "", body.lastName ?? ""]);
+        const insertRes = await client.query(`INSERT INTO users (email, password_hash, status, first_name, last_name, phone_number, email_verified_at)
+       VALUES ($1, $2, 'active', $3, $4, $5, now())
+       RETURNING id`, [
+            email,
+            passwordHash,
+            body.firstName ?? "",
+            body.lastName ?? "",
+            normalizedPhone.value
+        ]);
         newUserId = insertRes.rows[0].id;
         // Assign role (default to 'viewer')
         // Only allow creating editor or viewer — admin creation is restricted
@@ -1300,9 +1890,15 @@ app.post("/admin/users", async (request, reply) => {
         action: "user.created",
         targetType: "user",
         targetId: newUserId,
-        metadata: { email, role: roleName }
+        metadata: { email, role: roleName, phoneNumber: normalizedPhone.value }
     });
-    reply.send({ id: newUserId, email, status: "active", role: roleName });
+    reply.send({
+        id: newUserId,
+        email,
+        phone_number: normalizedPhone.value,
+        status: "active",
+        role: roleName
+    });
 });
 // Update user profile fields (admin only)
 app.patch("/admin/users/:id", async (request, reply) => {
@@ -1340,6 +1936,23 @@ app.patch("/admin/users/:id", async (request, reply) => {
         updates.push(`last_name = $${params.length}`);
         metadata.lastName = lastName;
     }
+    if (body?.phoneNumber !== undefined) {
+        const normalizedPhone = parsePhoneNumberInput(body.phoneNumber);
+        if (normalizedPhone.error) {
+            reply.code(400).send({ error: normalizedPhone.error });
+            return;
+        }
+        if (normalizedPhone.value) {
+            const existingPhone = await pool.query("SELECT id FROM users WHERE phone_number = $1 AND id <> $2 LIMIT 1", [normalizedPhone.value, id]);
+            if ((existingPhone.rowCount ?? 0) > 0) {
+                reply.code(409).send({ error: "phone_number_already_exists" });
+                return;
+            }
+        }
+        params.push(normalizedPhone.value);
+        updates.push(`phone_number = $${params.length}`);
+        metadata.phoneNumber = normalizedPhone.value ?? "";
+    }
     if (updates.length === 0) {
         reply.code(400).send({ error: "no_fields_to_update" });
         return;
@@ -1349,7 +1962,7 @@ app.patch("/admin/users/:id", async (request, reply) => {
     UPDATE users
     SET ${updates.join(", ")}, updated_at = now()
     WHERE id = $${params.length}
-    RETURNING id, email, first_name, last_name, status, created_at
+    RETURNING id, email, first_name, last_name, phone_number, status, created_at
     `, params);
     if ((res.rowCount ?? 0) === 0) {
         reply.code(404).send({ error: "user_not_found" });

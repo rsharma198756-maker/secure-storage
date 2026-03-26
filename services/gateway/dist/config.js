@@ -1,12 +1,13 @@
 export const config = {
     port: Number(process.env.PORT ?? 3000),
+    trustProxy: process.env.TRUST_PROXY === "true" || process.env.NODE_ENV === "production",
     storageUrl: process.env.STORAGE_URL ?? "http://localhost:4000",
     internalToken: process.env.INTERNAL_TOKEN ?? "dev-internal-token",
     resendApiKey: process.env.RESEND_API_KEY ?? "",
     brevoApiKey: process.env.BREVO_API_KEY ?? "",
     emailFrom: process.env.EMAIL_FROM ?? "Magnus <noreply@securestorage.app>",
     emailFromName: process.env.EMAIL_FROM_NAME ?? "Magnus",
-    emailFromAddress: process.env.EMAIL_FROM_ADDRESS ?? "guptapayal8820@gmail.com",
+    emailFromAddress: process.env.EMAIL_FROM_ADDRESS ?? "solutionnyx@gmail.com",
     smtp: {
         host: process.env.SMTP_HOST ?? "smtp.gmail.com",
         port: Number(process.env.SMTP_PORT ?? 587),
@@ -14,6 +15,12 @@ export const config = {
         requireTls: process.env.SMTP_REQUIRE_TLS !== "false",
         user: process.env.SMTP_USER ?? "",
         pass: process.env.SMTP_PASS ?? ""
+    },
+    msg91: {
+        apiBaseUrl: process.env.MSG91_API_BASE_URL ?? "https://api.msg91.com/api/v5",
+        authKey: process.env.MSG91_AUTH_KEY ?? "",
+        templateId: process.env.MSG91_TEMPLATE_ID ?? "",
+        senderId: process.env.MSG91_SENDER_ID ?? ""
     },
     serviceJwt: {
         secret: process.env.SERVICE_JWT_SECRET ?? "dev-service-jwt-secret",

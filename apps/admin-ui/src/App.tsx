@@ -6,12 +6,14 @@ import {
   createFile,
   createFolder,
   createUser,
+  deleteIpAccessRule,
   deleteItem,
   downloadItem,
   forceLogoutEveryone,
   forceLogoutUser,
   fetchDashboardSummary,
   fetchMyProfile,
+  getIpAccessSettings,
   getSecurityState,
   fetchUserDashboardSummary,
   listAuditLogs,
@@ -28,10 +30,12 @@ import {
   requestSecurityStepUp,
   removeUser,
   resetUserPassword,
+  saveIpAccessRule,
   setUserRole,
   tapOffService,
   tapOnService,
   updateItemName,
+  updateIpAccessRule,
   updateUserInfo,
   updateRolePermissions,
   verifySecurityStepUp,
@@ -41,6 +45,7 @@ import type {
   AuditLog,
   DashboardRange,
   DashboardSummary,
+  IpAccessRule,
   Item,
   SecurityState,
   UserDashboardSummary,
@@ -51,6 +56,7 @@ import DashboardPage from "./pages/DashboardPage";
 import UsersPage from "./pages/UsersPage";
 import FilesPage from "./pages/FilesPage";
 import AuditLogsPage from "./pages/AuditLogsPage";
+import SettingsPage from "./pages/SettingsPage";
 
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -247,6 +253,17 @@ const ShieldAlertIcon = ({ size = 20, ...props }: IconProps) => (
   </svg>
 );
 
+const SettingsIcon = ({ size = 20, ...props }: IconProps) => (
+  <svg {...svgBase} width={size} height={size} {...props}>
+    <line x1="4" y1="6" x2="20" y2="6" />
+    <line x1="4" y1="12" x2="20" y2="12" />
+    <line x1="4" y1="18" x2="20" y2="18" />
+    <circle cx="9" cy="6" r="2" />
+    <circle cx="15" cy="12" r="2" />
+    <circle cx="11" cy="18" r="2" />
+  </svg>
+);
+
 const SearchIcon = ({ size = 16, ...props }: IconProps) => (
   <svg {...svgBase} width={size} height={size} {...props}>
     <circle cx="11" cy="11" r="8" />
@@ -273,7 +290,7 @@ const CalendarIcon = ({ size = 14, ...props }: IconProps) => (
    Types
    ============================================= */
 
-const ALL_TABS = ["Dashboard", "Users", "Roles", "Permissions", "Files", "Audit Logs"] as const;
+const ALL_TABS = ["Dashboard", "Users", "Roles", "Permissions", "Files", "Audit Logs", "Settings"] as const;
 type Tab = (typeof ALL_TABS)[number];
 
 
@@ -329,6 +346,11 @@ const normalizeStringList = (values: string[] | undefined) =>
 
 const isSameStringList = (a: string[], b: string[]) =>
   a.length === b.length && a.every((value, index) => value === b[index]);
+
+const sortIpAccessRules = (rules: IpAccessRule[]) =>
+  [...rules].sort(
+    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+  );
 
 const formatDate = (value: string) => {
   const d = new Date(value);
@@ -446,6 +468,7 @@ const tabIcons: Record<Tab, (props: IconProps) => JSX.Element> = {
   Permissions: KeyIcon,
   Files: FolderIcon,
   "Audit Logs": ActivityIcon,
+  Settings: SettingsIcon,
 };
 
 
@@ -456,6 +479,7 @@ const tabDescriptions: Record<Tab, string> = {
   Permissions: "See which permissions are assigned to each role.",
   Files: "Browse, upload, and manage stored documents and folders.",
   "Audit Logs": "View a chronological log of all system activity.",
+  Settings: "Manage IP access rules and privileged emergency security controls.",
 };
 
 
@@ -467,6 +491,7 @@ const TAB_TO_PATH: Record<Tab, string> = {
   Permissions: "/permissions",
   Files: "/files",
   "Audit Logs": "/audit-logs",
+  Settings: "/settings",
 };
 
 const PATH_TO_TAB: Record<string, Tab> = Object.fromEntries(
@@ -514,6 +539,9 @@ const getTabsForRole = (roles: string[], permissions: string[]): Tab[] => {
   }
   if (has("users:manage")) {
     tabs.push("Users");
+  }
+  if (has("security:control")) {
+    tabs.push("Settings");
   }
 
   // Preserve the canonical tab order from ALL_TABS
@@ -802,6 +830,15 @@ export default function App() {
   const [securityState, setSecurityState] = useState<SecurityState | null>(null);
   const [securityLoading, setSecurityLoading] = useState(false);
   const [securityError, setSecurityError] = useState<string | null>(null);
+  const [currentIpAddress, setCurrentIpAddress] = useState<string | null>(null);
+  const [ipAccessRules, setIpAccessRules] = useState<IpAccessRule[]>([]);
+  const [ipAccessLoading, setIpAccessLoading] = useState(false);
+  const [ipAccessError, setIpAccessError] = useState<string | null>(null);
+  const [settingsIpAddress, setSettingsIpAddress] = useState("");
+  const [settingsIpLabel, setSettingsIpLabel] = useState("");
+  const [settingsIpEnabled, setSettingsIpEnabled] = useState(false);
+  const [isIpAccessSubmitting, setIsIpAccessSubmitting] = useState(false);
+  const [ipRuleActionId, setIpRuleActionId] = useState<string | null>(null);
   const [securityActionToken, setSecurityActionToken] = useState<string | null>(null);
   const [securityActionExpiresAt, setSecurityActionExpiresAt] = useState<number | null>(null);
   const [securityTargetUserId, setSecurityTargetUserId] = useState("");
@@ -1230,6 +1267,14 @@ export default function App() {
     setSecurityActionExpiresAt(null);
     setSecurityState(null);
     setSecurityError(null);
+    setCurrentIpAddress(null);
+    setIpAccessRules([]);
+    setIpAccessError(null);
+    setSettingsIpAddress("");
+    setSettingsIpLabel("");
+    setSettingsIpEnabled(false);
+    setIsIpAccessSubmitting(false);
+    setIpRuleActionId(null);
     if (rememberMe) {
       localStorage.setItem(LAST_EMAIL_STORAGE_KEY, email);
       setSavedEmails((prev) => {
@@ -1360,6 +1405,15 @@ export default function App() {
     setSecurityState(null);
     setSecurityLoading(false);
     setSecurityError(null);
+    setCurrentIpAddress(null);
+    setIpAccessRules([]);
+    setIpAccessLoading(false);
+    setIpAccessError(null);
+    setSettingsIpAddress("");
+    setSettingsIpLabel("");
+    setSettingsIpEnabled(false);
+    setIsIpAccessSubmitting(false);
+    setIpRuleActionId(null);
     setSecurityActionToken(null);
     setSecurityActionExpiresAt(null);
     setShowSecurityStepUpModal(false);
@@ -2354,6 +2408,135 @@ export default function App() {
     }
   };
 
+  const refreshIpAccessSettings = async () => {
+    if (!accessToken || !canControlSecurity) return;
+    setIpAccessLoading(true);
+    setIpAccessError(null);
+    try {
+      const data = await getIpAccessSettings(accessToken);
+      setCurrentIpAddress(data.currentIpAddress);
+      setIpAccessRules(sortIpAccessRules(data.rules));
+    } catch (error: any) {
+      setIpAccessError(error?.message ?? "Could not load IP access rules.");
+    } finally {
+      setIpAccessLoading(false);
+    }
+  };
+
+  const upsertIpRuleInState = (rule: IpAccessRule) => {
+    setIpAccessRules((prev) => {
+      const next = prev.filter((entry) => entry.id !== rule.id);
+      next.unshift(rule);
+      return sortIpAccessRules(next);
+    });
+  };
+
+  const onSaveIpAccessRule = async () => {
+    if (!accessToken || isIpAccessSubmitting) return;
+    const token = getSecurityTokenOrPrompt();
+    if (!token) return;
+
+    setIsIpAccessSubmitting(true);
+    setIpAccessError(null);
+    try {
+      const result = await saveIpAccessRule(accessToken, token, {
+        ipAddress: settingsIpAddress,
+        label: settingsIpLabel.trim() || null,
+        enabled: settingsIpEnabled
+      });
+      upsertIpRuleInState(result.rule);
+      setSettingsIpAddress("");
+      setSettingsIpLabel("");
+      setSettingsIpEnabled(false);
+      if (result.currentIpBlocked) {
+        setCurrentIpAddress(result.rule.ipAddress);
+        showToast(
+          "warning",
+          "Current IP blocked",
+          "This network has just been disabled. The next API request from this IP will be denied."
+        );
+      } else {
+        showToast("success", "IP rule saved", `${result.rule.ipAddress} was updated successfully.`);
+        await refreshIpAccessSettings();
+      }
+    } catch (error: any) {
+      const message = error?.message ?? "Could not save the IP rule.";
+      setIpAccessError(message);
+      showToast("error", "Save failed", message);
+      if ((message ?? "").toLowerCase().includes("verification")) {
+        setSecurityActionToken(null);
+        setSecurityActionExpiresAt(null);
+      }
+    } finally {
+      setIsIpAccessSubmitting(false);
+    }
+  };
+
+  const onToggleIpAccessRule = async (rule: IpAccessRule) => {
+    if (!accessToken || isIpAccessSubmitting) return;
+    const token = getSecurityTokenOrPrompt();
+    if (!token) return;
+
+    setIpRuleActionId(rule.id);
+    setIpAccessError(null);
+    try {
+      const result = await updateIpAccessRule(accessToken, token, rule.id, {
+        enabled: !rule.enabled
+      });
+      upsertIpRuleInState(result.rule);
+      if (result.currentIpBlocked) {
+        setCurrentIpAddress(result.rule.ipAddress);
+        showToast(
+          "warning",
+          "Current IP blocked",
+          "This network has just been disabled. The next API request from this IP will be denied."
+        );
+      } else {
+        showToast(
+          "success",
+          result.rule.enabled ? "IP enabled" : "IP disabled",
+          `${result.rule.ipAddress} is now ${result.rule.enabled ? "enabled" : "disabled"}.`
+        );
+        await refreshIpAccessSettings();
+      }
+    } catch (error: any) {
+      const message = error?.message ?? "Could not update the IP rule.";
+      setIpAccessError(message);
+      showToast("error", "Update failed", message);
+      if ((message ?? "").toLowerCase().includes("verification")) {
+        setSecurityActionToken(null);
+        setSecurityActionExpiresAt(null);
+      }
+    } finally {
+      setIpRuleActionId(null);
+    }
+  };
+
+  const onDeleteIpRule = async (rule: IpAccessRule) => {
+    if (!accessToken || isIpAccessSubmitting) return;
+    const token = getSecurityTokenOrPrompt();
+    if (!token) return;
+
+    setIpRuleActionId(rule.id);
+    setIpAccessError(null);
+    try {
+      await deleteIpAccessRule(accessToken, token, rule.id);
+      setIpAccessRules((prev) => prev.filter((entry) => entry.id !== rule.id));
+      showToast("success", "IP rule deleted", `${rule.ipAddress} was removed.`);
+      await refreshIpAccessSettings();
+    } catch (error: any) {
+      const message = error?.message ?? "Could not delete the IP rule.";
+      setIpAccessError(message);
+      showToast("error", "Delete failed", message);
+      if ((message ?? "").toLowerCase().includes("verification")) {
+        setSecurityActionToken(null);
+        setSecurityActionExpiresAt(null);
+      }
+    } finally {
+      setIpRuleActionId(null);
+    }
+  };
+
   const onForceLogoutUser = async (user: User) => {
     if (!accessToken) return;
     if (session?.user?.id === user.id) {
@@ -2494,6 +2677,12 @@ export default function App() {
       refreshDashboard();
     }
   }, [tab, accessToken, isAdmin, dashboardRange]);
+
+  useEffect(() => {
+    if (tab === "Settings" && accessToken && canControlSecurity) {
+      void refreshIpAccessSettings();
+    }
+  }, [tab, accessToken, canControlSecurity]);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -3351,6 +3540,61 @@ export default function App() {
             ChevronIcon={ChevronIcon}
             setTab={navigateToTab}
             setPath={setPath}
+          />
+        )}
+
+        {tab === "Settings" && (
+          <SettingsPage
+            canControlSecurity={canControlSecurity}
+            currentIpAddress={currentIpAddress}
+            ipAccessRules={ipAccessRules}
+            ipAccessLoading={ipAccessLoading}
+            ipAccessError={ipAccessError}
+            refreshIpAccessSettings={refreshIpAccessSettings}
+            refreshSecurityControlState={refreshSecurityControlState}
+            settingsIpAddress={settingsIpAddress}
+            setSettingsIpAddress={setSettingsIpAddress}
+            settingsIpLabel={settingsIpLabel}
+            setSettingsIpLabel={setSettingsIpLabel}
+            settingsIpEnabled={settingsIpEnabled}
+            setSettingsIpEnabled={setSettingsIpEnabled}
+            onSaveIpAccessRule={onSaveIpAccessRule}
+            isIpAccessSubmitting={isIpAccessSubmitting}
+            ipRuleActionId={ipRuleActionId}
+            onToggleIpAccessRule={onToggleIpAccessRule}
+            onDeleteIpAccessRule={onDeleteIpRule}
+            securityLoading={securityLoading}
+            isBusy={isBusy}
+            RefreshCwIcon={RefreshCwIcon}
+            PhoneIcon={PhoneIcon}
+            TrashIcon={TrashIcon}
+            isSecurityTokenValid={isSecurityTokenValid}
+            securityTokenRemainingSeconds={securityTokenRemainingSeconds}
+            openSecurityStepUpModal={openSecurityStepUpModal}
+            stepUpBusy={stepUpBusy}
+            securityError={securityError}
+            securityState={securityState}
+            formatDate={formatDate}
+            securityReason={securityReason}
+            setSecurityReason={setSecurityReason}
+            securityTargetUserId={securityTargetUserId}
+            setSecurityTargetUserId={setSecurityTargetUserId}
+            users={users}
+            session={session}
+            onForceLogoutSelectedUser={onForceLogoutSelectedUser}
+            onForceLogoutEveryone={onForceLogoutEveryone}
+            onTapOff={onTapOff}
+            onTapOn={onTapOn}
+            showSecurityStepUpModal={showSecurityStepUpModal}
+            setShowSecurityStepUpModal={setShowSecurityStepUpModal}
+            stepUpPassword={stepUpPassword}
+            setStepUpPassword={setStepUpPassword}
+            stepUpOtpRequested={stepUpOtpRequested}
+            onRequestSecurityStepUpOtp={onRequestSecurityStepUpOtp}
+            stepUpOtp={stepUpOtp}
+            setStepUpOtp={setStepUpOtp}
+            onVerifySecurityStepUpOtp={onVerifySecurityStepUpOtp}
+            LockIcon={LockIcon}
           />
         )}
 
