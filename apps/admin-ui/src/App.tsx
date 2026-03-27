@@ -3,6 +3,7 @@ import * as pdfjsLib from "pdfjs-dist";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import {
+  ACCESS_BLOCKED_EVENT,
   createFile,
   createFolder,
   createUser,
@@ -11,12 +12,14 @@ import {
   downloadItem,
   forceLogoutEveryone,
   forceLogoutUser,
+  getAccessBlockedMessage,
   fetchDashboardSummary,
   fetchMyProfile,
   getSessionTerminationMessage,
   getIpAccessSettings,
   getSecurityState,
   fetchUserDashboardSummary,
+  isAccessBlockedError,
   isSessionTerminationError,
   listAuditLogs,
   listItems,
@@ -942,9 +945,15 @@ export default function App() {
         setSession(refreshed);
         sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(refreshed));
         localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(refreshed));
-      } catch {
+      } catch (error: any) {
         localStorage.removeItem(SESSION_STORAGE_KEY);
         sessionStorage.removeItem(SESSION_STORAGE_KEY);
+        if (!cancelled && isAccessBlockedError(error)) {
+          setSession(null);
+          setStatus(null);
+          setLoginError(getAccessBlockedMessage(error));
+          setLoginStep(1);
+        }
       } finally {
         if (!cancelled) setIsSessionChecking(false);
       }
@@ -1319,7 +1328,9 @@ export default function App() {
       const data = await verifyOtp(phoneNumber, otp);
       completeSessionLogin(data);
     } catch (err: any) {
-      showToast("error", "Verification failed", err?.message ?? "Invalid OTP code. Please try again.");
+      const msg = err?.message ?? "Invalid OTP code. Please try again.";
+      setLoginError(msg);
+      showToast("error", "Verification failed", msg);
     } finally {
       setIsOtpSubmitting(false);
     }
@@ -1395,6 +1406,23 @@ export default function App() {
     (message: string, title = "You were signed out") => {
       const now = Date.now();
       clearClientSession();
+      setStatus(null);
+      setLoginError(message);
+      if (sessionTerminationNoticeUntilRef.current > now) {
+        return;
+      }
+      sessionTerminationNoticeUntilRef.current = now + 3000;
+      showToast("warning", title, message);
+    },
+    [clearClientSession, showToast]
+  );
+
+  const handleAccessBlocked = useCallback(
+    (message: string, title = "Access unavailable") => {
+      const now = Date.now();
+      clearClientSession();
+      setStatus(null);
+      setLoginError(message);
       if (sessionTerminationNoticeUntilRef.current > now) {
         return;
       }
@@ -1419,6 +1447,22 @@ export default function App() {
         onSessionTerminated as EventListener
       );
   }, [handleSessionTermination]);
+
+  useEffect(() => {
+    const onAccessBlocked = (event: Event) => {
+      const detail = (event as CustomEvent<{ message?: string }>).detail;
+      handleAccessBlocked(
+        detail?.message ?? "You can't sign in right now. Please try again later."
+      );
+    };
+
+    window.addEventListener(ACCESS_BLOCKED_EVENT, onAccessBlocked as EventListener);
+    return () =>
+      window.removeEventListener(
+        ACCESS_BLOCKED_EVENT,
+        onAccessBlocked as EventListener
+      );
+  }, [handleAccessBlocked]);
 
   const onLogout = async () => {
     if (session) {
@@ -1448,6 +1492,10 @@ export default function App() {
           return true;
         })
         .catch((error: any) => {
+          if (isAccessBlockedError(error)) {
+            handleAccessBlocked(getAccessBlockedMessage(error));
+            return false;
+          }
           if (isSessionTerminationError(error)) {
             handleSessionTermination(getSessionTerminationMessage(error));
             return false;
@@ -1469,6 +1517,7 @@ export default function App() {
       session?.refreshToken,
       session?.refreshExpiresAt,
       clearClientSession,
+      handleAccessBlocked,
       handleSessionTermination,
       showToast
     ]
@@ -1537,6 +1586,10 @@ export default function App() {
           };
         });
       } catch (error: any) {
+        if (isAccessBlockedError(error)) {
+          handleAccessBlocked(getAccessBlockedMessage(error));
+          return;
+        }
         if (isSessionTerminationError(error)) {
           handleSessionTermination(getSessionTerminationMessage(error));
           return;
@@ -1549,7 +1602,7 @@ export default function App() {
 
     profileSyncInFlightRef.current = promise;
     return promise;
-  }, [accessToken, handleSessionTermination, showToast]);
+  }, [accessToken, handleAccessBlocked, handleSessionTermination, showToast]);
 
 
   // Rotate access token before it expires.
@@ -2815,6 +2868,23 @@ export default function App() {
                 </div>
                 <span style={{ fontSize: 13, color: "var(--ink-3)", fontWeight: 500, userSelect: "none" }}>Remember me</span>
               </div>
+              {loginError && (
+                <div style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "10px 14px",
+                  borderRadius: 10,
+                  background: "var(--red-bg, rgba(248,113,113,0.1))",
+                  border: "1px solid rgba(248,113,113,0.3)",
+                  color: "var(--red, #f87171)",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  marginBottom: 4
+                }}>
+                  <span>⚠</span> {loginError}
+                </div>
+              )}
               <button className="btn btn-primary" type="submit">Continue</button>
             </form>
           </div>
@@ -2924,6 +2994,23 @@ export default function App() {
                   autoFocus
                 />
               </div>
+              {loginError && (
+                <div style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "10px 14px",
+                  borderRadius: 10,
+                  background: "var(--red-bg, rgba(248,113,113,0.1))",
+                  border: "1px solid rgba(248,113,113,0.3)",
+                  color: "var(--red, #f87171)",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  marginBottom: 4
+                }}>
+                  <span>⚠</span> {loginError}
+                </div>
+              )}
               <button className="btn btn-primary" type="submit" disabled={isOtpSubmitting}>
                 {isOtpSubmitting ? "Verifying..." : "Verify & Sign In"}
               </button>

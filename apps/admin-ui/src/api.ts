@@ -1,7 +1,8 @@
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:3000";
 const MAINTENANCE_FALLBACK =
-  "We're performing routine service maintenance. Please try again shortly.";
+  "You can't sign in right now. Please try again later.";
 export const SESSION_TERMINATED_EVENT = "magnus:session-terminated";
+export const ACCESS_BLOCKED_EVENT = "magnus:access-blocked";
 
 type ApiErrorOptions = {
   code?: string;
@@ -141,6 +142,10 @@ const isSessionTerminationCode = (code?: string | null) =>
   code === "invalid_refresh_token" ||
   code === "refresh_token_expired";
 
+const isAccessBlockedCode = (code?: string | null) =>
+  code === "service_temporarily_unavailable" ||
+  code === "system_shutdown_active";
+
 const getSessionTerminationMessageForCode = (code?: string | null) => {
   if (code === "session_revoked") {
     return "An administrator signed you out. Please sign in again to continue.";
@@ -151,12 +156,19 @@ const getSessionTerminationMessageForCode = (code?: string | null) => {
   return "Your session has ended. Please sign in again to continue.";
 };
 
+const getAccessBlockedMessageForCode = (code?: string | null) => {
+  if (code === "system_shutdown_active") {
+    return "You can't sign in right now. Please try again later.";
+  }
+  return MAINTENANCE_FALLBACK;
+};
+
 const toApiErrorMessage = (data: any, fallback: string) => {
   if (data?.error === "service_temporarily_unavailable") {
     return data?.message ?? MAINTENANCE_FALLBACK;
   }
   if (data?.error === "system_shutdown_active") {
-    return data?.message ?? "System access is temporarily unavailable.";
+    return data?.message ?? "You can't sign in right now. Please try again later.";
   }
   if (data?.error === "ip_address_blocked") {
     return data?.message ?? "Access denied.";
@@ -197,11 +209,24 @@ const throwApiError = (
       })
     );
   }
+  if (typeof window !== "undefined" && isAccessBlockedCode(error.code)) {
+    window.dispatchEvent(
+      new CustomEvent(ACCESS_BLOCKED_EVENT, {
+        detail: {
+          code: error.code,
+          message: error.message
+        }
+      })
+    );
+  }
   throw error;
 };
 
 export const isSessionTerminationError = (error: unknown) =>
   isSessionTerminationCode((error as { code?: string } | null | undefined)?.code);
+
+export const isAccessBlockedError = (error: unknown) =>
+  isAccessBlockedCode((error as { code?: string } | null | undefined)?.code);
 
 export const getSessionTerminationMessage = (error: unknown) => {
   const typedError = error as { code?: string; message?: string } | null | undefined;
@@ -209,6 +234,14 @@ export const getSessionTerminationMessage = (error: unknown) => {
     return typedError.message ?? getSessionTerminationMessageForCode(typedError.code);
   }
   return "Your session has ended. Please sign in again to continue.";
+};
+
+export const getAccessBlockedMessage = (error: unknown) => {
+  const typedError = error as { code?: string; message?: string } | null | undefined;
+  if (typedError?.code && isAccessBlockedCode(typedError.code)) {
+    return typedError.message ?? getAccessBlockedMessageForCode(typedError.code);
+  }
+  return "You can't sign in right now. Please try again later.";
 };
 
 export const login = async (phoneNumber: string, password: string) => {

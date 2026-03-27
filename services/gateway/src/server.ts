@@ -127,7 +127,7 @@ const EMERGENCY_SHUTDOWN_CACHE_MS = 1000;
 const IP_ACCESS_RULES_CACHE_MS = 1000;
 const EMERGENCY_SHUTDOWN_PAYLOAD = {
   error: "system_shutdown_active",
-  message: "System access is temporarily unavailable."
+  message: "You can't sign in right now. Please try again later."
 };
 const IP_DISABLED_PAYLOAD = {
   error: "ip_address_blocked",
