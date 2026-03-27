@@ -155,6 +155,9 @@ const toApiErrorMessage = (data: any, fallback: string) => {
   if (data?.error === "service_temporarily_unavailable") {
     return data?.message ?? MAINTENANCE_FALLBACK;
   }
+  if (data?.error === "system_shutdown_active") {
+    return data?.message ?? "System access is temporarily unavailable.";
+  }
   if (data?.error === "ip_address_blocked") {
     return data?.message ?? "Access denied.";
   }

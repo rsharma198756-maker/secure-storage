@@ -40,6 +40,7 @@ const migrations = [
     join(__dirname, 'db/init/005_remove_super_admin.sql'),
     join(__dirname, 'db/init/006_phone_numbers_and_sms_otp.sql'),
     join(__dirname, 'db/init/007_ip_access_controls.sql'),
+    join(__dirname, 'db/init/008_emergency_shutdown_controls.sql'),
 ];
 
 async function run() {

@@ -48,7 +48,12 @@ const getDashboardRangeWindow = (range) => {
     };
 };
 const SECURITY_STATE_CACHE_MS = 1000;
+const EMERGENCY_SHUTDOWN_CACHE_MS = 1000;
 const IP_ACCESS_RULES_CACHE_MS = 1000;
+const EMERGENCY_SHUTDOWN_PAYLOAD = {
+    error: "system_shutdown_active",
+    message: "System access is temporarily unavailable."
+};
 const IP_DISABLED_PAYLOAD = {
     error: "ip_address_blocked",
     message: "Access denied."
@@ -59,6 +64,8 @@ const IP_NOT_ALLOWLISTED_PAYLOAD = {
 };
 let securityControlsCache;
 let warnedMissingSecurityControlsTable = false;
+let emergencyShutdownStateCache;
+let warnedMissingEmergencyShutdownTable = false;
 let ipAccessStateCache;
 let warnedMissingIpAccessRulesTable = false;
 const PERMISSION_MAP = {
@@ -166,6 +173,56 @@ const getSecurityControls = async () => {
 };
 const invalidateSecurityControlsCache = () => {
     securityControlsCache = undefined;
+};
+const defaultEmergencyShutdownState = () => ({
+    active: false,
+    reason: null,
+    startedAt: null,
+    endedAt: null,
+    byUserId: null
+});
+const getEmergencyShutdownState = async () => {
+    const now = Date.now();
+    if (emergencyShutdownStateCache &&
+        now - emergencyShutdownStateCache.loadedAt < EMERGENCY_SHUTDOWN_CACHE_MS) {
+        return emergencyShutdownStateCache.value;
+    }
+    let value;
+    try {
+        const res = await pool.query(`
+      SELECT
+        shutdown_active,
+        shutdown_reason,
+        shutdown_started_at,
+        shutdown_ended_at,
+        shutdown_by_user_id
+      FROM emergency_shutdown_controls
+      WHERE id = true
+      LIMIT 1
+      `);
+        const row = res.rows[0] ?? {};
+        value = {
+            active: Boolean(row.shutdown_active),
+            reason: row.shutdown_reason ?? null,
+            startedAt: row.shutdown_started_at ? new Date(row.shutdown_started_at) : null,
+            endedAt: row.shutdown_ended_at ? new Date(row.shutdown_ended_at) : null,
+            byUserId: row.shutdown_by_user_id ?? null
+        };
+    }
+    catch (error) {
+        if (error?.code === "42P01") {
+            if (!warnedMissingEmergencyShutdownTable) {
+                warnedMissingEmergencyShutdownTable = true;
+                app.log.warn("emergency_shutdown_controls table is missing; emergency shutdown is disabled until migrations are applied");
+            }
+            value = defaultEmergencyShutdownState();
+        }
+        else {
+            throw error;
+        }
+    }
+    emergencyShutdownStateCache = { value, loadedAt: now };
+    return value;
 };
 const createEmptyIpAccessState = () => ({
     enabledIpAddresses: new Set(),
@@ -316,6 +373,12 @@ app.addHook("onRequest", async (request, reply) => {
     if (request.url.startsWith("/health") ||
         request.url.startsWith("/ready") ||
         request.url.startsWith("/internal/")) {
+        return;
+    }
+    const emergencyShutdown = await getEmergencyShutdownState();
+    if (emergencyShutdown.active) {
+        request.log.warn({ url: request.url, reason: emergencyShutdown.reason }, "request blocked by emergency shutdown");
+        reply.code(503).send(EMERGENCY_SHUTDOWN_PAYLOAD);
         return;
     }
     const ipAddress = getRequestIpAddress(request);
